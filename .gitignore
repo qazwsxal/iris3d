@@ -1,0 +1,9 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Screenshots written by the F12 shortcut, which saves next to the binary
+iris3d-*.png
+
+# Rust build output is ignored by app/.gitignore; the uv virtualenv ignores
+# itself via .venv/.gitignore.

@@ -1,0 +1,219 @@
+syntax = "proto3";
+
+package iris3d.v1;
+
+// SceneService is the ingest and lifecycle surface for objects held in the
+// iris3d scene.
+//
+// Data is described in the style of a numpy array — a raw little-endian byte
+// buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
+// This keeps large uploads compact on the wire, keeps decoding cheap in every
+// client language, and lets iris3d accept data in formats it will never
+// implement a parser for: a client parses locally and pushes the arrays.
+service SceneService {
+  // Uploads a single object as a stream of chunks.
+  //
+  // The first message on the stream MUST carry `header`; every subsequent
+  // message MUST carry `chunk`. Chunks are written into the buffers declared
+  // by the header, and the upload is only committed to the scene once every
+  // declared buffer has received exactly its `byte_length` bytes. A stream
+  // that ends early, overruns a buffer, or arrives out of order is rejected
+  // and nothing is added to the scene.
+  rpc UploadObject(stream UploadObjectRequest) returns (UploadObjectResponse);
+
+  // Creates an object that holds no data.
+  //
+  // Objects form a tree, and an empty object is how you make a pure grouping
+  // node: parent several objects to it and they share its transform. There is
+  // no separate "group" type — anything can parent anything, so a mesh may
+  // equally be the parent of a field that should follow it.
+  rpc CreateObject(CreateObjectRequest) returns (CreateObjectResponse);
+
+  // Moves an object within the tree.
+  rpc SetParent(SetParentRequest) returns (SetParentResponse);
+
+  // Sets an object's local placement, relative to its parent.
+  rpc SetTransform(SetTransformRequest) returns (SetTransformResponse);
+
+  // Lists the objects currently present in the scene.
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+
+  // Removes an object from the scene, releasing its buffers.
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
+}
+
+// Dtype is the element type of a buffer's raw bytes. Encoding is always
+// little-endian and densely packed in C (row-major) order.
+enum Dtype {
+  DTYPE_UNSPECIFIED = 0;
+  DTYPE_UINT8 = 1;
+  DTYPE_INT8 = 2;
+  DTYPE_UINT16 = 3;
+  DTYPE_INT16 = 4;
+  DTYPE_UINT32 = 5;
+  DTYPE_INT32 = 6;
+  DTYPE_UINT64 = 7;
+  DTYPE_INT64 = 8;
+  DTYPE_FLOAT32 = 9;
+  DTYPE_FLOAT64 = 10;
+}
+
+// BufferSpec declares one named array belonging to an object.
+//
+// Names are conventional rather than enforced, so that new attributes do not
+// require a schema change. Recognised names today: "positions" (float32,
+// [n, 3]), "colors" (uint8, [n, 3] or [n, 4]), "indices" (uint32, [m, 3]),
+// "normals" (float32, [n, 3]).
+message BufferSpec {
+  // Identifier for this buffer, unique within the object.
+  string name = 1;
+
+  // Element type of the raw bytes.
+  Dtype dtype = 2;
+
+  // Dimensions, outermost first. Must contain no zero-length axis.
+  repeated uint64 shape = 3;
+
+  // Total size of the buffer in bytes. Must equal the product of `shape`
+  // multiplied by the size of one `dtype` element; sending it explicitly lets
+  // the server allocate up front and detect truncated streams.
+  uint64 byte_length = 4;
+}
+
+// ObjectHeader opens an upload and declares everything that will follow.
+message ObjectHeader {
+  // Human-readable label. Need not be unique.
+  string name = 1;
+
+  // The buffers that make up this object, in the order they are indexed by
+  // `Chunk.buffer_index`. Must contain at least one entry.
+  repeated BufferSpec buffers = 2;
+}
+
+// Chunk carries a contiguous slice of one buffer's bytes.
+message Chunk {
+  // Index into `ObjectHeader.buffers`.
+  uint32 buffer_index = 1;
+
+  // Byte offset within that buffer. Must equal the number of bytes already
+  // received for the buffer — slices arrive in order and may not be resent.
+  uint64 offset = 2;
+
+  // The bytes themselves. Keep messages comfortably under the transport's
+  // maximum message size; 1-4 MiB per chunk is a reasonable default.
+  bytes data = 3;
+}
+
+message UploadObjectRequest {
+  oneof payload {
+    ObjectHeader header = 1;
+    Chunk chunk = 2;
+  }
+}
+
+message UploadObjectResponse {
+  // Handle for the newly created object.
+  ObjectHandle handle = 1;
+
+  // Total number of buffer bytes accepted, summed across all buffers.
+  uint64 total_bytes = 2;
+}
+
+// ObjectHandle identifies an object for the lifetime of the running scene.
+// Handles are not reused after deletion and are not stable across restarts.
+message ObjectHandle {
+  uint64 id = 1;
+}
+
+// ObjectInfo describes an object without transferring its contents.
+message ObjectInfo {
+  ObjectHandle handle = 1;
+  string name = 2;
+  repeated BufferSpec buffers = 3;
+  uint64 total_bytes = 4;
+
+  // Structure the server inferred from the uploaded buffers: "points", "mesh",
+  // "grid", "molecule", "raw" when nothing was recognised, or "empty" for an
+  // object that holds no data at all. Inference is provisional — a later
+  // revision should let the client state this outright.
+  string dataset_kind = 5;
+
+  // Ways the object is currently being drawn, e.g. "points", "surface",
+  // "ball-and-stick". Empty means nothing is drawing it.
+  repeated string representations = 6;
+
+  // Parent in the scene tree, absent for a root object.
+  optional ObjectHandle parent = 7;
+}
+
+message ListObjectsRequest {}
+
+message ListObjectsResponse {
+  repeated ObjectInfo objects = 1;
+}
+
+message CreateObjectRequest {
+  // Human-readable label. Need not be unique.
+  string name = 1;
+}
+
+message CreateObjectResponse {
+  ObjectHandle handle = 1;
+}
+
+message SetParentRequest {
+  ObjectHandle handle = 1;
+
+  // The new parent. Omit to detach, making the object a root.
+  optional ObjectHandle parent = 2;
+
+  // Adjust the object's local transform so it does not move in world space.
+  // Without this the object keeps its local transform and therefore shifts by
+  // whatever the new parent's transform is.
+  bool keep_world_transform = 3;
+}
+
+message SetParentResponse {}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+// A rotation as a unit quaternion.
+message Quaternion {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+  float w = 4;
+}
+
+// Components left unset are kept as they are, so a caller can move an object
+// without disturbing its rotation or scale.
+message SetTransformRequest {
+  ObjectHandle handle = 1;
+  optional Vector3 translation = 2;
+  optional Quaternion rotation = 3;
+  optional Vector3 scale = 4;
+}
+
+message SetTransformResponse {}
+
+message DeleteObjectRequest {
+  ObjectHandle handle = 1;
+
+  // Also delete every descendant. By default descendants are detached and
+  // become roots, so deleting an object never destroys data the caller did not
+  // name.
+  bool recursive = 2;
+}
+
+message DeleteObjectResponse {
+  // False if no object with that handle was present.
+  bool deleted = 1;
+
+  // Handles removed, including the named object and — when `recursive` was
+  // set — its descendants.
+  repeated ObjectHandle removed = 2;
+}

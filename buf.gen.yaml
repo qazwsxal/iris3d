@@ -1,0 +1,27 @@
+version: v2
+
+# Managed mode injects per-language file options (java_package, csharp_namespace,
+# objc_class_prefix, php_namespace, ruby_package, go_package...) that are absent
+# from the .proto sources. Only Python is generated here, and Python ignores all
+# of them — so the sole effect today is that buf's descriptors carry options the
+# Rust build (tonic-prost-build, which reads the raw .proto) does not. Keeping it
+# off means every generator sees the same descriptor.
+#
+# Re-enable when a language that needs these is added. Go in particular requires
+# go_package, which managed mode supplies without touching the sources. Prefer
+# scoping it then rather than enabling wholesale, e.g.:
+#
+#   managed:
+#     enabled: true
+#     disable:
+#       - file_option: objc_class_prefix
+managed:
+  enabled: false
+
+plugins:
+  - remote: buf.build/protocolbuffers/python:v33.5
+    out: libraries/python/src/
+  - remote: buf.build/protocolbuffers/pyi:v33.5
+    out: libraries/python/src/
+  - remote: buf.build/grpc/python:v1.78.1
+    out: libraries/python/src/
