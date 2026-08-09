@@ -44,6 +44,10 @@
 //!   conditional `break` before a texture read.
 //! - `AlphaMode::Opaque` in place of `Blend`. Identical noise, so the
 //!   transparent pass, the blend state and the depth test are all innocent.
+//! - A row stride mismatch on upload. The same ramp at 256 samples wide, whose
+//!   `R8Unorm` row is the 256 bytes a copy wants, and at 32 wide, whose row is
+//!   not, gives the same noise at the same density. A scattered upload would
+//!   differ between the two, so the texture layout is sound.
 //!
 //! What remains is that the values which *do* arrive are correct — the ramp is
 //! purple at low x and yellow at high x — while neighbouring invocations
