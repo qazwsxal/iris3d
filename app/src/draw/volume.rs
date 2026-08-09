@@ -179,14 +179,14 @@ pub fn register(registry: &mut RepresentationRegistry) {
 
 #[derive(Clone, Copy, ShaderType)]
 pub struct VolumeUniform {
-    /// `xyz` the low corner in local space, `w` the step count.
-    pub bounds_min: Vec4,
-    /// `xyz` the size in local space, `w` the opacity scale.
-    pub bounds_size: Vec4,
-    /// `x` the mode, `y` the colour map.
+    /// World space into the unit cube the field is stored in.
+    ///
+    /// Computed here rather than inverted in the shader. That is what
+    /// `bevy_pbr`'s volumetric fog does, and it means the fragment shader needs
+    /// no mesh instance data of its own.
+    pub uvw_from_world: Mat4,
+    /// `x` steps, `y` opacity, `z` mode, `w` colour map.
     pub options: Vec4,
-    /// `xyz` the sample counts, for the integer texture fetch.
-    pub dims: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -226,17 +226,38 @@ pub struct VolumeTexture {
 
 /// Every parameter here is a uniform or the choice of texture, so none of them
 /// touches the box mesh.
-pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<VolumeStyle>>) {
+///
+/// Moving the object counts too: `uvw_from_world` is built from the transform,
+/// so it goes stale the moment the object moves. This is the one backend where
+/// a transform change is a redraw rather than something the scene graph handles
+/// on its own.
+pub fn invalidate(
+    mut commands: Commands,
+    changed: Query<
+        Entity,
+        (
+            With<VolumeStyle>,
+            Or<(Changed<VolumeStyle>, Changed<GlobalTransform>)>,
+        ),
+    >,
+) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
     }
 }
 
-/// The grid's bounding box in local space, wound inside out.
+/// The grid's bounding box in local space, wound the ordinary way out.
 ///
-/// Reversed winding is what makes ordinary back-face culling hand the shader
-/// the ray's *exit* point, and it keeps working when the camera is inside the
-/// box. An outward-wound box disappears the moment you fly into it.
+/// An earlier version wound it inside out so that back-face culling handed the
+/// shader the ray's *exit* point. That was a trick to avoid specialising the
+/// pipeline, and it is not what `bevy_pbr`'s volume rendering does — it keeps
+/// `cull_mode: Back` and an outward box. The shader no longer needs the exit
+/// point anyway: it takes both ends from the slab test and uses the fragment
+/// only for the ray's direction.
+///
+/// The cost is that the volume vanishes when the camera is inside the box,
+/// because every face is then back-facing. Bevy handles that with a second
+/// strategy; a first pass can live without one.
 fn box_mesh(low: Vec3, high: Vec3) -> Mesh {
     let corners = [
         Vec3::new(low.x, low.y, low.z),
@@ -248,14 +269,14 @@ fn box_mesh(low: Vec3, high: Vec3) -> Mesh {
         Vec3::new(high.x, high.y, high.z),
         Vec3::new(low.x, high.y, high.z),
     ];
-    // Each face listed clockwise seen from outside, which is what inverts it.
+    // Each face listed counter-clockwise seen from outside.
     let faces: [[u32; 4]; 6] = [
-        [0, 3, 2, 1], // back
-        [4, 5, 6, 7], // front
-        [0, 1, 5, 4], // bottom
-        [3, 7, 6, 2], // top
-        [0, 4, 7, 3], // left
-        [1, 2, 6, 5], // right
+        [0, 1, 2, 3], // back
+        [4, 7, 6, 5], // front
+        [0, 4, 5, 1], // bottom
+        [3, 2, 6, 7], // top
+        [0, 3, 7, 4], // left
+        [1, 5, 6, 2], // right
     ];
 
     let mut indices = Vec::with_capacity(36);
@@ -362,6 +383,7 @@ pub fn draw_volumes(
     arrays: Res<Assets<DataArray>>,
     dirty: Query<Drawable<VolumeStyle, VolumeMaterial>>,
     cached: Query<&VolumeTexture>,
+    placements: Query<&GlobalTransform>,
     grids: Query<(&GridData, Option<&Fields>)>,
 ) {
     for (entity, style, colour, _subset, source, dirty, mesh3d, material3d) in &dirty {
@@ -369,6 +391,9 @@ pub fn draw_volumes(
             continue;
         }
         let Ok((grid, fields)) = grids.get(source.0) else {
+            continue;
+        };
+        let Ok(placement) = placements.get(entity) else {
             continue;
         };
 
@@ -428,6 +453,12 @@ pub fn draw_volumes(
             );
         }
 
+        // World -> local -> unit cube, composed once here so the shader needs
+        // no inverse and no mesh instance data.
+        let uvw_from_world = Mat4::from_scale(1.0 / size.max(Vec3::splat(f32::EPSILON)))
+            * Mat4::from_translation(-grid.origin)
+            * placement.to_matrix().inverse();
+
         super::ensure_material(
             &mut commands,
             entity,
@@ -435,10 +466,13 @@ pub fn draw_volumes(
             material3d,
             VolumeMaterial {
                 uniform: VolumeUniform {
-                    bounds_min: grid.origin.extend(style.steps),
-                    bounds_size: size.extend(style.opacity),
-                    options: Vec4::new(style.mode.index(), colour_map_index(colour.map), 0.0, 0.0),
-                    dims: grid.dims.as_vec3().extend(0.0),
+                    uvw_from_world,
+                    options: Vec4::new(
+                        style.steps,
+                        style.opacity,
+                        style.mode.index(),
+                        colour_map_index(colour.map),
+                    ),
                 },
                 field: image,
             },

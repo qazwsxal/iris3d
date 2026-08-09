@@ -1,47 +1,30 @@
 // Ray-marched volume rendering.
 //
-// The mesh is the grid's bounding box, wound *inside out*. With ordinary back
-// face culling that means the fragment we get is the point where the ray
-// leaves the box, and it works unchanged when the camera is inside the box —
-// which is the case an outward-wound box gets wrong. It also saves specialising
-// the pipeline to flip the cull mode.
+// Follows what `bevy_pbr`'s volumetric fog does, having got there the hard way.
+// Two things matter and both were wrong before:
 //
-// Everything below happens in the object's local space. The camera arrives in
-// world space, so it is brought back through the inverse of the model matrix;
-// that keeps the volume correct under rotation and scale without the CPU
-// resending anything when the object moves.
+// The transform into the volume comes from the CPU as `uvw_from_world`. An
+// earlier version inverted the model matrix here in the fragment shader, which
+// meant depending on the mesh instance index surviving into the fragment stage
+// to look the matrix up at all. Bevy's own volume shader never does this.
+//
+// Marching happens in texture space, where the volume is the unit cube. That
+// makes the ray-box test a slab test against 0..1 and makes the sample position
+// its own texture coordinate, so there is no second mapping to get wrong.
 
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_world}
 #import bevy_pbr::mesh_view_bindings::view
 
 struct VolumeUniform {
-    // xyz: low corner of the grid in local space. w: number of steps.
-    bounds_min: vec4<f32>,
-    // xyz: size of the grid in local space. w: opacity scale.
-    bounds_size: vec4<f32>,
-    // x: mode, 0 maximum, 1 mean, 2 blend. y: colour map.
+    // World space into the unit cube the field is stored in.
+    uvw_from_world: mat4x4<f32>,
+    // x: steps. y: opacity. z: mode, 0 maximum, 1 mean, 2 blend. w: colour map.
     options: vec4<f32>,
-    // xyz: sample counts along each axis.
-    dims: vec4<f32>,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> volume: VolumeUniform;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var field_texture: texture_3d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var field_sampler: sampler;
-
-// Fetched by integer coordinate rather than sampled.
-//
-// `textureSampleLevel` is legal in non-uniform control flow, but the marching
-// loop reaches it after a conditional break and the result was undefined in
-// practice — whole fragments came back as noise. `textureLoad` has no such
-// rule, and the cost is nearest-neighbour sampling instead of linear, which a
-// first pass can live with.
-fn field_at(texel: vec3<f32>) -> f32 {
-    let dims = volume.dims.xyz;
-    let clamped = clamp(texel, vec3<f32>(0.0), vec3<f32>(1.0));
-    let coordinate = min(vec3<i32>(clamped * dims), vec3<i32>(dims - 1.0));
-    return textureLoad(field_texture, coordinate, 0).r;
-}
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -50,47 +33,30 @@ struct Vertex {
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) local_position: vec3<f32>,
-    @location(1) @interpolate(flat) instance_index: u32,
+    @location(0) world_position: vec3<f32>,
 };
 
 @vertex
 fn vertex(vertex: Vertex) -> VertexOutput {
-    let world_from_local = get_world_from_local(vertex.instance_index);
     let world_position = mesh_position_local_to_world(
-        world_from_local,
+        get_world_from_local(vertex.instance_index),
         vec4<f32>(vertex.position, 1.0),
     );
 
     var out: VertexOutput;
     out.clip_position = view.clip_from_world * world_position;
-    out.local_position = vertex.position;
-    out.instance_index = vertex.instance_index;
+    out.world_position = world_position.xyz;
     return out;
 }
 
-// Inverse of a 3x3, by the adjugate over the determinant. The model matrix is
-// affine, so inverting its rotation-and-scale part and the translation
-// separately is enough — and avoids a full 4x4 inverse.
-fn inverse3(m: mat3x3<f32>) -> mat3x3<f32> {
-    let a = m[0];
-    let b = m[1];
-    let c = m[2];
-    let r0 = cross(b, c);
-    let r1 = cross(c, a);
-    let r2 = cross(a, b);
-    let det = dot(a, r0);
-    return transpose(mat3x3<f32>(r0 / det, r1 / det, r2 / det));
-}
-
-// Where a ray enters and leaves an axis-aligned box. Returns (near, far), and
-// near is above far when the ray misses.
-fn slab(origin: vec3<f32>, direction: vec3<f32>, low: vec3<f32>, high: vec3<f32>) -> vec2<f32> {
-    // A zero component gives an infinity here, which is the answer we want: the
-    // ray is parallel to that pair of planes and never crosses them.
+// Where a ray enters and leaves the unit cube. `near` above `far` means it
+// misses.
+fn slab(origin: vec3<f32>, direction: vec3<f32>) -> vec2<f32> {
+    // A zero component gives an infinity, which is the answer we want: the ray
+    // runs parallel to that pair of planes and never crosses them.
     let inverse_direction = 1.0 / direction;
-    let first = (low - origin) * inverse_direction;
-    let second = (high - origin) * inverse_direction;
+    let first = -origin * inverse_direction;
+    let second = (vec3<f32>(1.0) - origin) * inverse_direction;
     let smaller = min(first, second);
     let larger = max(first, second);
     return vec2<f32>(
@@ -145,35 +111,30 @@ fn colour_map(map: u32, t: f32) -> vec3<f32> {
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let world_from_local = get_world_from_local(in.instance_index);
-    let rotation = mat3x3<f32>(
-        world_from_local[0].xyz,
-        world_from_local[1].xyz,
-        world_from_local[2].xyz,
-    );
-    let local_from_world = inverse3(rotation);
-    let camera = local_from_world * (view.world_position - world_from_local[3].xyz);
+    let uvw_from_world = volume.uvw_from_world;
+    let origin = (uvw_from_world * vec4<f32>(view.world_position, 1.0)).xyz;
+    // Only the rotation and scale act on a direction, so the translation column
+    // is dropped rather than applied.
+    let towards = mat3x3<f32>(
+        uvw_from_world[0].xyz,
+        uvw_from_world[1].xyz,
+        uvw_from_world[2].xyz,
+    ) * (in.world_position - view.world_position);
+    let direction = normalize(towards);
 
-    let low = volume.bounds_min.xyz;
-    let size = volume.bounds_size.xyz;
-    let high = low + size;
-
-    let exit = in.local_position;
-    let direction = normalize(exit - camera);
-    let span = slab(camera, direction, low, high);
-
-    // Start at the camera when it sits inside the box, not behind it.
+    let span = slab(origin, direction);
+    // Start at the camera when it sits inside the cube, not behind it.
     let start = max(span.x, 0.0);
-    let stop = min(span.y, length(exit - camera));
+    let stop = span.y;
     if stop <= start {
         discard;
     }
 
-    let steps = max(i32(volume.bounds_min.w), 1);
+    let steps = max(i32(volume.options.x), 1);
     let step_length = (stop - start) / f32(steps);
-    let mode = u32(volume.options.x);
-    let map = u32(volume.options.y);
-    let opacity = volume.bounds_size.w;
+    let opacity = volume.options.y;
+    let mode = u32(volume.options.z);
+    let map = u32(volume.options.w);
 
     var peak = 0.0;
     var total = 0.0;
@@ -185,8 +146,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // it keeps the blend rule's early exit out of the other two paths.
     if mode == 2u {
         for (var i = 0; i < steps; i = i + 1) {
-            let distance = start + (f32(i) + 0.5) * step_length;
-            let value = field_at((camera + direction * distance - low) / size);
+            let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
+            let value = textureSampleLevel(field_texture, field_sampler, texel, 0.0).r;
             // Front-to-back compositing. Scaling by the step length keeps the
             // result the same when the step count changes, which it must: the
             // step count is a quality control, not a brightness control.
@@ -198,31 +159,28 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 break;
             }
         }
-    } else if mode == 1u {
-        for (var i = 0; i < steps; i = i + 1) {
-            let distance = start + (f32(i) + 0.5) * step_length;
-            total = total + field_at((camera + direction * distance - low) / size);
-        }
-    } else {
-        for (var i = 0; i < steps; i = i + 1) {
-            // Sample at the middle of each step rather than its edge, so the
-            // first and last samples sit inside the volume.
-            let distance = start + (f32(i) + 0.5) * step_length;
-            peak = max(peak, field_at((camera + direction * distance - low) / size));
-        }
-    }
-
-    if mode == 2u {
         if alpha <= 0.0 {
             discard;
         }
         return vec4<f32>(accumulated, alpha);
     }
 
-    var value = peak;
     if mode == 1u {
-        value = total / f32(steps);
+        for (var i = 0; i < steps; i = i + 1) {
+            let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
+            total = total + textureSampleLevel(field_texture, field_sampler, texel, 0.0).r;
+        }
+        total = total / f32(steps);
+    } else {
+        for (var i = 0; i < steps; i = i + 1) {
+            // Sample at the middle of each step rather than its edge, so the
+            // first and last samples sit inside the volume.
+            let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
+            peak = max(peak, textureSampleLevel(field_texture, field_sampler, texel, 0.0).r);
+        }
     }
+
+    let value = select(peak, total, mode == 1u);
     // Opacity follows the value, so empty space stays out of the way and what
     // is behind the volume still shows through.
     let shown = clamp(value * opacity, 0.0, 1.0);
