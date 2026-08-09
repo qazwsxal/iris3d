@@ -72,9 +72,15 @@ def hydrogen(client, root, cursor, gap=3.0):
     client.set_transform(handle, translation=(cursor + width / 2.0, 0.0, 0.0))
 
     # The upload already made a volume, because `volume` is the kind registered
-    # for grids. Point it at the probability, which is the square of the
-    # amplitude and so has no sign to lose, and turn the opacity well up: most
-    # of the box is nearly empty, and at 1.0 the lobes barely register.
+    # for grids. Two separate choices here, which is the whole point of the
+    # controls: `density` says what makes the volume solid, and the colouring
+    # says what tints it. Opacity is turned well up because most of the box is
+    # nearly empty, and at 1.0 the lobes barely register.
+    #
+    # Density is the probability, the square of the amplitude, so it has no
+    # sign to lose. Colour is the signed amplitude on a diverging map, which is
+    # what shows the lobes and the ring as opposite phases rather than as one
+    # undifferentiated cloud. Set both to "probability" to see the difference.
     #
     # This grid spans 24 units against the torus's 8, so it dominates the
     # default framing. Orbit round it rather than judging it from where the
@@ -82,8 +88,8 @@ def hydrogen(client, root, cursor, gap=3.0):
     drawn = client.list_representations(handle)[0]
     client.set_representation(
         drawn.handle,
-        {"field": "probability", "mode": "blend", "opacity": 12.0, "steps": 256.0},
-        coloring=iris3d.Coloring(field="probability", map="viridis"),
+        {"density": "probability", "mode": "blend", "opacity": 12.0, "steps": 256.0},
+        coloring=iris3d.Coloring(field="amplitude", map="cool-warm"),
     )
     return handle
 

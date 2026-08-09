@@ -136,8 +136,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let mode = u32(volume.options.z);
     let map = u32(volume.options.w);
 
-    var peak = 0.0;
-    var total = 0.0;
+    // Red is the density, which decides opacity. Green is what the colour map
+    // reads. They hold the same field unless the representation is coloured by
+    // a different one.
+    var peak = vec2<f32>(0.0);
+    var total = vec2<f32>(0.0);
     var accumulated = vec3<f32>(0.0);
     var alpha = 0.0;
 
@@ -147,12 +150,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if mode == 2u {
         for (var i = 0; i < steps; i = i + 1) {
             let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
-            let value = textureSampleLevel(field_texture, field_sampler, texel, 0.0).r;
+            let sample = textureSampleLevel(field_texture, field_sampler, texel, 0.0).rg;
             // Front-to-back compositing. Scaling by the step length keeps the
             // result the same when the step count changes, which it must: the
             // step count is a quality control, not a brightness control.
-            let sample_alpha = clamp(value * opacity * step_length, 0.0, 1.0);
-            accumulated = accumulated + (1.0 - alpha) * colour_map(map, value) * sample_alpha;
+            let sample_alpha = clamp(sample.r * opacity * step_length, 0.0, 1.0);
+            accumulated = accumulated + (1.0 - alpha) * colour_map(map, sample.g) * sample_alpha;
             alpha = alpha + (1.0 - alpha) * sample_alpha;
             // Nothing behind an opaque pixel can change it.
             if alpha > 0.995 {
@@ -168,24 +171,29 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if mode == 1u {
         for (var i = 0; i < steps; i = i + 1) {
             let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
-            total = total + textureSampleLevel(field_texture, field_sampler, texel, 0.0).r;
+            total = total + textureSampleLevel(field_texture, field_sampler, texel, 0.0).rg;
         }
-        total = total / f32(steps);
+        peak = total / f32(steps);
     } else {
         for (var i = 0; i < steps; i = i + 1) {
             // Sample at the middle of each step rather than its edge, so the
             // first and last samples sit inside the volume.
             let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
-            peak = max(peak, textureSampleLevel(field_texture, field_sampler, texel, 0.0).r);
+            let sample = textureSampleLevel(field_texture, field_sampler, texel, 0.0).rg;
+            // The colour is taken from wherever the density peaked, not from
+            // its own maximum: the two must describe the same place, or a lobe
+            // reports the colour of somewhere it does not overlap. Written
+            // without a branch so nothing is conditional around a texture read.
+            let took = step(peak.r, sample.r);
+            peak = vec2<f32>(max(peak.r, sample.r), mix(peak.g, sample.g, took));
         }
     }
 
-    let value = select(peak, total, mode == 1u);
-    // Opacity follows the value, so empty space stays out of the way and what
+    // Opacity follows the density, so empty space stays out of the way and what
     // is behind the volume still shows through.
-    let shown = clamp(value * opacity, 0.0, 1.0);
+    let shown = clamp(peak.r * opacity, 0.0, 1.0);
     if shown <= 0.0 {
         discard;
     }
-    return vec4<f32>(colour_map(map, value), shown);
+    return vec4<f32>(colour_map(map, peak.g), shown);
 }

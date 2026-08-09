@@ -7,58 +7,21 @@
 //! writes a uniform and rebuilds nothing at all.
 //!
 //! Three accumulation rules share one ray setup. Maximum and mean ignore the
-//! order of the samples, so they need no compositing and no transfer function,
-//! which makes them the cheapest correct picture available. Blend does proper
-//! front-to-back compositing and takes its colour from the representation's
-//! existing [`ColorBy`] map rather than from a transfer-function editor that
-//! does not exist.
+//! order of the samples, so they need no compositing at all, which makes them
+//! the cheapest correct picture available. Blend does proper front-to-back
+//! compositing.
+//!
+//! Density and colour are separate choices. The density decides how solid the
+//! volume is; [`ColorBy`](crate::scene::ColorBy) decides what tints it, and may
+//! name a different field — density from one quantity and colour from another
+//! is the usual pairing in scientific volume rendering. Both live in one
+//! two-channel texture, so a step still costs one sample.
 //!
 //! What is missing, and is missing on purpose: empty-space skipping, gradient
 //! lighting, and pre-integration. All three are real speedups. None belongs in
-//! a first pass.
-//!
-//! # This does not render correctly yet
-//!
-//! The image comes out as per-pixel noise instead of a solid volume. What has
-//! been ruled out, each by putting an early `return` in the shader and looking
-//! at the result:
-//!
-//! - The box is the right size, in the right place, and rasterises solidly.
-//! - The ray-box intersection succeeds for every fragment.
-//! - The texture coordinates are right: returning them directly draws the
-//!   expected smooth colour cube, dark in the middle and saturated at the
-//!   silhouette.
-//! - The field itself is right: an x ramp renders purple at low x and yellow at
-//!   high x, so the upload, the reordering and the colour maps all work.
-//!
-//! The noise appears only once the shader reads the texture, and it is there
-//! even when the reading loop's result is thrown away and the shader returns a
-//! constant with no `discard` on the path. Fragments are therefore producing no
-//! output at all, rather than producing a wrong value.
-//!
-//! Ruled out since:
-//!
-//! - `textureLoad` in place of `textureSampleLevel`, so no sampler and no rule
-//!   about texture access under non-uniform control flow.
-//! - The mode branch hoisted out of the loop, so the maximum path has no
-//!   conditional `break` before a texture read.
-//! - `AlphaMode::Opaque` in place of `Blend`. Identical noise, so the
-//!   transparent pass, the blend state and the depth test are all innocent.
-//! - A row stride mismatch on upload. The same ramp at 256 samples wide, whose
-//!   `R8Unorm` row is the 256 bytes a copy wants, and at 32 wide, whose row is
-//!   not, gives the same noise at the same density. A scattered upload would
-//!   differ between the two, so the texture layout is sound.
-//!
-//! What remains is that the values which *do* arrive are correct — the ramp is
-//! purple at low x and yellow at high x — while neighbouring invocations
-//! produce nothing. Correct-or-absent, per invocation, is not a shape shader
-//! logic usually takes. Suspect the pipeline rather than the maths:
-//!
-//! 1. Run under a different backend, `WGPU_BACKEND=dx12` against `vulkan`. No
-//!    rebuild, and it separates a driver problem from ours.
-//! 2. Turn MSAA off.
-//! 3. Watch for validation output with
-//!    `RUST_LOG=wgpu_core=warn,wgpu_hal=warn`.
+//! a first pass. Nor is there a transfer function worth the name — colour is a
+//! fixed ramp and opacity is the density times a scale, rather than two curves
+//! you can bend.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
@@ -113,8 +76,14 @@ impl VolumeMode {
 
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct VolumeStyle {
-    /// Which field to draw. Empty means the first scalar, as `ColorBy` does.
-    pub field: String,
+    /// The field that makes the volume solid. Empty means the first scalar, as
+    /// `ColorBy` does.
+    ///
+    /// Named for what it does rather than for what it is. Colour comes from
+    /// `ColorBy::field`, which may name a different field entirely — density
+    /// from one quantity and colour from another is the usual pairing in
+    /// scientific volume rendering.
+    pub density: String,
     pub mode: VolumeMode,
     /// Samples per ray. A quality control, not a brightness control — the
     /// shader scales opacity by the step length so the picture holds still.
@@ -126,8 +95,8 @@ const MODES: &[&str] = &["maximum", "mean", "blend"];
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
-        id: "field",
-        label: "field",
+        id: "density",
+        label: "density",
         kind: ParamKind::Field,
     },
     ParamSpec {
@@ -168,7 +137,7 @@ pub fn register(registry: &mut RepresentationRegistry) {
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(VolumeStyle {
-                field: text(params, "field", "").to_string(),
+                density: text(params, "density", "").to_string(),
                 mode: VolumeMode::from_str(text(params, "mode", "maximum")),
                 steps: float(params, "steps", 128.0),
                 opacity: float(params, "opacity", 1.0),
@@ -220,7 +189,9 @@ impl Material for VolumeMaterial {
 /// Only a change of field does.
 #[derive(Component, Debug)]
 pub struct VolumeTexture {
-    field: String,
+    density: String,
+    /// `None` when colour comes from the density.
+    colour: Option<String>,
     image: Handle<Image>,
 }
 
@@ -293,40 +264,71 @@ fn box_mesh(low: Vec3, high: Vec3) -> Mesh {
     mesh
 }
 
-/// Packs a field into an 8-bit single-channel 3D texture.
-///
-/// Eight bits rather than the float the client sent, for two reasons. Filtering
-/// 32-bit float textures needs a wgpu feature that is not present everywhere,
-/// and a 256³ volume is 16 MiB this way against 67 MiB as `f32`. The precision
-/// lost is below what the eye resolves through a transfer function.
-///
-/// Returns the image and the range it was normalised against.
-fn field_texture(values: &[f32], grid: &GridData, range: Option<(f32, f32)>) -> Option<Image> {
-    let expected = grid.point_count() as usize;
-    if values.len() < expected {
-        warn!(
-            "draw: a volume's field has {} values for a grid of {expected} samples",
-            values.len()
-        );
-        return None;
-    }
-
-    let (low, high) = range.unwrap_or_else(|| {
-        let mut low = f32::INFINITY;
-        let mut high = f32::NEG_INFINITY;
-        for value in &values[..expected] {
-            if value.is_finite() {
-                low = low.min(*value);
-                high = high.max(*value);
-            }
+/// Lowest and highest finite value.
+fn range_of(values: &[f32]) -> (f32, f32) {
+    let mut low = f32::INFINITY;
+    let mut high = f32::NEG_INFINITY;
+    for value in values {
+        if value.is_finite() {
+            low = low.min(*value);
+            high = high.max(*value);
         }
-        (low, high)
-    });
+    }
+    (low, high)
+}
+
+fn quantise(value: f32, (low, high): (f32, f32)) -> u8 {
     let span = if (high - low).abs() < f32::EPSILON {
         1.0
     } else {
         high - low
     };
+    (((value - low) / span).clamp(0.0, 1.0) * 255.0) as u8
+}
+
+/// Packs the density and the colour field into one two-channel 3D texture.
+///
+/// Two channels rather than two textures, so a step still costs one sample. Red
+/// is the density, which decides opacity; green is whatever the representation
+/// is coloured by. When they are the same field both channels hold it, which
+/// costs a byte per sample and keeps the shader free of a special case.
+///
+/// Eight bits each rather than the float the client sent, for two reasons.
+/// Filtering 32-bit float textures needs a wgpu feature that is not present
+/// everywhere, and a 256³ volume is 33 MiB this way against 134 MiB as two
+/// `f32` channels. The precision lost is below what the eye resolves through a
+/// colour ramp.
+///
+/// The two channels are scaled independently: density always against its own
+/// range, colour against `ColorBy::range` when one is set. That is what a
+/// colour range means everywhere else, and it lets two volumes be compared
+/// against the same scale without changing how solid either one is.
+fn volume_texture(
+    density: &[f32],
+    colour: Option<&[f32]>,
+    grid: &GridData,
+    colour_range: Option<(f32, f32)>,
+) -> Option<Image> {
+    let expected = grid.point_count() as usize;
+    if density.len() < expected {
+        warn!(
+            "draw: a volume's density field has {} values for a grid of {expected} samples",
+            density.len()
+        );
+        return None;
+    }
+    // A colour field that does not cover the grid is dropped rather than
+    // fataled: the volume still has a shape worth seeing.
+    let colour = colour.filter(|values| {
+        let long_enough = values.len() >= expected;
+        if !long_enough {
+            warn!("draw: a volume's colour field is shorter than its grid; colouring by density");
+        }
+        long_enough
+    });
+
+    let density_range = range_of(&density[..expected]);
+    let colour_scale = colour.map(|values| colour_range.unwrap_or_else(|| range_of(&values[..expected])));
 
     // Reorder while normalising. The wire runs z fastest, which is what a numpy
     // array of shape (x, y, z) gives from a plain `.ravel()`. A 3D texture wants
@@ -337,12 +339,18 @@ fn field_texture(values: &[f32], grid: &GridData, range: Option<(f32, f32)>) -> 
         grid.dims.y as usize,
         grid.dims.z as usize,
     );
-    let mut data = Vec::with_capacity(expected);
+    let mut data = Vec::with_capacity(expected * 2);
     for z in 0..nz {
         for y in 0..ny {
             for x in 0..nx {
-                let value = values[(x * ny + y) * nz + z];
-                data.push((((value - low) / span).clamp(0.0, 1.0) * 255.0) as u8);
+                let index = (x * ny + y) * nz + z;
+                let red = quantise(density[index], density_range);
+                data.push(red);
+                data.push(match (colour, colour_scale) {
+                    (Some(values), Some(scale)) => quantise(values[index], scale),
+                    // No separate colour field, so colour by the density.
+                    _ => red,
+                });
             }
         }
     }
@@ -355,7 +363,7 @@ fn field_texture(values: &[f32], grid: &GridData, range: Option<(f32, f32)>) -> 
         },
         TextureDimension::D3,
         data,
-        TextureFormat::R8Unorm,
+        TextureFormat::Rg8Unorm,
         // The CPU copy is dead weight once uploaded; this is rebuilt from the
         // `DataArray` whenever it changes.
         RenderAssetUsages::RENDER_WORLD,
@@ -397,10 +405,10 @@ pub fn draw_volumes(
             continue;
         };
 
+        let Some(fields) = fields else { continue };
         // Named field first, then the first scalar in name order — the same
         // fallback `ColorBy` uses, so "auto" means the same thing everywhere.
-        let Some(fields) = fields else { continue };
-        let name = if style.field.is_empty() {
+        let density_name = if style.density.is_empty() {
             let mut scalars: Vec<&String> = fields
                 .0
                 .iter()
@@ -413,29 +421,57 @@ pub fn draw_volumes(
                 None => continue,
             }
         } else {
-            style.field.clone()
+            style.density.clone()
         };
-        let Some(field) = fields.0.get(&name) else {
-            warn!("draw: a volume names field \"{name}\", which the grid does not have");
+        let Some(density_field) = fields.0.get(&density_name) else {
+            warn!("draw: a volume's density field \"{density_name}\" is not on the grid");
             continue;
         };
 
+        // Colour is a separate choice: density says how solid the volume is,
+        // this says what tints it. Naming the same field, or none at all, means
+        // colouring by the density.
+        let colour_name = colour
+            .field
+            .clone()
+            .filter(|name| *name != density_name)
+            .filter(|name| {
+                let known = fields.0.contains_key(name);
+                if !known {
+                    warn!("draw: a volume's colour field \"{name}\" is not on the grid");
+                }
+                known
+            });
+
         // Re-uploading is the one expensive thing here, so it happens only when
-        // the geometry is stale or the chosen field actually changed.
+        // the geometry is stale or one of the chosen fields actually changed.
         let previous = cached.get(entity).ok();
-        let reusable = previous.filter(|cache| cache.field == name && !dirty.geometry);
+        let reusable = previous.filter(|cache| {
+            cache.density == density_name && cache.colour == colour_name && !dirty.geometry
+        });
         let image = match reusable {
             Some(cache) => cache.image.clone(),
             None => {
-                let Some(array) = arrays.get(&field.array) else {
+                let Some(array) = arrays.get(&density_field.array) else {
                     continue;
                 };
-                let Some(texture) = field_texture(&array.to_f32(), grid, colour.range) else {
+                let tint = colour_name
+                    .as_ref()
+                    .and_then(|name| fields.0.get(name))
+                    .and_then(|field| arrays.get(&field.array))
+                    .map(|array| array.to_f32());
+                let Some(texture) = volume_texture(
+                    &array.to_f32(),
+                    tint.as_deref(),
+                    grid,
+                    colour.range,
+                ) else {
                     continue;
                 };
                 let handle = images.add(texture);
                 commands.entity(entity).insert(VolumeTexture {
-                    field: name.clone(),
+                    density: density_name.clone(),
+                    colour: colour_name.clone(),
                     image: handle.clone(),
                 });
                 handle
@@ -479,7 +515,8 @@ pub fn draw_volumes(
         );
 
         debug!(
-            "draw: volume over \"{name}\", {:?} of {} samples",
+            "draw: volume, density \"{density_name}\" coloured by \"{}\", {:?} of {} samples",
+            colour_name.as_deref().unwrap_or(&density_name),
             style.mode,
             grid.point_count()
         );
@@ -506,17 +543,55 @@ mod tests {
     }
 
     #[test]
-    fn a_field_becomes_an_eight_bit_texture() {
+    fn a_field_becomes_a_two_channel_texture() {
         let values: Vec<f32> = (0..8).map(|v| v as f32).collect();
-        let image = field_texture(&values, &grid([2, 2, 2]), None).expect("built");
-        assert_eq!(image.texture_descriptor.format, TextureFormat::R8Unorm);
+        let image = volume_texture(&values, None, &grid([2, 2, 2]), None).expect("built");
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rg8Unorm);
         assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 2);
 
-        // The range is normalised across the data, so the ends are the extremes.
+        // Two bytes per sample, and the range is normalised across the data, so
+        // the ends are the extremes.
         let data = image.data.expect("kept the pixels");
-        assert_eq!(data.len(), 8);
+        assert_eq!(data.len(), 16);
         assert_eq!(data[0], 0);
-        assert_eq!(data[7], 255);
+        assert_eq!(data[14], 255);
+    }
+
+    /// Without a colour field, green repeats red — so the shader needs no
+    /// special case for the common arrangement.
+    #[test]
+    fn colour_repeats_the_density_when_no_field_is_given() {
+        let values: Vec<f32> = (0..8).map(|v| v as f32).collect();
+        let image = volume_texture(&values, None, &grid([2, 2, 2]), None).expect("built");
+        let data = image.data.expect("kept the pixels");
+        for pair in data.chunks_exact(2) {
+            assert_eq!(pair[0], pair[1]);
+        }
+    }
+
+    /// Density and colour scale independently: an explicit colour range must not
+    /// change how solid the volume is.
+    #[test]
+    fn the_two_channels_scale_independently() {
+        let density: Vec<f32> = (0..8).map(|v| v as f32).collect();
+        // Runs the other way, so a channel mix-up is visible rather than subtle.
+        let tint: Vec<f32> = (0..8).map(|v| 7.0 - v as f32).collect();
+
+        let image = volume_texture(&density, Some(&tint), &grid([2, 2, 2]), None).expect("built");
+        let data = image.data.expect("kept the pixels");
+        assert_eq!((data[0], data[1]), (0, 255), "lowest density, highest tint");
+        assert_eq!((data[14], data[15]), (255, 0), "highest density, lowest tint");
+    }
+
+    /// A colour field that does not cover the grid is dropped rather than
+    /// fataled: the volume still has a shape worth seeing.
+    #[test]
+    fn a_short_colour_field_falls_back_to_the_density() {
+        let density: Vec<f32> = (0..8).map(|v| v as f32).collect();
+        let image = volume_texture(&density, Some(&[0.0, 1.0]), &grid([2, 2, 2]), None)
+            .expect("built anyway");
+        let data = image.data.expect("kept the pixels");
+        assert_eq!(data[0], data[1]);
     }
 
     /// The wire runs z fastest and a 3D texture runs x fastest. A field that
@@ -535,30 +610,36 @@ mod tests {
             }
         }
 
-        let image = field_texture(&values, &grid([2, 2, 2]), None).expect("built");
+        let image = volume_texture(&values, None, &grid([2, 2, 2]), None).expect("built");
         let data = image.data.expect("kept the pixels");
-        // Texture order is x fastest, so neighbouring pairs must differ.
+        // Texture order is x fastest, and two bytes to a sample, so the density
+        // channel of neighbouring samples sits two apart.
         assert_eq!(data[0], 0, "x = 0");
-        assert_eq!(data[1], 255, "x = 1");
-        assert_eq!(data[2], 0, "x = 0 of the next row");
-        assert_eq!(data[3], 255, "x = 1 of the next row");
+        assert_eq!(data[2], 255, "x = 1");
+        assert_eq!(data[4], 0, "x = 0 of the next row");
+        assert_eq!(data[6], 255, "x = 1 of the next row");
     }
 
     /// An explicit colour range wins over the data's own, so two volumes can be
-    /// compared against the same scale.
+    /// compared against the same scale. It governs colour only — the density
+    /// always scales against itself, or changing the scale would change how
+    /// solid the volume looks.
     #[test]
-    fn an_explicit_range_overrides_the_data() {
+    fn an_explicit_range_governs_colour_only() {
         let values: Vec<f32> = (0..8).map(|v| v as f32).collect();
-        let image = field_texture(&values, &grid([2, 2, 2]), Some((0.0, 14.0))).expect("built");
+        let image = volume_texture(&values, Some(&values), &grid([2, 2, 2]), Some((0.0, 14.0)))
+            .expect("built");
         let data = image.data.expect("kept the pixels");
-        // 7 of 14 is half way, not the top.
-        assert!((120..=136).contains(&data[7]), "got {}", data[7]);
+        // Density: 7 of 7 is the top.
+        assert_eq!(data[14], 255);
+        // Colour: 7 of 14 is half way.
+        assert!((120..=136).contains(&data[15]), "got {}", data[15]);
     }
 
-    /// A field that does not cover the grid is refused rather than sampled off
-    /// the end of its own array.
+    /// A density field that does not cover the grid is refused rather than
+    /// sampled off the end of its own array.
     #[test]
-    fn a_short_field_is_refused() {
-        assert!(field_texture(&[0.0, 1.0], &grid([4, 4, 4]), None).is_none());
+    fn a_short_density_field_is_refused() {
+        assert!(volume_texture(&[0.0, 1.0], None, &grid([4, 4, 4]), None).is_none());
     }
 }
