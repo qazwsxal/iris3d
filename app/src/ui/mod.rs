@@ -14,16 +14,15 @@ use bevy_egui::egui::{LayerId, Ui, UiBuilder};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui};
 
 use crate::counter::UniqueID;
+use crate::scene::actor::ColorMap;
 use crate::scene::data::{FieldKind, Fields};
-use crate::scene::representation::ColorMap;
-use crate::scene::link::spawn_representation;
+use crate::scene::link::spawn_actor;
 use crate::scene::registry::{
-    flag, float, text, ParamKind, ParamMap, ParamSpec, ParamValue, RepresentationKindId,
-    RepresentationParams, RepresentationRegistry,
+    ActorKindId, ActorParams, ActorRegistry, ParamKind, ParamMap, ParamSpec, ParamValue, flag,
+    float, text,
 };
 use crate::scene::{
-    ColorBy, DataArray, DatasetKind, RepresentationOf, Representations, SceneCommand, SceneObject,
-    Subset,
+    ActorOf, Actors, ColorBy, DataArray, DatasetKind, SceneCommand, SceneObject, Subset,
 };
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
@@ -104,11 +103,11 @@ enum UiAction {
     Delete(u64),
     Frame(Entity),
     FrameAll,
-    /// Draw an object an additional way. The object keeps the representations
-    /// it already has — this adds, it does not replace.
-    AddRepresentation(Entity, &'static str),
-    RemoveRepresentation(Entity),
-    /// Change one parameter of a representation, leaving the rest alone.
+    /// Draw an object an additional way. The object keeps the actors it
+    /// already has — this adds, it does not replace.
+    AddActor(Entity, &'static str),
+    RemoveActor(Entity),
+    /// Change one parameter of an actor, leaving the rest alone.
     SetParam(Entity, &'static str, ParamValue),
     /// `None` paints flat; otherwise names a field in the source's `Fields`.
     SetColourField(Entity, Option<String>),
@@ -130,7 +129,7 @@ struct Row {
     bytes: u64,
     /// Field name and how many components it has, for the colour-by picker.
     fields: Vec<FieldRow>,
-    representations: Vec<RepresentationRow>,
+    actors: Vec<ActorRow>,
     /// Kinds that could be added to this object, as `(id, label)`. Resolved
     /// while gathering so the drawing closures never borrow the registry.
     available: Vec<(&'static str, &'static str)>,
@@ -142,7 +141,7 @@ struct FieldRow {
     kind: &'static str,
 }
 
-struct RepresentationRow {
+struct ActorRow {
     entity: Entity,
     label: &'static str,
     /// The controls to show, taken straight from the backend's declaration —
@@ -166,16 +165,11 @@ fn draw_ui(
         &Visibility,
         Option<&Fields>,
         Option<&Children>,
-        Option<&Representations>,
+        Option<&Actors>,
         Option<&ChildOf>,
     )>,
-    representations: Query<(
-        &RepresentationKindId,
-        &RepresentationParams,
-        &ColorBy,
-        &Subset,
-    )>,
-    registry: Res<RepresentationRegistry>,
+    actors: Query<(&ActorKindId, &ActorParams, &ColorBy, &Subset)>,
+    registry: Res<ActorRegistry>,
     arrays: Res<Assets<DataArray>>,
     mut captured: ResMut<PointerCaptured>,
     mut overlays: ResMut<crate::viewport::OverlaySettings>,
@@ -207,25 +201,24 @@ fn draw_ui(
     let mut owners: HashMap<AssetId<DataArray>, (u64, String)> = HashMap::new();
 
     for (entity, id, object, kind, visibility, fields, children, drawn_by, parent) in &objects {
-        // Nested objects come from the transform hierarchy; representations
-        // come from the source link. A representation may well be a child of
-        // some other object, so these two lists are no longer one list split in
-        // half.
+        // Nested objects come from the transform hierarchy; actors come from
+        // the source link. An actor may well be a child of some other object,
+        // so these two lists are no longer one list split in half.
         let child_objects: Vec<Entity> = children
             .into_iter()
             .flatten()
             .copied()
             .filter(|child| objects.contains(*child))
             .collect();
-        let drawn: Vec<RepresentationRow> = drawn_by
+        let drawn: Vec<ActorRow> = drawn_by
             .into_iter()
             .flat_map(|list| list.iter())
             .filter_map(|entity| {
-                let (id, params, colour, subset) = representations.get(entity).ok()?;
+                let (id, params, colour, subset) = actors.get(entity).ok()?;
                 // A kind with no registration cannot be drawn or configured, so
                 // there is nothing useful to show for it.
                 let registered = registry.get(id.0)?;
-                Some(RepresentationRow {
+                Some(ActorRow {
                     entity,
                     label: registered.label,
                     specs: registered.params,
@@ -243,11 +236,11 @@ fn draw_ui(
         for array in &object.arrays {
             owners.insert(array.handle.id(), (id.0, array.meta.name.clone()));
         }
-        // A representation's selection is an array too, and it is held by the
-        // representation rather than the object. Without this the inventory
-        // calls it unreferenced, which is exactly backwards.
-        for representation in &drawn {
-            if let Subset::Selected { array, .. } = &representation.subset {
+        // An actor's selection is an array too, and it is held by the actor
+        // rather than the object. Without this the inventory calls it
+        // unreferenced, which is exactly backwards.
+        for actor in &drawn {
+            if let Subset::Selected { array, .. } = &actor.subset {
                 owners.insert(array.id(), (id.0, "subset".into()));
             }
         }
@@ -287,7 +280,7 @@ fn draw_ui(
                 arrays: object.arrays.len(),
                 bytes: object.total_bytes(),
                 fields: field_names,
-                representations: drawn,
+                actors: drawn,
                 available,
                 children: child_objects,
             },
@@ -306,39 +299,39 @@ fn draw_ui(
 
     edges.y = egui::Panel::top("menu")
         .show(&mut root, |ui| {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("View", |ui| {
-                ui.checkbox(&mut state.show_scene, "Scene tree");
-                ui.checkbox(&mut state.show_arrays, "Arrays");
-                ui.separator();
-                ui.checkbox(&mut overlays.grid, "Ground grid");
-                ui.checkbox(&mut overlays.world_axes, "World axes");
-                ui.checkbox(&mut overlays.selection, "Selection outline");
-                ui.checkbox(&mut overlays.all_bounds, "All bounds");
-            });
-            ui.menu_button("Camera", |ui| {
-                if ui.button("Frame all").clicked() {
-                    actions.0.push(UiAction::FrameAll);
-                    ui.close();
-                }
-            });
-            ui.menu_button("Scene", |ui| {
-                if ui.button("Delete all objects").clicked() {
-                    for entity in &roots {
-                        if let Some(row) = rows.get(entity) {
-                            actions.0.push(UiAction::Delete(row.id));
-                        }
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("View", |ui| {
+                    ui.checkbox(&mut state.show_scene, "Scene tree");
+                    ui.checkbox(&mut state.show_arrays, "Arrays");
+                    ui.separator();
+                    ui.checkbox(&mut overlays.grid, "Ground grid");
+                    ui.checkbox(&mut overlays.world_axes, "World axes");
+                    ui.checkbox(&mut overlays.selection, "Selection outline");
+                    ui.checkbox(&mut overlays.all_bounds, "All bounds");
+                });
+                ui.menu_button("Camera", |ui| {
+                    if ui.button("Frame all").clicked() {
+                        actions.0.push(UiAction::FrameAll);
+                        ui.close();
                     }
-                    ui.close();
-                }
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!(
-                    "{object_count} objects · {} arrays · {}",
-                    arrays.len(),
-                    human_bytes(total_bytes)
-                ));
-            });
+                });
+                ui.menu_button("Scene", |ui| {
+                    if ui.button("Delete all objects").clicked() {
+                        for entity in &roots {
+                            if let Some(row) = rows.get(entity) {
+                                actions.0.push(UiAction::Delete(row.id));
+                            }
+                        }
+                        ui.close();
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format!(
+                        "{object_count} objects · {} arrays · {}",
+                        arrays.len(),
+                        human_bytes(total_bytes)
+                    ));
+                });
             });
         })
         .response
@@ -392,7 +385,10 @@ fn draw_ui(
 
                             let mut listing: Vec<_> = arrays.iter().collect();
                             listing.sort_by_key(|(id, _)| {
-                                owners.get(id).map(|(handle, _)| *handle).unwrap_or(u64::MAX)
+                                owners
+                                    .get(id)
+                                    .map(|(handle, _)| *handle)
+                                    .unwrap_or(u64::MAX)
                             });
 
                             for (id, array) in listing {
@@ -464,13 +460,17 @@ fn object_node(
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(row.kind.as_str()).weak());
             ui.separator();
-            ui.label(format!("{} arrays · {}", row.arrays, human_bytes(row.bytes)));
+            ui.label(format!(
+                "{} arrays · {}",
+                row.arrays,
+                human_bytes(row.bytes)
+            ));
         });
 
-        for representation in &row.representations {
-            representation_controls(ui, row, representation, actions);
+        for actor in &row.actors {
+            actor_controls(ui, row, actor, actions);
         }
-        if row.representations.is_empty() && row.kind != DatasetKind::Empty {
+        if row.actors.is_empty() && row.kind != DatasetKind::Empty {
             ui.label(egui::RichText::new("not drawn").weak());
         }
 
@@ -479,13 +479,11 @@ fn object_node(
         if !row.available.is_empty() {
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt((entity, "add"))
-                    .selected_text("add representation")
+                    .selected_text("add actor")
                     .show_ui(ui, |ui| {
                         for (id, label) in &row.available {
                             if ui.selectable_label(false, *label).clicked() {
-                                actions
-                                    .0
-                                    .push(UiAction::AddRepresentation(row.entity, id));
+                                actions.0.push(UiAction::AddActor(row.entity, id));
                             }
                         }
                     });
@@ -519,19 +517,14 @@ fn object_node(
     });
 }
 
-/// One representation: what it is, its parameters, and its colouring.
+/// One actor: what it is, its parameters, and its colouring.
 ///
 /// The controls are generated from the backend's own [`ParamSpec`]
-/// declarations, so adding a representation kind — or a parameter to an
-/// existing one — needs no edit here. A slider's range is the declared range,
-/// which is also the range values are clamped to on the way in, so the UI
-/// cannot ask for something a client could not.
-fn representation_controls(
-    ui: &mut egui::Ui,
-    row: &Row,
-    current: &RepresentationRow,
-    actions: &mut PendingActions,
-) {
+/// declarations, so adding an actor kind — or a parameter to an existing one —
+/// needs no edit here. A slider's range is the declared range, which is also
+/// the range values are clamped to on the way in, so the UI cannot ask for
+/// something a client could not.
+fn actor_controls(ui: &mut egui::Ui, row: &Row, current: &ActorRow, actions: &mut PendingActions) {
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(current.label).strong());
@@ -542,9 +535,7 @@ fn representation_controls(
                 ui.label(egui::RichText::new("subset").weak());
             }
             if ui.small_button("remove").clicked() {
-                actions
-                    .0
-                    .push(UiAction::RemoveRepresentation(current.entity));
+                actions.0.push(UiAction::RemoveActor(current.entity));
             }
         });
 
@@ -581,8 +572,8 @@ fn representation_controls(
                         egui::ComboBox::from_id_salt((current.entity, spec.id))
                             .selected_text(if chosen.is_empty() { "auto" } else { chosen })
                             .show_ui(ui, |ui| {
-                                // Empty means "pick one for me", which is what a
-                                // representation starts with.
+                                // Empty means "pick one for me", which is what
+                                // an actor starts with.
                                 if ui.selectable_label(chosen.is_empty(), "auto").clicked() {
                                     actions.0.push(UiAction::SetParam(
                                         current.entity,
@@ -704,11 +695,11 @@ fn apply_actions(
     mut state: ResMut<UiState>,
     mut frame: ResMut<FrameRequest>,
     mut counter: ResMut<crate::counter::GlobalIDCounter>,
-    registry: Res<RepresentationRegistry>,
+    registry: Res<ActorRegistry>,
     mut visibility: Query<&mut Visibility>,
-    mut params: Query<(&RepresentationKindId, &mut RepresentationParams)>,
+    mut params: Query<(&ActorKindId, &mut ActorParams)>,
     mut colours: Query<&mut ColorBy>,
-    sources: Query<&RepresentationOf>,
+    sources: Query<&ActorOf>,
     bridge: Res<crate::grpc::GrpcBridge>,
 ) {
     for action in actions.0.drain(..) {
@@ -742,11 +733,11 @@ fn apply_actions(
             // Drawn in place, which is the only thing the tree can express.
             // Sourcing an object's data under a *different* node is a scripted
             // operation — there is nowhere sensible to click for it.
-            UiAction::AddRepresentation(object, kind) => {
+            UiAction::AddActor(object, kind) => {
                 let Some(registered) = registry.get(kind) else {
                     continue;
                 };
-                spawn_representation(
+                spawn_actor(
                     &mut commands,
                     &mut counter,
                     object,
@@ -755,15 +746,15 @@ fn apply_actions(
                     // here, so the tree only ever adds a whole-dataset one.
                     Subset::All,
                     (
-                        RepresentationKindId(registered.id),
-                        RepresentationParams(registered.defaults()),
+                        ActorKindId(registered.id),
+                        ActorParams(registered.defaults()),
                         ColorBy::default(),
                     ),
                 );
             }
-            UiAction::RemoveRepresentation(entity) => {
-                // Only ever a representation, and representations own nothing,
-                // so there is no subtree to consider.
+            UiAction::RemoveActor(entity) => {
+                // Only ever an actor, and actors own nothing, so there is no
+                // subtree to consider.
                 if sources.contains(entity) {
                     commands.entity(entity).despawn();
                 }

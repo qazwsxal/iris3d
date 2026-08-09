@@ -137,7 +137,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let map = u32(volume.options.w);
 
     // Red is the density, which decides opacity. Green is what the colour map
-    // reads. They hold the same field unless the representation is coloured by
+    // reads. They hold the same field unless the actor is coloured by
     // a different one.
     var peak = vec2<f32>(0.0);
     var total = vec2<f32>(0.0);

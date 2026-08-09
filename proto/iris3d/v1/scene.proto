@@ -8,14 +8,14 @@ package iris3d.v1;
 // Three things are kept apart, and the split is the reason the API looks the
 // way it does.
 //
-// An **object** holds data and a place in a tree. A **representation** is one
-// way of drawing an object, and is a thing in its own right with its own
-// handle: an object may have several at once, each with its own settings, and
-// each says separately whose data it draws and whose transform it follows.
-// Point those at different objects and one dataset appears in two places
-// without being uploaded twice. A **subset** narrows a representation to part
-// of its data, which is what makes several of them worth having — one
-// structure drawn as cartoon over its protein and as sticks over its ligand.
+// An **object** holds data and a place in a tree. An **actor** is one way of
+// drawing an object, and is a thing in its own right with its own handle: an
+// object may have several at once, each with its own settings, and each says
+// separately whose data it draws and whose transform it follows. Point those
+// at different objects and one dataset appears in two places without being
+// uploaded twice. A **subset** narrows an actor to part of its data, which is
+// what makes several of them worth having — one structure drawn as cartoon
+// over its protein and as sticks over its ligand.
 //
 // Data is described in the style of a numpy array — a raw little-endian byte
 // buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -31,9 +31,9 @@ package iris3d.v1;
 // positions are implicit, so nothing about the arrays reveals it and it must
 // be declared.
 //
-// What can be drawn is not fixed by this schema. Representation kinds come
-// from whichever rendering backends the server was built with, so ask
-// ListRepresentationKinds rather than carrying a table that will go stale.
+// What can be drawn is not fixed by this schema. Actor kinds come from
+// whichever rendering backends the server was built with, so ask
+// ListActorKinds rather than carrying a table that will go stale.
 service SceneService {
   // Uploads a single object as a stream of chunks.
   //
@@ -67,24 +67,24 @@ service SceneService {
 
   // Draws an object an additional way.
   //
-  // Adds; it does not replace. An object may carry any number of
-  // representations at once — a protein as cartoon and as licorice, a mesh as
-  // surface and as wireframe — and each is configured independently.
+  // Adds; it does not replace. An object may carry any number of actors at
+  // once — a protein as cartoon and as licorice, a mesh as surface and as
+  // wireframe — and each is configured independently.
   //
   // The data drawn and the placement it is drawn at are separate: `source`
   // says whose arrays to read, `parent` says whose transform to inherit. Give
   // them different objects and one dataset appears in two places without being
   // uploaded twice.
-  rpc AddRepresentation(AddRepresentationRequest) returns (AddRepresentationResponse);
+  rpc AddActor(AddActorRequest) returns (AddActorResponse);
 
-  // Changes an existing representation. Only what is named is altered.
-  rpc SetRepresentation(SetRepresentationRequest) returns (SetRepresentationResponse);
+  // Changes an existing actor. Only what is named is altered.
+  rpc SetActor(SetActorRequest) returns (SetActorResponse);
 
-  // Removes one representation, leaving the object and its data alone.
-  rpc RemoveRepresentation(RemoveRepresentationRequest) returns (RemoveRepresentationResponse);
+  // Removes one actor, leaving the object and its data alone.
+  rpc RemoveActor(RemoveActorRequest) returns (RemoveActorResponse);
 
-  // Lists representations, optionally only those drawing one object.
-  rpc ListRepresentations(ListRepresentationsRequest) returns (ListRepresentationsResponse);
+  // Lists actors, optionally only those drawing one object.
+  rpc ListActors(ListActorsRequest) returns (ListActorsResponse);
 
   // Lists the ways of drawing this build actually supports.
   //
@@ -92,7 +92,7 @@ service SceneService {
   // rather than fixed by the schema, so a client that asks cannot offer a
   // choice that silently does nothing — and needs no hardcoded table of its
   // own.
-  rpc ListRepresentationKinds(ListRepresentationKindsRequest) returns (ListRepresentationKindsResponse);
+  rpc ListActorKinds(ListActorKindsRequest) returns (ListActorKindsResponse);
 }
 
 // Dtype is the element type of a buffer's raw bytes. Encoding is always
@@ -263,26 +263,26 @@ message ObjectInfo {
   // Everything currently drawing this object's data. Empty means nothing is.
   //
   // This field previously carried a list of kind names. It had no handles, so
-  // there was no way to say *which* of an object's representations to change —
-  // and, until AddRepresentation, nothing to change them with.
+  // there was no way to say *which* of an object's actors to change — and,
+  // until AddActor, nothing to change them with.
   //
-  // A representation listed here need not be placed here: it draws this
-  // object's data, but check its `parent` for where it appears.
-  repeated RepresentationInfo representations = 6;
+  // An actor listed here need not be placed here: it draws this object's data,
+  // but check its `parent` for where it appears.
+  repeated ActorInfo actors = 6;
 
   // Parent in the scene tree, absent for a root object.
   optional ObjectHandle parent = 7;
 }
 
-// RepresentationHandle identifies one way of drawing something.
+// ActorHandle identifies one way of drawing something.
 //
 // Drawn from the same sequence as ObjectHandle — no id ever names both — but a
 // distinct type, so the two cannot be passed in each other's place.
-message RepresentationHandle {
+message ActorHandle {
   uint64 id = 1;
 }
 
-// ParamValue is one setting on a representation.
+// ParamValue is one setting on an actor.
 //
 // Which variant is expected for a given parameter is declared by its
 // ParamSpec. A value of the wrong type, or one outside the declared range, is
@@ -328,8 +328,8 @@ message ChoiceParam {
   string default_value = 2;
 }
 
-// ParamSpec declares one setting of a representation kind: what it is called,
-// what type it takes and what values are allowed.
+// ParamSpec declares one setting of an actor kind: what it is called, what
+// type it takes and what values are allowed.
 message ParamSpec {
   // Key used in the `params` maps below.
   string id = 1;
@@ -352,7 +352,7 @@ message Color {
   float b = 3;
 }
 
-// ColorSpec says how a representation takes its colour.
+// ColorSpec says how an actor takes its colour.
 //
 // This is always a *complete* description, unlike the parameter maps: sending
 // one replaces the colouring outright, and anything left unset takes its
@@ -380,11 +380,11 @@ message Range {
   float high = 2;
 }
 
-// Subset restricts a representation to part of its source dataset.
+// Subset restricts an actor to part of its source dataset.
 //
-// This is what several representations of one object are for: chain A as
-// cartoon and the ligand as ball-and-stick is one structure drawn twice over
-// different parts of it.
+// This is what several actors of one object are for: chain A as cartoon and
+// the ligand as ball-and-stick is one structure drawn twice over different
+// parts of it.
 //
 // The selection is carried inline rather than by naming an uploaded buffer,
 // because UploadObject creates an object and there is no way to add an array to
@@ -431,12 +431,11 @@ message Subset {
   Association association = 4;
 }
 
-// RepresentationInfo describes one way something is being drawn.
-message RepresentationInfo {
-  RepresentationHandle handle = 1;
+// ActorInfo describes one way something is being drawn.
+message ActorInfo {
+  ActorHandle handle = 1;
 
-  // Registered kind id, e.g. "points" or "ball-and-stick". See
-  // ListRepresentationKinds.
+  // Registered kind id, e.g. "points" or "ball-and-stick". See ListActorKinds.
   string kind = 2;
 
   // The object whose data is drawn.
@@ -450,8 +449,8 @@ message RepresentationInfo {
 
   ColorSpec color = 6;
 
-  // False if this representation has been hidden individually. An object being
-  // hidden does not show up here.
+  // False if this actor has been hidden individually. An object being hidden
+  // does not show up here.
   bool visible = 7;
 
   // How much of the source is drawn. Absent means all of it.
@@ -462,7 +461,7 @@ message RepresentationInfo {
   optional SubsetInfo subset = 8;
 }
 
-// SubsetInfo describes a representation's selection without returning it.
+// SubsetInfo describes an actor's selection without returning it.
 message SubsetInfo {
   Subset.Encoding encoding = 1;
   Subset.Association association = 2;
@@ -471,8 +470,8 @@ message SubsetInfo {
   uint64 selected = 3;
 }
 
-// RepresentationKindInfo describes a way of drawing that this build supports.
-message RepresentationKindInfo {
+// ActorKindInfo describes a way of drawing that this build supports.
+message ActorKindInfo {
   string id = 1;
   string label = 2;
 
@@ -483,7 +482,7 @@ message RepresentationKindInfo {
   repeated ParamSpec params = 4;
 }
 
-message AddRepresentationRequest {
+message AddActorRequest {
   // The object whose data to draw.
   ObjectHandle source = 1;
 
@@ -496,7 +495,7 @@ message AddRepresentationRequest {
   optional ObjectHandle parent = 3;
 
   // Settings to override. Anything not named takes the kind's default — this
-  // is a new representation, so there is no previous value to keep.
+  // is a new actor, so there is no previous value to keep.
   map<string, ParamValue> params = 4;
 
   // Absent colours by the first scalar field, matching what an upload does.
@@ -506,21 +505,21 @@ message AddRepresentationRequest {
   optional Subset subset = 6;
 }
 
-message AddRepresentationResponse {
-  RepresentationInfo representation = 1;
+message AddActorResponse {
+  ActorInfo actor = 1;
 }
 
-message SetRepresentationRequest {
-  RepresentationHandle handle = 1;
+message SetActorRequest {
+  ActorHandle handle = 1;
 
   // Settings to change. Anything not named keeps its current value — unlike
-  // AddRepresentation, where it takes the default.
+  // AddActor, where it takes the default.
   map<string, ParamValue> params = 2;
 
   // Absent leaves colouring alone. Present replaces it entirely; see ColorSpec.
   optional ColorSpec color = 3;
 
-  // Hide or show this representation alone, without touching its object.
+  // Hide or show this actor alone, without touching its object.
   optional bool visible = 4;
 
   // Absent leaves the selection alone; present replaces it.
@@ -532,32 +531,32 @@ message SetRepresentationRequest {
   bool clear_subset = 6;
 }
 
-message SetRepresentationResponse {
-  RepresentationInfo representation = 1;
+message SetActorResponse {
+  ActorInfo actor = 1;
 }
 
-message RemoveRepresentationRequest {
-  RepresentationHandle handle = 1;
+message RemoveActorRequest {
+  ActorHandle handle = 1;
 }
 
-message RemoveRepresentationResponse {
-  // False if no representation with that handle was present.
+message RemoveActorResponse {
+  // False if no actor with that handle was present.
   bool removed = 1;
 }
 
-message ListRepresentationsRequest {
-  // Restrict to representations drawing this object. Absent lists all of them.
+message ListActorsRequest {
+  // Restrict to actors drawing this object. Absent lists all of them.
   optional ObjectHandle source = 1;
 }
 
-message ListRepresentationsResponse {
-  repeated RepresentationInfo representations = 1;
+message ListActorsResponse {
+  repeated ActorInfo actors = 1;
 }
 
-message ListRepresentationKindsRequest {}
+message ListActorKindsRequest {}
 
-message ListRepresentationKindsResponse {
-  repeated RepresentationKindInfo kinds = 1;
+message ListActorKindsResponse {
+  repeated ActorKindInfo kinds = 1;
 }
 
 message ListObjectsRequest {}
@@ -631,10 +630,10 @@ message DeleteObjectResponse {
   // set — its descendants.
   repeated ObjectHandle removed = 2;
 
-  // Representations removed along with them.
+  // Actors removed along with them.
   //
   // Deleting an object takes down everything drawing its data, including
-  // representations placed under some *other* object — those are not in
-  // `removed` and would otherwise disappear from the scene unannounced.
-  repeated RepresentationHandle removed_representations = 3;
+  // actors placed under some *other* object — those are not in `removed` and
+  // would otherwise disappear from the scene unannounced.
+  repeated ActorHandle removed_actors = 3;
 }

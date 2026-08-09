@@ -54,9 +54,7 @@ pub fn draw_overlays(
         let cells = ((extent / spacing).ceil() as u32).clamp(4, 200) * 2;
         gizmos
             .grid(
-                Isometry3d::from_rotation(Quat::from_rotation_x(
-                    -std::f32::consts::FRAC_PI_2,
-                )),
+                Isometry3d::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                 UVec2::splat(cells),
                 Vec2::splat(spacing),
                 GRID,
@@ -80,8 +78,8 @@ pub fn draw_overlays(
             continue;
         }
 
-        // An object entity carries no mesh of its own — the geometry belongs to
-        // its representation children, so the outline is their combined extent.
+        // An object entity carries no mesh of its own — the geometry belongs
+        // to its actor children, so the outline is their combined extent.
         let Some((min, max)) = subtree_bounds(entity, children, &bounds) else {
             continue;
         };
@@ -110,10 +108,10 @@ pub fn draw_overlays(
 
 /// Union of the Aabbs on an object and whatever is parented to it.
 ///
-/// Walks `Children`, not `Representations`: this is a question about space, and
-/// what belongs in an object's box is what is *drawn at* its placement. A
-/// representation sourced from elsewhere and parented here counts; one sourced
-/// from here but parented elsewhere does not, because that is where it appears.
+/// Walks `Children`, not `Actors`: this is a question about space, and what
+/// belongs in an object's box is what is *drawn at* its placement. A actor
+/// sourced from elsewhere and parented here counts; one sourced from here but
+/// parented elsewhere does not, because that is where it appears.
 fn subtree_bounds(
     entity: Entity,
     children: Option<&Children>,

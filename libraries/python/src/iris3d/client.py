@@ -15,7 +15,10 @@ import grpc
 import numpy as np
 
 from .v1.scene_pb2 import (
-    AddRepresentationRequest,
+    ActorHandle,
+    ActorInfo,
+    ActorKindInfo,
+    AddActorRequest,
     BufferSpec,
     Chunk,
     Color,
@@ -25,22 +28,19 @@ from .v1.scene_pb2 import (
     Dimensions,
     Dtype,
     Grid as ProtoGrid,
+    ListActorKindsRequest,
+    ListActorsRequest,
     ListObjectsRequest,
-    ListRepresentationKindsRequest,
-    ListRepresentationsRequest,
     ObjectHandle,
     ObjectHeader,
     ObjectInfo,
     ParamValue,
     Quaternion,
     Range,
-    RemoveRepresentationRequest,
-    RepresentationHandle,
-    RepresentationInfo,
-    RepresentationKindInfo,
+    RemoveActorRequest,
+    SetActorRequest,
     SetParentRequest,
     Subset,
-    SetRepresentationRequest,
     SetTransformRequest,
     UploadObjectRequest,
     Vector3,
@@ -124,7 +124,7 @@ class ObjectSummary:
     #: or "raw".
     dataset_kind: str
     #: Everything currently drawing this object's data; empty if nothing does.
-    representations: tuple["RepresentationSummary", ...]
+    actors: tuple["ActorSummary", ...]
     #: Parent handle in the scene tree, or None for a root object.
     parent: int | None
 
@@ -188,7 +188,7 @@ class Grid:
 
 @dataclass(frozen=True)
 class Coloring:
-    """How a representation takes its colour."""
+    """How an actor takes its colour."""
 
     #: Field mapped across the colour map. None paints flat — or, for a
     #: molecule, standard element colours.
@@ -203,7 +203,7 @@ class Coloring:
 
 @dataclass(frozen=True)
 class SubsetSummary:
-    """A representation's selection, described without returning its values."""
+    """An actor's selection, described without returning its values."""
 
     #: "indices" or "mask".
     encoding: str
@@ -214,7 +214,7 @@ class SubsetSummary:
 
 
 @dataclass(frozen=True)
-class RepresentationSummary:
+class ActorSummary:
     """One way something is being drawn."""
 
     handle: int
@@ -234,7 +234,7 @@ class RepresentationSummary:
 
 @dataclass(frozen=True)
 class ParamInfo:
-    """One setting a representation kind accepts."""
+    """One setting an actor kind accepts."""
 
     id: str
     label: str
@@ -249,7 +249,7 @@ class ParamInfo:
 
 
 @dataclass(frozen=True)
-class RepresentationKindSummary:
+class ActorKindSummary:
     """A way of drawing that the running server supports."""
 
     id: str
@@ -355,8 +355,8 @@ def _subset(selection: np.ndarray, *, per_cell: bool = False) -> Subset:
     )
 
 
-def _representation(info: RepresentationInfo) -> RepresentationSummary:
-    return RepresentationSummary(
+def _actor(info: ActorInfo) -> ActorSummary:
+    return ActorSummary(
         handle=info.handle.id,
         kind=info.kind,
         source=info.source.id,
@@ -376,7 +376,7 @@ def _representation(info: RepresentationInfo) -> RepresentationSummary:
     )
 
 
-def _kind(info: RepresentationKindInfo) -> RepresentationKindSummary:
+def _kind(info: ActorKindInfo) -> ActorKindSummary:
     params = []
     for spec in info.params:
         kind = spec.WhichOneof("kind")
@@ -413,7 +413,7 @@ def _kind(info: RepresentationKindInfo) -> RepresentationKindSummary:
                     logarithmic=spec.number.logarithmic,
                 )
             )
-    return RepresentationKindSummary(
+    return ActorKindSummary(
         id=info.id,
         label=info.label,
         supports=tuple(info.supports),
@@ -436,7 +436,7 @@ def _summary(info: ObjectInfo) -> ObjectSummary:
         ),
         total_bytes=info.total_bytes,
         dataset_kind=info.dataset_kind,
-        representations=tuple(_representation(rep) for rep in info.representations),
+        actors=tuple(_actor(actor) for actor in info.actors),
         parent=info.parent.id if info.HasField("parent") else None,
     )
 
@@ -652,7 +652,7 @@ class Client:
         )
         return tuple(h.id for h in response.removed)
 
-    def add_representation(
+    def add_actor(
         self,
         source: int,
         kind: str = "",
@@ -662,13 +662,13 @@ class Client:
         coloring: Coloring | None = None,
         subset: np.ndarray | None = None,
         per_cell: bool = False,
-    ) -> RepresentationSummary:
+    ) -> ActorSummary:
         """Draws an object an additional way.
 
         Adds rather than replaces: an object may be drawn several ways at once,
         each configured on its own. ``kind`` defaults to whatever the server
-        would have chosen for this dataset — see :meth:`representation_kinds`
-        for what a build supports.
+        would have chosen for this dataset — see :meth:`actor_kinds` for what a
+        build supports.
 
         ``parent`` is the object whose *transform* is inherited, as distinct
         from ``source``, whose *data* is drawn. Passing a different object
@@ -676,25 +676,25 @@ class Client:
 
             ghost = client.create_object("ghost")
             client.set_transform(ghost, translation=(10, 0, 0))
-            client.add_representation(protein, parent=ghost)
+            client.add_actor(protein, parent=ghost)
 
         Parameters left out take the kind's default, not the value some other
-        representation happens to have.
+        actor happens to have.
 
         ``subset`` draws only part of the source — a boolean mask over every
         element, or an integer array of the elements to keep. This is what
-        makes several representations worth having: one structure shown as
-        cartoon over its protein and ball-and-stick over its ligand is two
-        representations with two subsets. Selections are computed here rather
-        than described to the server, so anything numpy can express works::
+        makes several actors worth having: one structure shown as cartoon over
+        its protein and ball-and-stick over its ligand is two actors with two
+        subsets. Selections are computed here rather than described to the
+        server, so anything numpy can express works::
 
-            client.add_representation(mesh, subset=positions[:, 2] > 0)
+            client.add_actor(mesh, subset=positions[:, 2] > 0)
 
         A mesh cell survives only when all of its corners do, and a bond only
         when both its atoms do, so a cut leaves a clean boundary rather than
         stretched or dangling geometry.
         """
-        request = AddRepresentationRequest(
+        request = AddActorRequest(
             source=ObjectHandle(id=source),
             kind=kind,
             params=_params(params),
@@ -705,9 +705,9 @@ class Client:
             request.color.CopyFrom(_color_spec(coloring))
         if subset is not None:
             request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
-        return _representation(self._scene.AddRepresentation(request).representation)
+        return _actor(self._scene.AddActor(request).actor)
 
-    def set_representation(
+    def set_actor(
         self,
         handle: int,
         params: Mapping[str, float | bool | str] | None = None,
@@ -717,12 +717,12 @@ class Client:
         subset: np.ndarray | None = None,
         per_cell: bool = False,
         clear_subset: bool = False,
-    ) -> RepresentationSummary:
-        """Changes a representation, leaving anything unnamed alone.
+    ) -> ActorSummary:
+        """Changes an actor, leaving anything unnamed alone.
 
         Parameters are merged, so passing one setting keeps the rest — the
-        opposite of :meth:`add_representation`, where an absent parameter takes
-        its default. ``coloring`` is all-or-nothing: passing it replaces the
+        opposite of :meth:`add_actor`, where an absent parameter takes its
+        default. ``coloring`` is all-or-nothing: passing it replaces the
         colouring outright.
 
         Out-of-range values are clamped rather than rejected, so a slider driven
@@ -735,8 +735,8 @@ class Client:
         if subset is not None and clear_subset:
             raise ValueError("pass a subset or clear_subset, not both")
 
-        request = SetRepresentationRequest(
-            handle=RepresentationHandle(id=handle),
+        request = SetActorRequest(
+            handle=ActorHandle(id=handle),
             params=_params(params),
             clear_subset=clear_subset,
         )
@@ -746,32 +746,30 @@ class Client:
             request.visible = visible
         if subset is not None:
             request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
-        return _representation(self._scene.SetRepresentation(request).representation)
+        return _actor(self._scene.SetActor(request).actor)
 
-    def remove_representation(self, handle: int) -> bool:
+    def remove_actor(self, handle: int) -> bool:
         """Stops drawing something one way, leaving the object and its data.
 
         Returns False if the handle was already gone.
         """
-        response = self._scene.RemoveRepresentation(
-            RemoveRepresentationRequest(handle=RepresentationHandle(id=handle))
-        )
+        response = self._scene.RemoveActor(RemoveActorRequest(handle=ActorHandle(id=handle)))
         return response.removed
 
-    def list_representations(self, source: int | None = None) -> list[RepresentationSummary]:
-        """Lists representations, optionally only those drawing one object."""
-        request = ListRepresentationsRequest()
+    def list_actors(self, source: int | None = None) -> list[ActorSummary]:
+        """Lists actors, optionally only those drawing one object."""
+        request = ListActorsRequest()
         if source is not None:
             request.source.CopyFrom(ObjectHandle(id=source))
-        response = self._scene.ListRepresentations(request)
-        return [_representation(info) for info in response.representations]
+        response = self._scene.ListActors(request)
+        return [_actor(info) for info in response.actors]
 
-    def representation_kinds(self) -> list[RepresentationKindSummary]:
+    def actor_kinds(self) -> list[ActorKindSummary]:
         """Lists the ways of drawing this server supports.
 
         Kinds come from whichever rendering backends the server was built with,
         so ask rather than assuming: a hardcoded list here would eventually
         offer something that silently does nothing.
         """
-        response = self._scene.ListRepresentationKinds(ListRepresentationKindsRequest())
+        response = self._scene.ListActorKinds(ListActorKindsRequest())
         return [_kind(info) for info in response.kinds]

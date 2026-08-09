@@ -1,9 +1,9 @@
 //! Drawing part of a dataset rather than all of it.
 //!
-//! This is what several representations of one object are *for*: chain A as
-//! cartoon and the ligand as ball-and-stick is one structure drawn twice, each
-//! time over a different part of it. Without a subset the second representation
-//! can only be the whole thing drawn again.
+//! This is what several actors of one object are *for*: chain A as cartoon and
+//! the ligand as ball-and-stick is one structure drawn twice, each time over a
+//! different part of it. Without a subset the second actor can only be the
+//! whole thing drawn again.
 //!
 //! Selections arrive as index or mask arrays, not as a query language. iris3d
 //! already takes the position that clients parse their own formats and push
@@ -58,7 +58,7 @@ pub enum SubsetEncoding {
     Mask,
 }
 
-/// Which part of the source dataset a representation draws.
+/// Which part of the source dataset an actor draws.
 #[derive(Component, Debug, Clone, Default)]
 pub enum Subset {
     #[default]
@@ -149,7 +149,10 @@ impl Subset {
 /// they can be large, so echoing them back would make every listing carry a
 /// copy of every mask in the scene.
 pub fn size(subset: &Subset, arrays: &Assets<DataArray>) -> Option<u64> {
-    let Subset::Selected { array, encoding, .. } = subset else {
+    let Subset::Selected {
+        array, encoding, ..
+    } = subset
+    else {
         return None;
     };
     let array = arrays.get(array)?;

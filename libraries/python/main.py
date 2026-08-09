@@ -85,8 +85,8 @@ def hydrogen(client, root, cursor, gap=3.0):
     # This grid spans 24 units against the torus's 8, so it dominates the
     # default framing. Orbit round it rather than judging it from where the
     # camera lands.
-    drawn = client.list_representations(handle)[0]
-    client.set_representation(
+    drawn = client.list_actors(handle)[0]
+    client.set_actor(
         drawn.handle,
         {"density": "probability", "mode": "blend", "opacity": 12.0, "steps": 256.0},
         coloring=iris3d.Coloring(field="amplitude", map="cool-warm"),
@@ -120,7 +120,7 @@ def main():
             print(
                 f"{summary.handle:<8}{indent + summary.name:<18}"
                 f"{summary.dataset_kind:<11}"
-                f"{', '.join(r.kind for r in summary.representations) or '-':<16}{arrays}"
+                f"{', '.join(r.kind for r in summary.actors) or '-':<16}{arrays}"
             )
 
         total = sum(s.total_bytes for s in client.list_objects())

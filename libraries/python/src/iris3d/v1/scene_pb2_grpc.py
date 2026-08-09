@@ -12,14 +12,14 @@ class SceneServiceStub(object):
     Three things are kept apart, and the split is the reason the API looks the
     way it does.
 
-    An **object** holds data and a place in a tree. A **representation** is one
-    way of drawing an object, and is a thing in its own right with its own
-    handle: an object may have several at once, each with its own settings, and
-    each says separately whose data it draws and whose transform it follows.
-    Point those at different objects and one dataset appears in two places
-    without being uploaded twice. A **subset** narrows a representation to part
-    of its data, which is what makes several of them worth having — one
-    structure drawn as cartoon over its protein and as sticks over its ligand.
+    An **object** holds data and a place in a tree. An **actor** is one way of
+    drawing an object, and is a thing in its own right with its own handle: an
+    object may have several at once, each with its own settings, and each says
+    separately whose data it draws and whose transform it follows. Point those
+    at different objects and one dataset appears in two places without being
+    uploaded twice. A **subset** narrows an actor to part of its data, which is
+    what makes several of them worth having — one structure drawn as cartoon
+    over its protein and as sticks over its ligand.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -35,9 +35,9 @@ class SceneServiceStub(object):
     positions are implicit, so nothing about the arrays reveals it and it must
     be declared.
 
-    What can be drawn is not fixed by this schema. Representation kinds come
-    from whichever rendering backends the server was built with, so ask
-    ListRepresentationKinds rather than carrying a table that will go stale.
+    What can be drawn is not fixed by this schema. Actor kinds come from
+    whichever rendering backends the server was built with, so ask
+    ListActorKinds rather than carrying a table that will go stale.
     """
 
     def __init__(self, channel):
@@ -76,30 +76,30 @@ class SceneServiceStub(object):
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectRequest.SerializeToString,
                 response_deserializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectResponse.FromString,
                 _registered_method=True)
-        self.AddRepresentation = channel.unary_unary(
-                '/iris3d.v1.SceneService/AddRepresentation',
-                request_serializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationRequest.SerializeToString,
-                response_deserializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationResponse.FromString,
+        self.AddActor = channel.unary_unary(
+                '/iris3d.v1.SceneService/AddActor',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.AddActorRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.AddActorResponse.FromString,
                 _registered_method=True)
-        self.SetRepresentation = channel.unary_unary(
-                '/iris3d.v1.SceneService/SetRepresentation',
-                request_serializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationRequest.SerializeToString,
-                response_deserializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationResponse.FromString,
+        self.SetActor = channel.unary_unary(
+                '/iris3d.v1.SceneService/SetActor',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.SetActorRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.SetActorResponse.FromString,
                 _registered_method=True)
-        self.RemoveRepresentation = channel.unary_unary(
-                '/iris3d.v1.SceneService/RemoveRepresentation',
-                request_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationRequest.SerializeToString,
-                response_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationResponse.FromString,
+        self.RemoveActor = channel.unary_unary(
+                '/iris3d.v1.SceneService/RemoveActor',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveActorRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveActorResponse.FromString,
                 _registered_method=True)
-        self.ListRepresentations = channel.unary_unary(
-                '/iris3d.v1.SceneService/ListRepresentations',
-                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsRequest.SerializeToString,
-                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsResponse.FromString,
+        self.ListActors = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListActors',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListActorsRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListActorsResponse.FromString,
                 _registered_method=True)
-        self.ListRepresentationKinds = channel.unary_unary(
-                '/iris3d.v1.SceneService/ListRepresentationKinds',
-                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsRequest.SerializeToString,
-                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsResponse.FromString,
+        self.ListActorKinds = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListActorKinds',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsResponse.FromString,
                 _registered_method=True)
 
 
@@ -110,14 +110,14 @@ class SceneServiceServicer(object):
     Three things are kept apart, and the split is the reason the API looks the
     way it does.
 
-    An **object** holds data and a place in a tree. A **representation** is one
-    way of drawing an object, and is a thing in its own right with its own
-    handle: an object may have several at once, each with its own settings, and
-    each says separately whose data it draws and whose transform it follows.
-    Point those at different objects and one dataset appears in two places
-    without being uploaded twice. A **subset** narrows a representation to part
-    of its data, which is what makes several of them worth having — one
-    structure drawn as cartoon over its protein and as sticks over its ligand.
+    An **object** holds data and a place in a tree. An **actor** is one way of
+    drawing an object, and is a thing in its own right with its own handle: an
+    object may have several at once, each with its own settings, and each says
+    separately whose data it draws and whose transform it follows. Point those
+    at different objects and one dataset appears in two places without being
+    uploaded twice. A **subset** narrows an actor to part of its data, which is
+    what makes several of them worth having — one structure drawn as cartoon
+    over its protein and as sticks over its ligand.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -133,9 +133,9 @@ class SceneServiceServicer(object):
     positions are implicit, so nothing about the arrays reveals it and it must
     be declared.
 
-    What can be drawn is not fixed by this schema. Representation kinds come
-    from whichever rendering backends the server was built with, so ask
-    ListRepresentationKinds rather than carrying a table that will go stale.
+    What can be drawn is not fixed by this schema. Actor kinds come from
+    whichever rendering backends the server was built with, so ask
+    ListActorKinds rather than carrying a table that will go stale.
     """
 
     def UploadObject(self, request_iterator, context):
@@ -192,12 +192,12 @@ class SceneServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def AddRepresentation(self, request, context):
+    def AddActor(self, request, context):
         """Draws an object an additional way.
 
-        Adds; it does not replace. An object may carry any number of
-        representations at once — a protein as cartoon and as licorice, a mesh as
-        surface and as wireframe — and each is configured independently.
+        Adds; it does not replace. An object may carry any number of actors at
+        once — a protein as cartoon and as licorice, a mesh as surface and as
+        wireframe — and each is configured independently.
 
         The data drawn and the placement it is drawn at are separate: `source`
         says whose arrays to read, `parent` says whose transform to inherit. Give
@@ -208,28 +208,28 @@ class SceneServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SetRepresentation(self, request, context):
-        """Changes an existing representation. Only what is named is altered.
+    def SetActor(self, request, context):
+        """Changes an existing actor. Only what is named is altered.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def RemoveRepresentation(self, request, context):
-        """Removes one representation, leaving the object and its data alone.
+    def RemoveActor(self, request, context):
+        """Removes one actor, leaving the object and its data alone.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ListRepresentations(self, request, context):
-        """Lists representations, optionally only those drawing one object.
+    def ListActors(self, request, context):
+        """Lists actors, optionally only those drawing one object.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ListRepresentationKinds(self, request, context):
+    def ListActorKinds(self, request, context):
         """Lists the ways of drawing this build actually supports.
 
         Kinds are contributed by whichever rendering backends are compiled in
@@ -274,30 +274,30 @@ def add_SceneServiceServicer_to_server(servicer, server):
                     request_deserializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectRequest.FromString,
                     response_serializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectResponse.SerializeToString,
             ),
-            'AddRepresentation': grpc.unary_unary_rpc_method_handler(
-                    servicer.AddRepresentation,
-                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationRequest.FromString,
-                    response_serializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationResponse.SerializeToString,
+            'AddActor': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddActor,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.AddActorRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.AddActorResponse.SerializeToString,
             ),
-            'SetRepresentation': grpc.unary_unary_rpc_method_handler(
-                    servicer.SetRepresentation,
-                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationRequest.FromString,
-                    response_serializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationResponse.SerializeToString,
+            'SetActor': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetActor,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.SetActorRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.SetActorResponse.SerializeToString,
             ),
-            'RemoveRepresentation': grpc.unary_unary_rpc_method_handler(
-                    servicer.RemoveRepresentation,
-                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationRequest.FromString,
-                    response_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationResponse.SerializeToString,
+            'RemoveActor': grpc.unary_unary_rpc_method_handler(
+                    servicer.RemoveActor,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveActorRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveActorResponse.SerializeToString,
             ),
-            'ListRepresentations': grpc.unary_unary_rpc_method_handler(
-                    servicer.ListRepresentations,
-                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsRequest.FromString,
-                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsResponse.SerializeToString,
+            'ListActors': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListActors,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListActorsRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListActorsResponse.SerializeToString,
             ),
-            'ListRepresentationKinds': grpc.unary_unary_rpc_method_handler(
-                    servicer.ListRepresentationKinds,
-                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsRequest.FromString,
-                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsResponse.SerializeToString,
+            'ListActorKinds': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListActorKinds,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -314,14 +314,14 @@ class SceneService(object):
     Three things are kept apart, and the split is the reason the API looks the
     way it does.
 
-    An **object** holds data and a place in a tree. A **representation** is one
-    way of drawing an object, and is a thing in its own right with its own
-    handle: an object may have several at once, each with its own settings, and
-    each says separately whose data it draws and whose transform it follows.
-    Point those at different objects and one dataset appears in two places
-    without being uploaded twice. A **subset** narrows a representation to part
-    of its data, which is what makes several of them worth having — one
-    structure drawn as cartoon over its protein and as sticks over its ligand.
+    An **object** holds data and a place in a tree. An **actor** is one way of
+    drawing an object, and is a thing in its own right with its own handle: an
+    object may have several at once, each with its own settings, and each says
+    separately whose data it draws and whose transform it follows. Point those
+    at different objects and one dataset appears in two places without being
+    uploaded twice. A **subset** narrows an actor to part of its data, which is
+    what makes several of them worth having — one structure drawn as cartoon
+    over its protein and as sticks over its ligand.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -337,9 +337,9 @@ class SceneService(object):
     positions are implicit, so nothing about the arrays reveals it and it must
     be declared.
 
-    What can be drawn is not fixed by this schema. Representation kinds come
-    from whichever rendering backends the server was built with, so ask
-    ListRepresentationKinds rather than carrying a table that will go stale.
+    What can be drawn is not fixed by this schema. Actor kinds come from
+    whichever rendering backends the server was built with, so ask
+    ListActorKinds rather than carrying a table that will go stale.
     """
 
     @staticmethod
@@ -505,7 +505,7 @@ class SceneService(object):
             _registered_method=True)
 
     @staticmethod
-    def AddRepresentation(request,
+    def AddActor(request,
             target,
             options=(),
             channel_credentials=None,
@@ -518,9 +518,9 @@ class SceneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/iris3d.v1.SceneService/AddRepresentation',
-            iris3d_dot_v1_dot_scene__pb2.AddRepresentationRequest.SerializeToString,
-            iris3d_dot_v1_dot_scene__pb2.AddRepresentationResponse.FromString,
+            '/iris3d.v1.SceneService/AddActor',
+            iris3d_dot_v1_dot_scene__pb2.AddActorRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.AddActorResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -532,7 +532,7 @@ class SceneService(object):
             _registered_method=True)
 
     @staticmethod
-    def SetRepresentation(request,
+    def SetActor(request,
             target,
             options=(),
             channel_credentials=None,
@@ -545,9 +545,9 @@ class SceneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/iris3d.v1.SceneService/SetRepresentation',
-            iris3d_dot_v1_dot_scene__pb2.SetRepresentationRequest.SerializeToString,
-            iris3d_dot_v1_dot_scene__pb2.SetRepresentationResponse.FromString,
+            '/iris3d.v1.SceneService/SetActor',
+            iris3d_dot_v1_dot_scene__pb2.SetActorRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.SetActorResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -559,7 +559,7 @@ class SceneService(object):
             _registered_method=True)
 
     @staticmethod
-    def RemoveRepresentation(request,
+    def RemoveActor(request,
             target,
             options=(),
             channel_credentials=None,
@@ -572,9 +572,9 @@ class SceneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/iris3d.v1.SceneService/RemoveRepresentation',
-            iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationRequest.SerializeToString,
-            iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationResponse.FromString,
+            '/iris3d.v1.SceneService/RemoveActor',
+            iris3d_dot_v1_dot_scene__pb2.RemoveActorRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.RemoveActorResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -586,7 +586,7 @@ class SceneService(object):
             _registered_method=True)
 
     @staticmethod
-    def ListRepresentations(request,
+    def ListActors(request,
             target,
             options=(),
             channel_credentials=None,
@@ -599,9 +599,9 @@ class SceneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/iris3d.v1.SceneService/ListRepresentations',
-            iris3d_dot_v1_dot_scene__pb2.ListRepresentationsRequest.SerializeToString,
-            iris3d_dot_v1_dot_scene__pb2.ListRepresentationsResponse.FromString,
+            '/iris3d.v1.SceneService/ListActors',
+            iris3d_dot_v1_dot_scene__pb2.ListActorsRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListActorsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -613,7 +613,7 @@ class SceneService(object):
             _registered_method=True)
 
     @staticmethod
-    def ListRepresentationKinds(request,
+    def ListActorKinds(request,
             target,
             options=(),
             channel_credentials=None,
@@ -626,9 +626,9 @@ class SceneService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/iris3d.v1.SceneService/ListRepresentationKinds',
-            iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsRequest.SerializeToString,
-            iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsResponse.FromString,
+            '/iris3d.v1.SceneService/ListActorKinds',
+            iris3d_dot_v1_dot_scene__pb2.ListActorKindsRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListActorKindsResponse.FromString,
             options,
             channel_credentials,
             insecure,

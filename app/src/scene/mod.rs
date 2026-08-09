@@ -5,9 +5,9 @@
 //!
 //! - [`data`] — raw arrays as shared assets, plus what their bytes mean.
 //! - [`dataset`] — what an object *is*: points, mesh, grid, molecule.
-//! - [`representation`] — how it gets *drawn*, as separate entities so one
+//! - [`actor`] — how it gets *drawn*, as separate entities so one
 //!   dataset can be shown several ways at once.
-//! - [`link`] — which object a representation draws, which is *not* the same
+//! - [`link`] — which object an actor draws, which is *not* the same
 //!   question as where it sits.
 //!
 //! Objects form a tree. There is no separate group type: an object with no data
@@ -15,7 +15,7 @@
 //! made to follow the mesh it belongs to.
 //!
 //! Nothing here knows about gRPC, and nothing here draws. A rendering backend
-//! plugs in by consuming [`Representation`] and the dataset components — see
+//! plugs in by consuming [`Actor`] and the dataset components — see
 //! [`crate::draw`], which is one such backend and deliberately not the only
 //! possible one.
 
@@ -28,21 +28,21 @@ use crate::counter::{GlobalIDCounter, UniqueID};
 use crate::grpc::GrpcBridge;
 use crate::redraw::KeepAwake;
 
+pub mod actor;
 pub mod data;
 pub mod dataset;
 pub mod ingest;
 pub mod link;
 pub mod registry;
-pub mod representation;
 pub mod subset;
 
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
+pub use actor::ColorBy;
 pub use data::{BufferMeta, DataArray, Dtype, NamedArray, NamedBuffer};
 pub use dataset::{DatasetKind, MeshData, MoleculeData, PointCloud};
-pub use link::{RepresentationOf, Representations};
-pub use registry::{RepresentationKindId, RepresentationParams, RepresentationRegistry};
-pub use representation::ColorBy;
+pub use link::{ActorOf, Actors};
+pub use registry::{ActorKindId, ActorParams, ActorRegistry};
 pub use subset::{Subset, SubsetEncoding};
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
@@ -55,14 +55,14 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DataArray>().add_systems(
             Update,
-            // Order matters throughout: the drain creates representations, the
-            // reaper removes any a deletion orphaned before a backend can look
-            // at them, and only then are style components derived from the
+            // Order matters throughout: the drain creates actors, the reaper
+            // removes any a deletion orphaned before a backend can look at
+            // them, and only then are style components derived from the
             // parameters the drain wrote.
             (
                 apply_scene_commands,
-                link::reap_orphaned_representations,
-                registry::apply_representation_params,
+                link::reap_orphaned_actors,
+                registry::apply_actor_params,
             )
                 .chain(),
         );
@@ -70,8 +70,8 @@ impl Plugin for ScenePlugin {
 }
 
 /// An object in the scene. Paired with a [`UniqueID`] carrying its handle, at
-/// most one dataset component, a [`Fields`](data::Fields) map, and child
-/// representation entities.
+/// most one dataset component, a [`Fields`](data::Fields) map, and child actor
+/// entities.
 #[derive(Component, Debug)]
 pub struct SceneObject {
     pub name: String,
@@ -98,21 +98,21 @@ pub struct ObjectSummary {
     pub buffers: Vec<BufferMeta>,
     pub total_bytes: u64,
     /// Everything currently drawing this object's data.
-    pub representations: Vec<RepresentationSummary>,
+    pub actors: Vec<ActorSummary>,
     /// Parent in the scene tree, `None` for a root.
     pub parent: Option<u64>,
 }
 
 /// A description of one way something is being drawn.
 #[derive(Debug, Clone)]
-pub struct RepresentationSummary {
+pub struct ActorSummary {
     pub id: u64,
-    /// Registered kind id — see [`RepresentationRegistry`].
+    /// Registered kind id — see [`ActorRegistry`].
     pub kind: String,
     /// The object whose data is drawn.
     pub source: u64,
     /// The object whose transform is inherited, usually the same as `source`.
-    /// `None` when the representation has somehow been detached.
+    /// `None` when the actor has somehow been detached.
     pub parent: Option<u64>,
     pub params: registry::ParamMap,
     pub colour: ColorBy,
@@ -123,7 +123,7 @@ pub struct RepresentationSummary {
     pub subset: Option<SubsetSummary>,
 }
 
-/// A representation's selection, described without returning it.
+/// An actor's selection, described without returning it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubsetSummary {
     pub encoding: SubsetEncoding,
@@ -145,35 +145,41 @@ pub struct KindSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SceneError {
     NoSuchObject(u64),
-    NoSuchRepresentation(u64),
+    NoSuchActor(u64),
     /// No backend registered a kind by that name, so nothing could draw it.
     UnknownKind(String),
     /// The kind exists but cannot draw this shape of data — ball-and-stick over
     /// a triangle mesh, say.
-    KindNotSupported { kind: String, dataset: DatasetKind },
+    KindNotSupported {
+        kind: String,
+        dataset: DatasetKind,
+    },
     /// The requested parent is the object itself or one of its descendants.
     ///
     /// Rejecting this is not optional: Bevy's transform propagation *panics* on
     /// a hierarchy cycle, so allowing one would let a client crash the
     /// application with two calls.
-    WouldCycle { object: u64, parent: u64 },
+    WouldCycle {
+        object: u64,
+        parent: u64,
+    },
 }
 
 impl Display for SceneError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SceneError::NoSuchObject(id) => write!(f, "no object with handle {id}"),
-            SceneError::NoSuchRepresentation(id) => {
-                write!(f, "no representation with handle {id}")
+            SceneError::NoSuchActor(id) => {
+                write!(f, "no actor with handle {id}")
             }
             SceneError::UnknownKind(kind) => write!(
                 f,
-                "no representation kind \"{kind}\" — ask ListRepresentationKinds \
+                "no actor kind \"{kind}\" — ask ListActorKinds \
                  for the ones this build supports"
             ),
             SceneError::KindNotSupported { kind, dataset } => write!(
                 f,
-                "representation kind \"{kind}\" cannot draw {} data",
+                "actor kind \"{kind}\" cannot draw {} data",
                 dataset.as_str()
             ),
             SceneError::WouldCycle { object, parent } => write!(
@@ -234,7 +240,7 @@ pub enum SceneCommand {
     },
 
     /// Draws an object an additional way. Adds; never replaces.
-    AddRepresentation {
+    AddActor {
         /// The object whose data to draw.
         source: u64,
         /// `None` takes whatever the registry draws this dataset with.
@@ -248,13 +254,12 @@ pub enum SceneCommand {
         colour: Option<ColorBy>,
         /// `None` draws the whole dataset.
         subset: Option<subset::SubsetRequest>,
-        reply: oneshot::Sender<Result<RepresentationSummary, SceneError>>,
+        reply: oneshot::Sender<Result<ActorSummary, SceneError>>,
     },
-    SetRepresentation {
+    SetActor {
         id: u64,
         /// Partial. Anything unset keeps its **current** value — the opposite
-        /// of [`AddRepresentation`](Self::AddRepresentation), because here
-        /// there is one.
+        /// of [`AddActor`](Self::AddActor), because here there is one.
         params: registry::ParamMap,
         /// `None` leaves colouring alone; `Some` replaces it outright.
         colour: Option<ColorBy>,
@@ -263,18 +268,18 @@ pub enum SceneCommand {
         /// drawing everything. Absent and cleared have to be distinguishable,
         /// which is what the nesting buys.
         subset: Option<Option<subset::SubsetRequest>>,
-        reply: oneshot::Sender<Result<RepresentationSummary, SceneError>>,
+        reply: oneshot::Sender<Result<ActorSummary, SceneError>>,
     },
-    RemoveRepresentation {
+    RemoveActor {
         id: u64,
         reply: oneshot::Sender<bool>,
     },
-    ListRepresentations {
+    ListActors {
         /// Restrict to those drawing one object.
         source: Option<u64>,
-        reply: oneshot::Sender<Result<Vec<RepresentationSummary>, SceneError>>,
+        reply: oneshot::Sender<Result<Vec<ActorSummary>, SceneError>>,
     },
-    ListRepresentationKinds {
+    ListActorKinds {
         reply: oneshot::Sender<Vec<KindSummary>>,
     },
 }
@@ -283,17 +288,17 @@ pub enum SceneCommand {
 #[derive(Debug, Default, Clone)]
 pub struct Deleted {
     pub objects: Vec<u64>,
-    /// Representations that were drawing the deleted objects, including any
-    /// placed under an object that survives.
-    pub representations: Vec<u64>,
+    /// Actors that were drawing the deleted objects, including any placed
+    /// under an object that survives.
+    pub actors: Vec<u64>,
 }
 
 /// Read-only view of the objects in the scene.
 ///
-/// Yields [`Representations`] rather than `Children`: the two answer different
-/// questions now, and every use here wants the representations drawing an
-/// object, not the mix of representations and nested objects sitting under it.
-/// Walking the tree needs a separate `Query<&Children>`.
+/// Yields [`Actors`] rather than `Children`: the two answer different
+/// questions now, and every use here wants the actors drawing an object, not
+/// the mix of actors and nested objects sitting under it. Walking the tree
+/// needs a separate `Query<&Children>`.
 type Objects<'w, 's> = Query<
     'w,
     's,
@@ -302,42 +307,42 @@ type Objects<'w, 's> = Query<
         &'static UniqueID,
         &'static SceneObject,
         &'static DatasetKind,
-        Option<&'static Representations>,
+        Option<&'static Actors>,
     ),
 >;
 
-/// Mutable view of the representation entities.
+/// Mutable view of the actor entities.
 ///
 /// One query rather than several, because a read-only query over the same
 /// components as a `&mut` one is a conflict Bevy rejects at schedule init even
 /// when the two could never match the same entity.
-type Representors<'w, 's> = Query<
+type ActorQuery<'w, 's> = Query<
     'w,
     's,
     (
         Entity,
         &'static UniqueID,
-        &'static RepresentationKindId,
-        &'static mut RepresentationParams,
+        &'static ActorKindId,
+        &'static mut ActorParams,
         &'static mut ColorBy,
         &'static mut Visibility,
         &'static mut Subset,
-        &'static RepresentationOf,
+        &'static ActorOf,
         Option<&'static ChildOf>,
     ),
-    With<RepresentationKindId>,
+    With<ActorKindId>,
 >;
 
-/// What [`Representors`] yields when read rather than written.
-type RepresentationItem<'a> = (
+/// What [`ActorQuery`] yields when read rather than written.
+type ActorItem<'a> = (
     Entity,
     &'a UniqueID,
-    &'a RepresentationKindId,
-    &'a RepresentationParams,
+    &'a ActorKindId,
+    &'a ActorParams,
     &'a ColorBy,
     &'a Visibility,
     &'a Subset,
-    &'a RepresentationOf,
+    &'a ActorOf,
     Option<&'a ChildOf>,
 );
 
@@ -345,7 +350,7 @@ type RepresentationItem<'a> = (
 /// world. Replies are best-effort: a caller that has hung up is not an error.
 ///
 /// Public so rendering backends can order themselves after it and pick up new
-/// representations on the frame they appear.
+/// actors on the frame they appear.
 ///
 /// Structural changes go through Bevy's deferred `Commands`, so the queries here
 /// still show the pre-tick hierarchy. Parent changes made earlier in this same
@@ -357,7 +362,7 @@ pub fn apply_scene_commands(
     mut commands: Commands,
     bridge: Res<GrpcBridge>,
     mut counter: ResMut<GlobalIDCounter>,
-    registry: Res<RepresentationRegistry>,
+    registry: Res<ActorRegistry>,
     mut arrays: ResMut<Assets<DataArray>>,
     mut transforms: Query<&mut Transform>,
     objects: Objects,
@@ -366,7 +371,7 @@ pub fn apply_scene_commands(
     children: Query<&Children>,
     child_of: Query<&ChildOf>,
     globals: Query<&GlobalTransform>,
-    mut representations: Representors,
+    mut actors: ActorQuery,
     mut awake: ResMut<KeepAwake>,
 ) {
     let batch: Vec<SceneCommand> = std::iter::from_fn(|| bridge.try_recv().ok()).collect();
@@ -380,11 +385,11 @@ pub fn apply_scene_commands(
     awake.nudge();
 
     let mut index: HashMap<u64, Entity> = objects.iter().map(|(e, id, ..)| (id.0, e)).collect();
-    // Representations get the same treatment as objects: spawned entities are
-    // recorded on the spot, so two commands arriving in one tick — add a
-    // representation, then configure it — can see each other despite the
-    // queries still showing the pre-tick world.
-    let mut drawn: HashMap<u64, Entity> = representations
+    // Actors get the same treatment as objects: spawned entities are recorded
+    // on the spot, so two commands arriving in one tick — add an actor, then
+    // configure it — can see each other despite the queries still showing the
+    // pre-tick world.
+    let mut drawn: HashMap<u64, Entity> = actors
         .iter()
         .map(|(entity, id, ..)| (id.0, entity))
         .collect();
@@ -504,11 +509,7 @@ pub fn apply_scene_commands(
                             .into_iter()
                             .flat_map(|list| list.iter())
                             .filter_map(|entity| {
-                                summarise_representation(
-                                    representations.get(entity).ok()?,
-                                    &ids,
-                                    &arrays,
-                                )
+                                summarise_actor(actors.get(entity).ok()?, &ids, &arrays)
                             })
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -539,7 +540,7 @@ pub fn apply_scene_commands(
                 let _ = reply.send(removed);
             }
 
-            SceneCommand::AddRepresentation {
+            SceneCommand::AddActor {
                 source,
                 kind,
                 parent,
@@ -548,7 +549,7 @@ pub fn apply_scene_commands(
                 subset,
                 reply,
             } => {
-                let result = add_representation(
+                let result = add_actor(
                     &mut commands,
                     &mut counter,
                     &registry,
@@ -567,7 +568,7 @@ pub fn apply_scene_commands(
                 let _ = reply.send(result);
             }
 
-            SceneCommand::SetRepresentation {
+            SceneCommand::SetActor {
                 id,
                 params,
                 colour,
@@ -575,10 +576,10 @@ pub fn apply_scene_commands(
                 subset,
                 reply,
             } => {
-                let result = set_representation(
+                let result = set_actor(
                     &registry,
                     &drawn,
-                    &mut representations,
+                    &mut actors,
                     &ids,
                     &mut arrays,
                     id,
@@ -590,13 +591,13 @@ pub fn apply_scene_commands(
                 let _ = reply.send(result);
             }
 
-            SceneCommand::RemoveRepresentation { id, reply } => {
+            SceneCommand::RemoveActor { id, reply } => {
                 let existed = match drawn.remove(&id) {
                     Some(entity) => {
-                        // Representations own nothing, so there is no subtree
-                        // question of the kind object deletion has to answer.
+                        // Actors own nothing, so there is no subtree question
+                        // of the kind object deletion has to answer.
                         commands.entity(entity).despawn();
-                        info!("scene: removed representation {id}");
+                        info!("scene: removed actor {id}");
                         true
                     }
                     None => false,
@@ -604,7 +605,7 @@ pub fn apply_scene_commands(
                 let _ = reply.send(existed);
             }
 
-            SceneCommand::ListRepresentations { source, reply } => {
+            SceneCommand::ListActors { source, reply } => {
                 let filter = match source {
                     Some(id) => match index.get(&id) {
                         Some(entity) => Some(*entity),
@@ -615,16 +616,16 @@ pub fn apply_scene_commands(
                     },
                     None => None,
                 };
-                let mut listing: Vec<RepresentationSummary> = representations
+                let mut listing: Vec<ActorSummary> = actors
                     .iter()
                     .filter(|item| filter.is_none_or(|object| item.7.0 == object))
-                    .filter_map(|item| summarise_representation(item, &ids, &arrays))
+                    .filter_map(|item| summarise_actor(item, &ids, &arrays))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
                 let _ = reply.send(Ok(listing));
             }
 
-            SceneCommand::ListRepresentationKinds { reply } => {
+            SceneCommand::ListActorKinds { reply } => {
                 let kinds = registry
                     .iter()
                     .map(|kind| KindSummary {
@@ -646,10 +647,10 @@ pub fn apply_scene_commands(
 
 /// Adds a way of drawing an object.
 #[allow(clippy::too_many_arguments)]
-fn add_representation(
+fn add_actor(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
-    registry: &RepresentationRegistry,
+    registry: &ActorRegistry,
     index: &HashMap<u64, Entity>,
     drawn: &mut HashMap<u64, Entity>,
     objects: &Objects,
@@ -661,7 +662,7 @@ fn add_representation(
     colour: Option<ColorBy>,
     subset: Option<subset::SubsetRequest>,
     arrays: &mut Assets<DataArray>,
-) -> Result<RepresentationSummary, SceneError> {
+) -> Result<ActorSummary, SceneError> {
     let source_entity = *index.get(&source).ok_or(SceneError::NoSuchObject(source))?;
     let parent_entity = match parent {
         Some(id) => *index.get(&id).ok_or(SceneError::NoSuchObject(id))?,
@@ -695,8 +696,8 @@ fn add_representation(
         });
     }
 
-    // Unset parameters take the kind's default: this is a new representation,
-    // so there is no previous value to preserve.
+    // Unset parameters take the kind's default: this is a new actor, so there
+    // is no previous value to preserve.
     let params = registered.normalise(&params);
     let colour = colour.unwrap_or_else(|| ColorBy {
         field: default_colour_field(fields.get(source_entity).ok()),
@@ -717,22 +718,22 @@ fn add_representation(
         }),
     };
 
-    let (id, entity) = link::spawn_representation(
+    let (id, entity) = link::spawn_actor(
         commands,
         counter,
         source_entity,
         parent_entity,
         subset,
         (
-            RepresentationKindId(registered.id),
-            RepresentationParams(params.clone()),
+            ActorKindId(registered.id),
+            ActorParams(params.clone()),
             colour.clone(),
         ),
     );
     drawn.insert(id, entity);
 
     info!(
-        "scene: object {source} also drawn as {} (representation {id}){}",
+        "scene: object {source} also drawn as {} (actor {id}){}",
         registered.id,
         match parent {
             Some(parent) if parent != source => format!(", placed under object {parent}"),
@@ -740,7 +741,7 @@ fn add_representation(
         }
     );
 
-    Ok(RepresentationSummary {
+    Ok(ActorSummary {
         id,
         kind: registered.id.to_string(),
         source,
@@ -752,12 +753,12 @@ fn add_representation(
     })
 }
 
-/// Changes an existing representation, leaving anything unnamed alone.
+/// Changes an existing actor, leaving anything unnamed alone.
 #[allow(clippy::too_many_arguments)]
-fn set_representation(
-    registry: &RepresentationRegistry,
+fn set_actor(
+    registry: &ActorRegistry,
     drawn: &HashMap<u64, Entity>,
-    representations: &mut Representors,
+    actors: &mut ActorQuery,
     ids: &Query<&UniqueID>,
     arrays: &mut Assets<DataArray>,
     id: u64,
@@ -765,13 +766,13 @@ fn set_representation(
     colour: Option<ColorBy>,
     visible: Option<bool>,
     subset: Option<Option<subset::SubsetRequest>>,
-) -> Result<RepresentationSummary, SceneError> {
-    let entity = *drawn.get(&id).ok_or(SceneError::NoSuchRepresentation(id))?;
-    let Ok(mut item) = representations.get_mut(entity) else {
+) -> Result<ActorSummary, SceneError> {
+    let entity = *drawn.get(&id).ok_or(SceneError::NoSuchActor(id))?;
+    let Ok(mut item) = actors.get_mut(entity) else {
         // In `drawn` but not yet in the world: added earlier in this same
         // drain, so the query has not seen it. Nothing is lost by asking again
         // next tick, and guessing would mean writing to an entity blind.
-        return Err(SceneError::NoSuchRepresentation(id));
+        return Err(SceneError::NoSuchActor(id));
     };
 
     let registered = registry
@@ -785,7 +786,7 @@ fn set_representation(
             .spec(&key)
             .and_then(|spec| spec.kind.sanitise(value))
         else {
-            warn!("scene: representation {id} has no parameter \"{key}\" of that type");
+            warn!("scene: actor {id} has no parameter \"{key}\" of that type");
             continue;
         };
         item.3.0.insert(key, value);
@@ -805,23 +806,21 @@ fn set_representation(
         *item.6 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
     }
 
-    summarise_representation(
-        representations
-            .get(entity)
-            .expect("the entity was just written"),
+    summarise_actor(
+        actors.get(entity).expect("the entity was just written"),
         ids,
         arrays,
     )
-    .ok_or(SceneError::NoSuchRepresentation(id))
+    .ok_or(SceneError::NoSuchActor(id))
 }
 
-/// Spawns an object entity, its default representation, and registers its
-/// handle. Returns the handle and a summary of the new object.
+/// Spawns an object entity, its default actor, and registers its handle.
+/// Returns the handle and a summary of the new object.
 #[allow(clippy::too_many_arguments)]
 fn spawn_object(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
-    registry: &RepresentationRegistry,
+    registry: &ActorRegistry,
     index: &mut HashMap<u64, Entity>,
     object: SceneObject,
     kind: DatasetKind,
@@ -829,17 +828,21 @@ fn spawn_object(
 ) -> (u64, ObjectSummary) {
     let id = counter.next();
     // Which kind this is depends entirely on what the backends registered, so
-    // an upload of a dataset nothing can draw simply gets no representation
-    // rather than one that silently does nothing.
+    // an upload of a dataset nothing can draw simply gets no actor rather than
+    // one that silently does nothing.
     let default_kind = registry.default_for(kind);
     let colour = ColorBy {
         field: default_colour_field(fields.as_ref()),
         ..default()
     };
-    // Taken before the object is moved into the world; the representation's
-    // handle is only known after, so the summary is assembled at the end.
+    // Taken before the object is moved into the world; the actor's handle is
+    // only known after, so the summary is assembled at the end.
     let name = object.name.clone();
-    let buffers: Vec<BufferMeta> = object.arrays.iter().map(|array| array.meta.clone()).collect();
+    let buffers: Vec<BufferMeta> = object
+        .arrays
+        .iter()
+        .map(|array| array.meta.clone())
+        .collect();
     let total_bytes = object.total_bytes();
 
     let spawned = commands
@@ -856,25 +859,24 @@ fn spawn_object(
 
     // Give the object something to draw, so an upload is visible without a
     // follow-up call. Source and placement are the same object here; they only
-    // differ once a client asks for a representation of one object under
-    // another.
-    let drawn: Vec<RepresentationSummary> = default_kind
+    // differ once a client asks for an actor of one object under another.
+    let drawn: Vec<ActorSummary> = default_kind
         .map(|default_kind| {
             let params = default_kind.defaults();
-            let (representation, _) = link::spawn_representation(
+            let (actor, _) = link::spawn_actor(
                 commands,
                 counter,
                 spawned,
                 spawned,
                 Subset::All,
                 (
-                    RepresentationKindId(default_kind.id),
-                    RepresentationParams(params.clone()),
+                    ActorKindId(default_kind.id),
+                    ActorParams(params.clone()),
                     colour.clone(),
                 ),
             );
-            RepresentationSummary {
-                id: representation,
+            ActorSummary {
+                id: actor,
                 kind: default_kind.id.to_string(),
                 source: id,
                 parent: Some(id),
@@ -894,7 +896,7 @@ fn spawn_object(
         kind,
         buffers,
         total_bytes,
-        representations: drawn,
+        actors: drawn,
         parent: None,
     };
 
@@ -905,7 +907,7 @@ fn spawn_object(
         summary.name,
         summary.buffers.len(),
         summary.total_bytes,
-        default_kind.map(|kind| kind.id).unwrap_or("no representation"),
+        default_kind.map(|kind| kind.id).unwrap_or("no actor"),
     );
 
     (id, summary)
@@ -1022,14 +1024,13 @@ fn effective_parent(
 ///
 /// Non-recursive is the default because `Children` is a `linked_spawn`
 /// relationship: despawning an object would otherwise take every object
-/// parented to it as well. Child *objects* are detached first; child
-/// *representations* are left alone so they are despawned along with their
-/// object.
+/// parented to it as well. Child *objects* are detached first; child *actors*
+/// are left alone so they are despawned along with their object.
 ///
-/// Representations *sourced* from a doomed object are taken down explicitly,
-/// because they need not be parented to it. One parented elsewhere would
-/// survive the despawn with its `Mesh3d` intact and go on drawing data that no
-/// longer exists.
+/// Actors *sourced* from a doomed object are taken down explicitly, because
+/// they need not be parented to it. One parented elsewhere would survive the
+/// despawn with its `Mesh3d` intact and go on drawing data that no longer
+/// exists.
 #[allow(clippy::too_many_arguments)]
 fn delete_object(
     commands: &mut Commands,
@@ -1051,8 +1052,8 @@ fn delete_object(
         collect_descendants(entity, objects, children, &mut doomed);
     } else if let Ok(list) = children.get(entity) {
         for child in list.iter() {
-            // Only detach objects. Representations belong to this object and
-            // should die with it.
+            // Only detach objects. Actors belong to this object and should die
+            // with it.
             if objects.contains(child) {
                 commands.entity(child).remove::<ChildOf>();
             }
@@ -1061,18 +1062,18 @@ fn delete_object(
 
     let mut deleted = Deleted {
         objects: Vec::with_capacity(doomed.len()),
-        representations: Vec::new(),
+        actors: Vec::new(),
     };
     for object in doomed {
         if let Ok(unique) = ids.get(object) {
             deleted.objects.push(unique.0);
         }
         if let Ok((.., Some(drawn_by))) = objects.get(object) {
-            for representation in drawn_by.iter() {
-                if let Ok(unique) = ids.get(representation) {
-                    deleted.representations.push(unique.0);
+            for actor in drawn_by.iter() {
+                if let Ok(unique) = ids.get(actor) {
+                    deleted.actors.push(unique.0);
                 }
-                commands.entity(representation).despawn();
+                commands.entity(actor).despawn();
             }
         }
     }
@@ -1080,7 +1081,7 @@ fn delete_object(
     for handle in &deleted.objects {
         index.remove(handle);
     }
-    for handle in &deleted.representations {
+    for handle in &deleted.actors {
         drawn.remove(handle);
     }
     commands.entity(entity).despawn();
@@ -1092,17 +1093,17 @@ fn delete_object(
         } else {
             String::new()
         },
-        match deleted.representations.len() {
+        match deleted.actors.len() {
             0 => String::new(),
-            n => format!(", and {n} representation(s) drawing them"),
+            n => format!(", and {n} actor(s) drawing them"),
         }
     );
 
     deleted
 }
 
-/// Appends every descendant *object* of `entity`, skipping representations,
-/// which are children too but are not part of the object tree.
+/// Appends every descendant *object* of `entity`, skipping actors, which are
+/// children too but are not part of the object tree.
 fn collect_descendants(
     entity: Entity,
     objects: &Objects,
@@ -1121,8 +1122,8 @@ fn collect_descendants(
     }
 }
 
-/// The field a new representation should colour by: the first scalar in name
-/// order, or `None` when the object has no scalar to show.
+/// The field a new actor should colour by: the first scalar in name order, or
+/// `None` when the object has no scalar to show.
 ///
 /// Chosen once, here, so that whatever the UI displays is what is actually
 /// drawn. Inferring it at draw time instead made "flat" in the UI mean
@@ -1138,16 +1139,16 @@ fn default_colour_field(fields: Option<&data::Fields>) -> Option<String> {
     scalars.first().map(|name| (*name).clone())
 }
 
-/// Describes one representation from its query item.
+/// Describes one actor from its query item.
 ///
 /// `None` when the source object has no handle, which should not happen and is
-/// not worth inventing one for — such a representation is about to be reaped.
-fn summarise_representation(
-    (_, id, kind, params, colour, visibility, subset, source, parent): RepresentationItem<'_>,
+/// not worth inventing one for — such an actor is about to be reaped.
+fn summarise_actor(
+    (_, id, kind, params, colour, visibility, subset, source, parent): ActorItem<'_>,
     ids: &Query<&UniqueID>,
     arrays: &Assets<DataArray>,
-) -> Option<RepresentationSummary> {
-    Some(RepresentationSummary {
+) -> Option<ActorSummary> {
+    Some(ActorSummary {
         id: id.0,
         kind: kind.0.to_string(),
         source: ids.get(source.0).ok()?.0,
@@ -1156,8 +1157,8 @@ fn summarise_representation(
             .map(|unique| unique.0),
         params: params.0.clone(),
         colour: colour.clone(),
-        // What this representation was told; an object hidden above it still
-        // hides it on screen, which is `InheritedVisibility`'s business.
+        // What this actor was told; an object hidden above it still hides it
+        // on screen, which is `InheritedVisibility`'s business.
         visible: *visibility != Visibility::Hidden,
         subset: match subset {
             Subset::All => None,
@@ -1178,7 +1179,7 @@ fn summarise(
     id: u64,
     object: &SceneObject,
     kind: DatasetKind,
-    representations: Vec<RepresentationSummary>,
+    actors: Vec<ActorSummary>,
     parent: Option<u64>,
 ) -> ObjectSummary {
     ObjectSummary {
@@ -1187,7 +1188,7 @@ fn summarise(
         kind,
         buffers: object.arrays.iter().map(|a| a.meta.clone()).collect(),
         total_bytes: object.total_bytes(),
-        representations,
+        actors,
         parent,
     }
 }
@@ -1209,7 +1210,7 @@ mod tests {
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
         app.init_resource::<GlobalIDCounter>();
-        app.init_resource::<RepresentationRegistry>();
+        app.init_resource::<ActorRegistry>();
         app.init_resource::<KeepAwake>();
         app.init_resource::<GrpcBridge>();
         app.add_systems(Update, apply_scene_commands);

@@ -1,19 +1,18 @@
 //! Which ways of drawing exist, and what can be tuned about each.
 //!
-//! Representation kinds used to be variants of an enum here, which meant this
-//! module had to know every way of drawing anything — and had to carry a list
-//! of which ones a backend could actually honour, a fact only the backend knows.
+//! Actor kinds used to be variants of an enum here, which meant this module
+//! had to know every way of drawing anything — and had to carry a list of
+//! which ones a backend could actually honour, a fact only the backend knows.
 //! Backends register their kinds instead, so a kind exists exactly when
 //! something can draw it and a new backend needs no edit here.
 //!
 //! Each kind declares its parameters, and that one declaration is what the UI
 //! builds controls from, what the wire format carries, and what fills in
-//! defaults. A representation's parameters live in [`RepresentationParams`] as
-//! the single source of truth; [`apply_representation_params`] regenerates the
-//! backend's own typed component from them whenever they change. Backends
-//! therefore read plain typed fields and never touch the map, and nothing has
-//! to keep two copies in agreement — the derived one is rewritten, never
-//! edited.
+//! defaults. An actor's parameters live in [`ActorParams`] as the single
+//! source of truth; [`apply_actor_params`] regenerates the backend's own typed
+//! component from them whenever they change. Backends therefore read plain
+//! typed fields and never touch the map, and nothing has to keep two copies in
+//! agreement — the derived one is rewritten, never edited.
 
 use bevy::ecs::system::EntityCommands;
 use bevy::platform::collections::HashMap;
@@ -21,7 +20,7 @@ use bevy::prelude::*;
 
 use super::DatasetKind;
 
-/// A single tunable value on a representation.
+/// A single tunable value on an actor.
 ///
 /// Not `Copy`, because `Text` owns a `String`. Everything that reads a
 /// parameter borrows it.
@@ -56,7 +55,7 @@ impl ParamValue {
     }
 }
 
-/// A representation's parameters, keyed by [`ParamSpec::id`].
+/// An actor's parameters, keyed by [`ParamSpec::id`].
 pub type ParamMap = HashMap<String, ParamValue>;
 
 /// Reads a float parameter, falling back when it is missing or the wrong type.
@@ -145,7 +144,7 @@ impl ParamKind {
     }
 }
 
-/// One tunable parameter of a representation kind.
+/// One tunable parameter of an actor kind.
 #[derive(Debug, Clone, Copy)]
 pub struct ParamSpec {
     /// Stable identifier, used as the map key and on the wire.
@@ -156,7 +155,7 @@ pub struct ParamSpec {
 }
 
 /// A way of drawing something, as declared by the backend that draws it.
-pub struct RepresentationKind {
+pub struct ActorKind {
     /// Stable identifier — `"points"`, `"ball-and-stick"`. Goes over the wire.
     pub id: &'static str,
     pub label: &'static str,
@@ -170,7 +169,7 @@ pub struct RepresentationKind {
     pub apply: fn(&mut EntityCommands, &ParamMap),
 }
 
-impl RepresentationKind {
+impl ActorKind {
     pub fn spec(&self, id: &str) -> Option<&ParamSpec> {
         self.params.iter().find(|spec| spec.id == id)
     }
@@ -206,76 +205,73 @@ impl RepresentationKind {
     }
 }
 
-/// Every representation kind some backend has registered.
+/// Every actor kind some backend has registered.
 ///
 /// Order is registration order, and it decides which kind an upload is drawn
 /// with: [`default_for`](Self::default_for) takes the first that supports the
 /// dataset. Backends registering in `DrawPlugin` therefore also declare a
 /// preference.
 #[derive(Resource, Default)]
-pub struct RepresentationRegistry(Vec<RepresentationKind>);
+pub struct ActorRegistry(Vec<ActorKind>);
 
-impl RepresentationRegistry {
+impl ActorRegistry {
     /// Adds a kind. A duplicate id replaces the earlier registration, so a
     /// backend can deliberately take over a name from another.
-    pub fn register(&mut self, kind: RepresentationKind) {
+    pub fn register(&mut self, kind: ActorKind) {
         if let Some(existing) = self.0.iter_mut().find(|existing| existing.id == kind.id) {
-            warn!("draw: representation kind \"{}\" re-registered", kind.id);
+            warn!("draw: actor kind \"{}\" re-registered", kind.id);
             *existing = kind;
             return;
         }
         self.0.push(kind);
     }
 
-    pub fn get(&self, id: &str) -> Option<&RepresentationKind> {
+    pub fn get(&self, id: &str) -> Option<&ActorKind> {
         self.0.iter().find(|kind| kind.id == id)
     }
 
     // Wanted by the RPC that lets a client ask what kinds exist rather than
     // carrying its own table of them.
     #[allow(dead_code)]
-    pub fn iter(&self) -> impl Iterator<Item = &RepresentationKind> {
+    pub fn iter(&self) -> impl Iterator<Item = &ActorKind> {
         self.0.iter()
     }
 
     /// The kinds that can draw this dataset, in registration order.
-    pub fn for_dataset(&self, dataset: DatasetKind) -> impl Iterator<Item = &RepresentationKind> {
+    pub fn for_dataset(&self, dataset: DatasetKind) -> impl Iterator<Item = &ActorKind> {
         self.0.iter().filter(move |kind| (kind.supports)(dataset))
     }
 
     /// How to draw an upload that did not ask for anything specific.
-    pub fn default_for(&self, dataset: DatasetKind) -> Option<&RepresentationKind> {
+    pub fn default_for(&self, dataset: DatasetKind) -> Option<&ActorKind> {
         self.for_dataset(dataset).next()
     }
 }
 
-/// Which registered kind a representation is.
+/// Which registered kind an actor is.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RepresentationKindId(pub &'static str);
+pub struct ActorKindId(pub &'static str);
 
-/// A representation's parameters — the authoritative copy.
+/// An actor's parameters — the authoritative copy.
 ///
 /// Always complete and in range: everything that writes it goes through
-/// [`RepresentationKind::normalise`] first.
+/// [`ActorKind::normalise`] first.
 #[derive(Component, Debug, Clone, Default, PartialEq)]
-pub struct RepresentationParams(pub ParamMap);
+pub struct ActorParams(pub ParamMap);
 
 /// Regenerates backends' typed style components from the parameters.
 ///
-/// `Changed` covers insertion, so a representation gets its style component on
-/// the tick it is spawned. Backends never write these components, which is what
+/// `Changed` covers insertion, so an actor gets its style component on the
+/// tick it is spawned. Backends never write these components, which is what
 /// keeps the map authoritative rather than merely one of two opinions.
-pub fn apply_representation_params(
+pub fn apply_actor_params(
     mut commands: Commands,
-    registry: Res<RepresentationRegistry>,
-    changed: Query<
-        (Entity, &RepresentationKindId, &RepresentationParams),
-        Changed<RepresentationParams>,
-    >,
+    registry: Res<ActorRegistry>,
+    changed: Query<(Entity, &ActorKindId, &ActorParams), Changed<ActorParams>>,
 ) {
     for (entity, kind, params) in &changed {
         let Some(registered) = registry.get(kind.0) else {
-            warn!("draw: no backend registered for representation kind \"{}\"", kind.0);
+            warn!("draw: no backend registered for actor kind \"{}\"", kind.0);
             continue;
         };
         let mut entity = commands.entity(entity);
@@ -305,8 +301,8 @@ mod tests {
         },
     ];
 
-    fn kind() -> RepresentationKind {
-        RepresentationKind {
+    fn kind() -> ActorKind {
+        ActorKind {
             id: "test",
             label: "test",
             supports: |dataset| dataset == DatasetKind::Points,
@@ -350,15 +346,17 @@ mod tests {
 
     #[test]
     fn the_first_registered_supporting_kind_is_the_default() {
-        let mut registry = RepresentationRegistry::default();
+        let mut registry = ActorRegistry::default();
         registry.register(kind());
-        registry.register(RepresentationKind {
+        registry.register(ActorKind {
             id: "second",
             ..kind()
         });
 
         assert_eq!(
-            registry.default_for(DatasetKind::Points).map(|kind| kind.id),
+            registry
+                .default_for(DatasetKind::Points)
+                .map(|kind| kind.id),
             Some("test")
         );
         assert_eq!(registry.for_dataset(DatasetKind::Points).count(), 2);
@@ -375,11 +373,11 @@ mod tests {
 
     fn app() -> App {
         let mut app = App::new();
-        app.init_resource::<RepresentationRegistry>();
-        app.add_systems(Update, apply_representation_params);
+        app.init_resource::<ActorRegistry>();
+        app.add_systems(Update, apply_actor_params);
         app.world_mut()
-            .resource_mut::<RepresentationRegistry>()
-            .register(RepresentationKind {
+            .resource_mut::<ActorRegistry>()
+            .register(ActorKind {
                 apply: |entity, params| {
                     entity.insert(TestStyle {
                         size: float(params, "size", 0.05),
@@ -396,10 +394,7 @@ mod tests {
         let mut app = app();
         let entity = app
             .world_mut()
-            .spawn((
-                RepresentationKindId("test"),
-                RepresentationParams(kind().defaults()),
-            ))
+            .spawn((ActorKindId("test"), ActorParams(kind().defaults())))
             .id();
 
         app.update();
@@ -409,11 +404,11 @@ mod tests {
                 size: 0.05,
                 shaded: true
             }),
-            "a representation should have its style on the tick it appears"
+            "an actor should have its style on the tick it appears"
         );
 
         app.world_mut()
-            .get_mut::<RepresentationParams>(entity)
+            .get_mut::<ActorParams>(entity)
             .unwrap()
             .0
             .insert("size".into(), ParamValue::Float(0.5));
@@ -432,10 +427,7 @@ mod tests {
         let mut app = app();
         let entity = app
             .world_mut()
-            .spawn((
-                RepresentationKindId("nothing-draws-this"),
-                RepresentationParams::default(),
-            ))
+            .spawn((ActorKindId("nothing-draws-this"), ActorParams::default()))
             .id();
 
         app.update();
@@ -444,14 +436,17 @@ mod tests {
 
     #[test]
     fn re_registering_replaces_rather_than_duplicates() {
-        let mut registry = RepresentationRegistry::default();
+        let mut registry = ActorRegistry::default();
         registry.register(kind());
-        registry.register(RepresentationKind {
+        registry.register(ActorKind {
             label: "replaced",
             ..kind()
         });
 
         assert_eq!(registry.iter().count(), 1);
-        assert_eq!(registry.get("test").map(|kind| kind.label), Some("replaced"));
+        assert_eq!(
+            registry.get("test").map(|kind| kind.label),
+            Some("replaced")
+        );
     }
 }

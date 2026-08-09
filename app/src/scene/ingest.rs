@@ -145,8 +145,7 @@ fn classify(by_name: &HashMap<String, NamedArray>) -> (Dataset, DatasetKind) {
 
     // Molecular structure wins: an object with atoms and bonds is a molecule
     // even though it is also, technically, points joined by lines.
-    let is_molecule =
-        by_name.contains_key(ROLE_ELEMENTS) || by_name.contains_key(ROLE_BONDS);
+    let is_molecule = by_name.contains_key(ROLE_ELEMENTS) || by_name.contains_key(ROLE_BONDS);
     if is_molecule {
         let molecule = MoleculeData {
             positions: positions.handle.clone(),
@@ -155,7 +154,7 @@ fn classify(by_name: &HashMap<String, NamedArray>) -> (Dataset, DatasetKind) {
                 pairs: pairs.handle.clone(),
                 orders: by_name.get(ROLE_BOND_ORDERS).map(|a| a.handle.clone()),
             }),
-            // Residues and chains have no wire representation yet, so uploaded
+            // Residues and chains have no wire actor yet, so uploaded
             // molecules are currently flat atom sets. Cartoon rendering will
             // need these before it can work.
             residues: Vec::new(),
@@ -269,7 +268,10 @@ mod tests {
             result.fields.0["at_samples"].association,
             Association::PerPoint
         );
-        assert_eq!(result.fields.0["at_cells"].association, Association::PerCell);
+        assert_eq!(
+            result.fields.0["at_cells"].association,
+            Association::PerCell
+        );
     }
 
     /// A field matching neither count is still kept — the data is the client's
@@ -298,7 +300,10 @@ mod tests {
         assert_eq!(points.kind, DatasetKind::Points);
 
         let mesh = ingested(
-            vec![buffer("positions", vec![4, 3]), buffer("indices", vec![2, 3])],
+            vec![
+                buffer("positions", vec![4, 3]),
+                buffer("indices", vec![2, 3]),
+            ],
             None,
         );
         assert_eq!(mesh.kind, DatasetKind::Mesh);

@@ -1,27 +1,25 @@
 //! How an object gets drawn.
 //!
-//! Representations are **entities of their own**, linked to the object they
-//! draw by [`RepresentationOf`](super::RepresentationOf), so one dataset can
-//! carry several at once — a protein as cartoon *and* licorice, a grid as
-//! outline *and* volume. That also makes it possible to run two rendering
-//! approaches over the same data side by side and compare them, which is a
-//! goal rather than an accident.
+//! Actors are **entities of their own**, linked to the object they draw by
+//! [`ActorOf`](super::ActorOf), so one dataset can carry several at once — a
+//! protein as cartoon *and* licorice, a grid as outline *and* volume. That
+//! also makes it possible to run two rendering approaches over the same data
+//! side by side and compare them, which is a goal rather than an accident.
 //!
-//! What kinds of representation exist is not decided here: backends declare
-//! them, and [`registry`](super::registry) holds the declarations. This module
-//! keeps only what every kind has regardless of backend, which today is
-//! colouring.
+//! What kinds of actor exist is not decided here: backends declare them, and
+//! [`registry`](super::registry) holds the declarations. This module keeps
+//! only what every kind has regardless of backend, which today is colouring.
 //!
 //! Nothing here draws anything. A rendering backend is a plugin that queries
-//! its own style component alongside `&RepresentationOf`, reads the *source*
-//! object's dataset — not necessarily the transform parent's — and produces
-//! whatever it produces. [`crate::draw`] is the current one, a straightforward
-//! `Mesh3d`-per-representation baseline, and the split exists so a second can
-//! run beside it rather than replace it.
+//! its own style component alongside `&ActorOf`, reads the *source* object's
+//! dataset — not necessarily the transform parent's — and produces whatever it
+//! produces. [`crate::draw`] is the current one, a straightforward
+//! `Mesh3d`-per-actor baseline, and the split exists so a second can run
+//! beside it rather than replace it.
 
 use bevy::prelude::*;
 
-/// How a representation takes its colour.
+/// How an actor takes its colour.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct ColorBy {
     /// Field to map. `None` paints a flat colour.

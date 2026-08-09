@@ -1,11 +1,11 @@
 //! Arrays and the meaning attached to them.
 //!
-//! Raw bytes live in [`DataArray`], a Bevy asset, so several representations of
-//! one object share a single copy and get change detection for free. Everything
+//! Raw bytes live in [`DataArray`], a Bevy asset, so several actors of one
+//! object share a single copy and get change detection for free. Everything
 //! that says what the bytes *mean* — element type, shape, whether a field is
 //! scalar, vector or tensor, whether it sits on points or cells — is kept
-//! outside the array, because the same bytes legitimately mean different things
-//! in different contexts.
+//! outside the array, because the same bytes legitimately mean different
+//! things in different contexts.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;

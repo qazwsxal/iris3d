@@ -159,8 +159,8 @@ fn spawn_server(addr: SocketAddr, commands: SceneSender) {
 
             runtime.block_on(async move {
                 let scene = scene_service::SceneBridgeService::new(commands);
-                let service =
-                    SceneServiceServer::new(scene).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
+                let service = SceneServiceServer::new(scene)
+                    .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
 
                 info!("grpc: listening on {addr}");
                 if let Err(err) = Server::builder().add_service(service).serve(addr).await {

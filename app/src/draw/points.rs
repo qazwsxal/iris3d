@@ -17,9 +17,7 @@ use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
 use crate::scene::data::Fields;
-use crate::scene::registry::{
-    float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
-};
+use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float};
 use crate::scene::{DataArray, DatasetKind, PointCloud};
 
 use super::{Dirty, Drawable, mark};
@@ -45,8 +43,8 @@ const PARAMS: &[ParamSpec] = &[ParamSpec {
     },
 }];
 
-pub fn register(registry: &mut RepresentationRegistry) {
-    registry.register(RepresentationKind {
+pub fn register(registry: &mut ActorRegistry) {
+    registry.register(ActorKind {
         id: "points",
         label: "points",
         supports: |dataset| dataset == DatasetKind::Points,
@@ -145,7 +143,9 @@ pub fn draw_points(
 
         if dirty.geometry || dirty.colour {
             let tint = super::colour_field(colour, fields)
-                .and_then(|field| super::vertex_colours(field, colour, &arrays, array.count() as usize))
+                .and_then(|field| {
+                    super::vertex_colours(field, colour, &arrays, array.count() as usize)
+                })
                 // Colours are computed over the whole field, then narrowed to
                 // the drawn points, so a subset does not shift the mapping.
                 .map(|colours| match &kept {
@@ -166,12 +166,20 @@ pub fn draw_points(
                         positions.push([centre.x, centre.y, centre.z]);
                         uvs.push(corner);
                     }
-                    indices
-                        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                    indices.extend_from_slice(&[
+                        base,
+                        base + 1,
+                        base + 2,
+                        base,
+                        base + 2,
+                        base + 3,
+                    ]);
                 }
 
-                let mut mesh =
-                    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+                let mut mesh = Mesh::new(
+                    PrimitiveTopology::TriangleList,
+                    RenderAssetUsages::default(),
+                );
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
@@ -204,7 +212,7 @@ pub fn draw_points(
 mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype, NamedArray};
-    use crate::scene::{ColorBy, RepresentationKindId, RepresentationOf, SceneObject, Subset};
+    use crate::scene::{ActorKindId, ActorOf, ColorBy, SceneObject, Subset};
 
     /// Runs the invalidation chain and this backend, with no renderer behind
     /// it: everything being asserted is about assets, not pixels.
@@ -249,19 +257,19 @@ mod tests {
                 PointCloud { positions },
             ))
             .id();
-        let representation = app
+        let actor = app
             .world_mut()
             .spawn((
-                RepresentationKindId("points"),
+                ActorKindId("points"),
                 PointsStyle { size: 0.05 },
                 ColorBy::default(),
                 Subset::All,
-                RepresentationOf(object),
+                ActorOf(object),
             ))
             .id();
 
         app.update();
-        (app, object, representation)
+        (app, object, actor)
     }
 
     fn mesh_of(app: &App, entity: Entity) -> AssetId<Mesh> {
@@ -285,12 +293,12 @@ mod tests {
 
     #[test]
     fn drawing_produces_one_mesh_and_one_material() {
-        let (app, _, representation) = app();
+        let (app, _, actor) = app();
         assert_eq!(counts(&app), (1, 1));
         assert_eq!(
             app.world()
                 .resource::<Assets<Mesh>>()
-                .get(mesh_of(&app, representation))
+                .get(mesh_of(&app, actor))
                 .map(|mesh| mesh.count_vertices()),
             Some(16),
             "four points, four vertices each"
@@ -302,17 +310,14 @@ mod tests {
     /// one per frame.
     #[test]
     fn recolouring_reuses_the_mesh() {
-        let (mut app, _, representation) = app();
-        let (mesh, material) = (mesh_of(&app, representation), material_of(&app, representation));
+        let (mut app, _, actor) = app();
+        let (mesh, material) = (mesh_of(&app, actor), material_of(&app, actor));
 
-        app.world_mut()
-            .get_mut::<ColorBy>(representation)
-            .unwrap()
-            .flat = Color::srgb(1.0, 0.0, 0.0);
+        app.world_mut().get_mut::<ColorBy>(actor).unwrap().flat = Color::srgb(1.0, 0.0, 0.0);
         app.update();
 
-        assert_eq!(mesh_of(&app, representation), mesh, "mesh should be reused");
-        assert_eq!(material_of(&app, representation), material);
+        assert_eq!(mesh_of(&app, actor), mesh, "mesh should be reused");
+        assert_eq!(material_of(&app, actor), material);
         assert_eq!(counts(&app), (1, 1), "nothing should have been allocated");
     }
 
@@ -320,17 +325,14 @@ mod tests {
     /// nor the material *asset* — only the value inside it.
     #[test]
     fn resizing_reuses_both_assets() {
-        let (mut app, _, representation) = app();
-        let (mesh, material) = (mesh_of(&app, representation), material_of(&app, representation));
+        let (mut app, _, actor) = app();
+        let (mesh, material) = (mesh_of(&app, actor), material_of(&app, actor));
 
-        app.world_mut()
-            .get_mut::<PointsStyle>(representation)
-            .unwrap()
-            .size = 0.5;
+        app.world_mut().get_mut::<PointsStyle>(actor).unwrap().size = 0.5;
         app.update();
 
-        assert_eq!(mesh_of(&app, representation), mesh);
-        assert_eq!(material_of(&app, representation), material);
+        assert_eq!(mesh_of(&app, actor), mesh);
+        assert_eq!(material_of(&app, actor), material);
         assert_eq!(counts(&app), (1, 1));
         assert_eq!(
             app.world()
@@ -346,7 +348,7 @@ mod tests {
     /// repaints — the vertex count moves, so a repaint would be wrong.
     #[test]
     fn a_subset_draws_fewer_points() {
-        let (mut app, _, representation) = app();
+        let (mut app, _, actor) = app();
         let indices = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
@@ -356,7 +358,7 @@ mod tests {
                 data: [0u32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
             });
 
-        *app.world_mut().get_mut::<Subset>(representation).unwrap() = Subset::Selected {
+        *app.world_mut().get_mut::<Subset>(actor).unwrap() = Subset::Selected {
             array: indices,
             encoding: crate::scene::SubsetEncoding::Indices,
             association: crate::scene::data::Association::PerPoint,
@@ -366,7 +368,7 @@ mod tests {
         assert_eq!(
             app.world()
                 .resource::<Assets<Mesh>>()
-                .get(mesh_of(&app, representation))
+                .get(mesh_of(&app, actor))
                 .map(|mesh| mesh.count_vertices()),
             Some(8),
             "two of four points, four vertices each"
@@ -377,12 +379,10 @@ mod tests {
     /// A hundred slider frames should leave exactly the assets one frame does.
     #[test]
     fn dragging_a_slider_allocates_nothing() {
-        let (mut app, _, representation) = app();
+        let (mut app, _, actor) = app();
         for step in 0..100 {
-            app.world_mut()
-                .get_mut::<PointsStyle>(representation)
-                .unwrap()
-                .size = 0.01 + step as f32 * 0.001;
+            app.world_mut().get_mut::<PointsStyle>(actor).unwrap().size =
+                0.01 + step as f32 * 0.001;
             app.update();
         }
         assert_eq!(counts(&app), (1, 1));

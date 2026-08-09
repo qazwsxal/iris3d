@@ -1,7 +1,7 @@
 //! Camera, lighting and navigation.
 //!
 //! Backend-agnostic on purpose: whichever way objects end up being drawn, they
-//! need a view to be drawn into. Nothing here knows about representations.
+//! need a view to be drawn into. Nothing here knows about actors.
 
 use bevy::camera::primitives::Aabb;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
@@ -262,7 +262,7 @@ fn frame_content(
         Some(FrameTarget::Subtree(root)) => {
             include(root, &mut min, &mut max);
             // Descendants hold the geometry — an object entity itself has no
-            // mesh, its representation children do.
+            // mesh, its actor children do.
             let mut stack = vec![root];
             while let Some(entity) = stack.pop() {
                 if let Ok(kids) = children.get(entity) {

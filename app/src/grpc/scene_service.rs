@@ -7,29 +7,27 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::scene::actor::ColorMap;
 use crate::scene::data::Association;
 use crate::scene::dataset::GridData;
 use crate::scene::registry::{ParamKind, ParamMap, ParamValue};
-use crate::scene::representation::ColorMap;
 use crate::scene::subset::SubsetRequest;
 use crate::scene::{
-    BufferMeta, ColorBy, Dtype, KindSummary, NamedBuffer, ObjectSummary, RepresentationSummary,
+    ActorSummary, BufferMeta, ColorBy, Dtype, KindSummary, NamedBuffer, ObjectSummary,
     SceneCommand, SceneError, SubsetEncoding,
 };
 
 use super::SceneSender;
 use super::proto::{
-    AddRepresentationRequest, AddRepresentationResponse, BoolParam, BufferSpec, Chunk, Color,
-    ChoiceParam, ColorSpec, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
-    DeleteObjectResponse, Dtype as ProtoDtype, FieldParam, FloatParam, Grid as ProtoGrid,
-    ListObjectsRequest, ListObjectsResponse,
-    ListRepresentationKindsRequest, ListRepresentationKindsResponse, ListRepresentationsRequest,
-    ListRepresentationsResponse, ObjectHandle, ObjectHeader, ObjectInfo, ParamSpec as ProtoSpec,
-    ParamValue as ProtoParam, Range, RemoveRepresentationRequest, RemoveRepresentationResponse,
-    RepresentationHandle, RepresentationInfo, RepresentationKindInfo, SetParentRequest,
-    SetParentResponse, SetRepresentationRequest, SetRepresentationResponse, SetTransformRequest,
-    SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadObjectRequest,
-    UploadObjectResponse, Vector3, param_spec, param_value::Value,
+    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, BoolParam,
+    BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest, CreateObjectResponse,
+    DeleteObjectRequest, DeleteObjectResponse, Dtype as ProtoDtype, FieldParam, FloatParam,
+    Grid as ProtoGrid, ListActorKindsRequest, ListActorKindsResponse, ListActorsRequest,
+    ListActorsResponse, ListObjectsRequest, ListObjectsResponse, ObjectHandle, ObjectHeader,
+    ObjectInfo, ParamSpec as ProtoSpec, ParamValue as ProtoParam, Range, RemoveActorRequest,
+    RemoveActorResponse, SetActorRequest, SetActorResponse, SetParentRequest, SetParentResponse,
+    SetTransformRequest, SetTransformResponse, Subset as ProtoSubset, SubsetInfo,
+    UploadObjectRequest, UploadObjectResponse, Vector3, param_spec, param_value::Value,
     scene_service_server::SceneService, subset as subset_proto, upload_object_request::Payload,
 };
 use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
@@ -196,7 +194,9 @@ impl SceneService for SceneBridgeService {
                 } else if quat.length_squared() > f32::EPSILON {
                     Ok(quat.normalize())
                 } else {
-                    Err(Status::invalid_argument("rotation quaternion is zero length"))
+                    Err(Status::invalid_argument(
+                        "rotation quaternion is zero length",
+                    ))
                 }
             })
             .transpose()?;
@@ -240,18 +240,18 @@ impl SceneService for SceneBridgeService {
                 .into_iter()
                 .map(|id| ObjectHandle { id })
                 .collect(),
-            removed_representations: removed
-                .representations
+            removed_actors: removed
+                .actors
                 .into_iter()
-                .map(|id| RepresentationHandle { id })
+                .map(|id| ActorHandle { id })
                 .collect(),
         }))
     }
 
-    async fn add_representation(
+    async fn add_actor(
         &self,
-        request: Request<AddRepresentationRequest>,
-    ) -> Result<Response<AddRepresentationResponse>, Status> {
+        request: Request<AddActorRequest>,
+    ) -> Result<Response<AddActorResponse>, Status> {
         let request = request.into_inner();
         let source = request
             .source
@@ -266,7 +266,7 @@ impl SceneService for SceneBridgeService {
         let subset = request.subset.map(subset_from_proto).transpose()?;
 
         let summary = self
-            .submit(|reply| SceneCommand::AddRepresentation {
+            .submit(|reply| SceneCommand::AddActor {
                 source,
                 kind,
                 parent,
@@ -278,15 +278,15 @@ impl SceneService for SceneBridgeService {
             .await?
             .map_err(scene_error)?;
 
-        Ok(Response::new(AddRepresentationResponse {
-            representation: Some(representation_info(&summary)),
+        Ok(Response::new(AddActorResponse {
+            actor: Some(actor_info(&summary)),
         }))
     }
 
-    async fn set_representation(
+    async fn set_actor(
         &self,
-        request: Request<SetRepresentationRequest>,
-    ) -> Result<Response<SetRepresentationResponse>, Status> {
+        request: Request<SetActorRequest>,
+    ) -> Result<Response<SetActorResponse>, Status> {
         let request = request.into_inner();
         let id = request
             .handle
@@ -309,7 +309,7 @@ impl SceneService for SceneBridgeService {
         };
 
         let summary = self
-            .submit(|reply| SceneCommand::SetRepresentation {
+            .submit(|reply| SceneCommand::SetActor {
                 id,
                 params,
                 colour,
@@ -320,15 +320,15 @@ impl SceneService for SceneBridgeService {
             .await?
             .map_err(scene_error)?;
 
-        Ok(Response::new(SetRepresentationResponse {
-            representation: Some(representation_info(&summary)),
+        Ok(Response::new(SetActorResponse {
+            actor: Some(actor_info(&summary)),
         }))
     }
 
-    async fn remove_representation(
+    async fn remove_actor(
         &self,
-        request: Request<RemoveRepresentationRequest>,
-    ) -> Result<Response<RemoveRepresentationResponse>, Status> {
+        request: Request<RemoveActorRequest>,
+    ) -> Result<Response<RemoveActorResponse>, Status> {
         let id = request
             .into_inner()
             .handle
@@ -336,37 +336,37 @@ impl SceneService for SceneBridgeService {
             .id;
 
         let removed = self
-            .submit(|reply| SceneCommand::RemoveRepresentation { id, reply })
+            .submit(|reply| SceneCommand::RemoveActor { id, reply })
             .await?;
 
-        Ok(Response::new(RemoveRepresentationResponse { removed }))
+        Ok(Response::new(RemoveActorResponse { removed }))
     }
 
-    async fn list_representations(
+    async fn list_actors(
         &self,
-        request: Request<ListRepresentationsRequest>,
-    ) -> Result<Response<ListRepresentationsResponse>, Status> {
+        request: Request<ListActorsRequest>,
+    ) -> Result<Response<ListActorsResponse>, Status> {
         let source = request.into_inner().source.map(|handle| handle.id);
 
         let listing = self
-            .submit(|reply| SceneCommand::ListRepresentations { source, reply })
+            .submit(|reply| SceneCommand::ListActors { source, reply })
             .await?
             .map_err(scene_error)?;
 
-        Ok(Response::new(ListRepresentationsResponse {
-            representations: listing.iter().map(representation_info).collect(),
+        Ok(Response::new(ListActorsResponse {
+            actors: listing.iter().map(actor_info).collect(),
         }))
     }
 
-    async fn list_representation_kinds(
+    async fn list_actor_kinds(
         &self,
-        _request: Request<ListRepresentationKindsRequest>,
-    ) -> Result<Response<ListRepresentationKindsResponse>, Status> {
+        _request: Request<ListActorKindsRequest>,
+    ) -> Result<Response<ListActorKindsResponse>, Status> {
         let kinds = self
-            .submit(|reply| SceneCommand::ListRepresentationKinds { reply })
+            .submit(|reply| SceneCommand::ListActorKinds { reply })
             .await?;
 
-        Ok(Response::new(ListRepresentationKindsResponse {
+        Ok(Response::new(ListActorKindsResponse {
             kinds: kinds.iter().map(kind_info).collect(),
         }))
     }
@@ -374,11 +374,11 @@ impl SceneService for SceneBridgeService {
 
 fn scene_error(error: SceneError) -> Status {
     match error {
-        SceneError::NoSuchObject(_) | SceneError::NoSuchRepresentation(_) => {
+        SceneError::NoSuchObject(_) | SceneError::NoSuchActor(_) => {
             Status::not_found(error.to_string())
         }
         // The caller named something that does not exist in this build, which
-        // it could have discovered with ListRepresentationKinds.
+        // it could have discovered with ListActorKinds.
         SceneError::UnknownKind(_) => Status::invalid_argument(error.to_string()),
         // The request was well-formed but the scene is not in a state where it
         // can be honoured.
@@ -388,7 +388,9 @@ fn scene_error(error: SceneError) -> Status {
     }
 }
 
-fn params_from_proto(params: std::collections::HashMap<String, ProtoParam>) -> Result<ParamMap, Status> {
+fn params_from_proto(
+    params: std::collections::HashMap<String, ProtoParam>,
+) -> Result<ParamMap, Status> {
     params
         .into_iter()
         .map(|(key, value)| {
@@ -418,18 +420,13 @@ fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, Proto
                 ParamValue::Bool(flag) => Value::Flag(*flag),
                 ParamValue::Text(text) => Value::Text(text.clone()),
             };
-            (
-                key.clone(),
-                ProtoParam {
-                    value: Some(value),
-                },
-            )
+            (key.clone(), ProtoParam { value: Some(value) })
         })
         .collect()
 }
 
 /// A `ColorSpec` describes colouring completely, so anything unset takes its
-/// default rather than the representation's current value.
+/// default rather than the actor's current value.
 fn colour_from_proto(spec: ColorSpec) -> Result<ColorBy, Status> {
     let map = if spec.map.is_empty() {
         ColorMap::default()
@@ -476,9 +473,9 @@ fn colour_to_proto(colour: &ColorBy) -> ColorSpec {
     }
 }
 
-fn representation_info(summary: &RepresentationSummary) -> RepresentationInfo {
-    RepresentationInfo {
-        handle: Some(RepresentationHandle { id: summary.id }),
+fn actor_info(summary: &ActorSummary) -> ActorInfo {
+    ActorInfo {
+        handle: Some(ActorHandle { id: summary.id }),
         kind: summary.kind.clone(),
         source: Some(ObjectHandle { id: summary.source }),
         parent: summary.parent.map(|id| ObjectHandle { id }),
@@ -541,8 +538,8 @@ fn subset_from_proto(subset: ProtoSubset) -> Result<SubsetRequest, Status> {
     })
 }
 
-fn kind_info(summary: &KindSummary) -> RepresentationKindInfo {
-    RepresentationKindInfo {
+fn kind_info(summary: &KindSummary) -> ActorKindInfo {
+    ActorKindInfo {
         id: summary.id.clone(),
         label: summary.label.clone(),
         supports: summary.supports.clone(),
@@ -618,20 +615,26 @@ impl Upload {
             if expected != spec.byte_length {
                 return Err(Status::invalid_argument(format!(
                     "buffer {index} (\"{}\"): byte_length is {} but {} {} elements need {expected}",
-                    meta.name, spec.byte_length, meta.dtype, element_count(&meta.shape),
+                    meta.name,
+                    spec.byte_length,
+                    meta.dtype,
+                    element_count(&meta.shape),
                 )));
             }
 
-            total = total.checked_add(expected).ok_or_else(|| {
-                Status::invalid_argument("declared object size overflows a u64")
-            })?;
+            total = total
+                .checked_add(expected)
+                .ok_or_else(|| Status::invalid_argument("declared object size overflows a u64"))?;
             if total > MAX_OBJECT_BYTES {
                 return Err(Status::invalid_argument(format!(
                     "object declares {total} bytes, limit is {MAX_OBJECT_BYTES}"
                 )));
             }
 
-            if metas.iter().any(|other: &BufferMeta| other.name == meta.name) {
+            if metas
+                .iter()
+                .any(|other: &BufferMeta| other.name == meta.name)
+            {
                 return Err(Status::invalid_argument(format!(
                     "duplicate buffer name \"{}\"",
                     meta.name
@@ -748,7 +751,9 @@ impl Upload {
 /// Validates one `BufferSpec` and converts it to its domain equivalent.
 fn buffer_meta(index: usize, spec: &BufferSpec) -> Result<BufferMeta, Status> {
     if spec.name.is_empty() {
-        return Err(Status::invalid_argument(format!("buffer {index}: name is required")));
+        return Err(Status::invalid_argument(format!(
+            "buffer {index}: name is required"
+        )));
     }
     if spec.shape.is_empty() {
         return Err(Status::invalid_argument(format!(
@@ -811,9 +816,11 @@ fn grid_data(grid: ProtoGrid) -> Result<GridData, Status> {
         y: 0.0,
         z: 0.0,
     });
-    if ![origin.x, origin.y, origin.z, spacing.x, spacing.y, spacing.z]
-        .iter()
-        .all(|value| value.is_finite())
+    if ![
+        origin.x, origin.y, origin.z, spacing.x, spacing.y, spacing.z,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
     {
         return Err(Status::invalid_argument(
             "grid origin and spacing must be finite",
@@ -832,7 +839,9 @@ fn grid_data(grid: ProtoGrid) -> Result<GridData, Status> {
         .and_then(|xy| xy.checked_mul(dims.z as u64))
         .is_none()
     {
-        return Err(Status::invalid_argument("grid sample count overflows a u64"));
+        return Err(Status::invalid_argument(
+            "grid sample count overflows a u64",
+        ));
     }
     Ok(grid)
 }
@@ -865,11 +874,7 @@ fn object_info(summary: &ObjectSummary) -> ObjectInfo {
         buffers: summary.buffers.iter().map(buffer_spec).collect(),
         total_bytes: summary.total_bytes,
         dataset_kind: summary.kind.as_str().to_string(),
-        representations: summary
-            .representations
-            .iter()
-            .map(representation_info)
-            .collect(),
+        actors: summary.actors.iter().map(actor_info).collect(),
         parent: summary.parent.map(|id| ObjectHandle { id }),
     }
 }

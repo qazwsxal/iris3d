@@ -1,10 +1,10 @@
 //! Rendering backends.
 //!
-//! Each backend is a system that picks up representation entities of one kind,
-//! reads the dataset of the object the representation is *of* — which need not
-//! be its transform parent — and builds something drawable onto the
-//! representation entity itself. Nothing in [`crate::scene`] knows these exist,
-//! so a backend can be replaced or run alongside another.
+//! Each backend is a system that picks up actor entities of one kind, reads
+//! the dataset of the object the actor is *of* — which need not be its
+//! transform parent — and builds something drawable onto the actor entity
+//! itself. Nothing in [`crate::scene`] knows these exist, so a backend can be
+//! replaced or run alongside another.
 //!
 //! This is the straightforward `Mesh3d`-per-object baseline. It is deliberately
 //! the simple option: it gets every sample dataset on screen and gives a
@@ -14,12 +14,11 @@
 use bevy::asset::embedded_asset;
 use bevy::prelude::*;
 
+use crate::scene::actor::ColorMap;
 use crate::scene::data::{Field, Fields};
-use crate::scene::registry::{RepresentationKindId, RepresentationRegistry};
-use crate::scene::representation::ColorMap;
+use crate::scene::registry::{ActorKindId, ActorRegistry};
 use crate::scene::{
-    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, RepresentationOf, Representations,
-    SceneObject, Subset,
+    ActorOf, Actors, ColorBy, DataArray, MeshData, MoleculeData, PointCloud, SceneObject, Subset,
 };
 
 mod molecule;
@@ -30,7 +29,7 @@ mod volume;
 pub use points::PointQuadMaterial;
 pub use volume::VolumeMaterial;
 
-/// What about a representation's drawable output is out of date.
+/// What about an actor's drawable output is out of date.
 ///
 /// Graded rather than a single flag, because the three differ by orders of
 /// magnitude in cost. Re-tessellating a protein to drag a colour-map slider
@@ -51,7 +50,7 @@ pub struct Dirty {
 }
 
 impl Dirty {
-    /// Everything, for a representation that has never been drawn.
+    /// Everything, for an actor that has never been drawn.
     pub const ALL: Self = Self {
         geometry: true,
         colour: true,
@@ -80,7 +79,7 @@ impl Dirty {
     }
 }
 
-/// Records that part of a representation needs redoing.
+/// Records that part of an actor needs redoing.
 ///
 /// Merges rather than overwrites: several systems mark independently in one
 /// tick — the generic classifier and each backend's own — and an `insert` would
@@ -98,8 +97,8 @@ pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
         });
 }
 
-/// What every backend needs to redraw one representation: its own style, how it
-/// is coloured, whose data it draws, what is out of date, and whatever it
+/// What every backend needs to redraw one actor: its own style, how it is
+/// coloured, whose data it draws, what is out of date, and whatever it
 /// produced last time — which is what makes reuse rather than reallocation
 /// possible.
 pub(crate) type Drawable<'a, Style, Material> = (
@@ -107,7 +106,7 @@ pub(crate) type Drawable<'a, Style, Material> = (
     &'a Style,
     &'a ColorBy,
     &'a Subset,
-    &'a RepresentationOf,
+    &'a ActorOf,
     &'a Dirty,
     Option<&'a Mesh3d>,
     Option<&'a MeshMaterial3d<Material>>,
@@ -123,7 +122,7 @@ pub(crate) struct Invalidate;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 struct Backends;
 
-/// Replaces a mesh in place when the representation already has one.
+/// Replaces a mesh in place when the actor already has one.
 ///
 /// Reusing the handle keeps the entity pointing at the same asset — and, more
 /// to the point, stops every rebuild leaking a fresh `Mesh` into `Assets`.
@@ -166,7 +165,11 @@ pub(crate) fn ensure_material<M: Material>(
 ///
 /// Only legal when the vertex count is unchanged, which is exactly when the
 /// geometry is not also dirty.
-pub(crate) fn repaint(meshes: &mut Assets<Mesh>, existing: Option<&Mesh3d>, colours: Vec<[f32; 4]>) {
+pub(crate) fn repaint(
+    meshes: &mut Assets<Mesh>,
+    existing: Option<&Mesh3d>,
+    colours: Vec<[f32; 4]>,
+) {
     let Some(Mesh3d(handle)) = existing else {
         return;
     };
@@ -198,9 +201,9 @@ impl Plugin for DrawPlugin {
         // a second backend plugin can register alongside this one whichever
         // order they are added in. Registration order decides which kind an
         // upload of each dataset shape is drawn with.
-        app.init_resource::<RepresentationRegistry>();
+        app.init_resource::<ActorRegistry>();
         {
-            let mut registry = app.world_mut().resource_mut::<RepresentationRegistry>();
+            let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             points::register(&mut registry);
             surface::register(&mut registry);
             molecule::register(&mut registry);
@@ -211,39 +214,39 @@ impl Plugin for DrawPlugin {
             MaterialPlugin::<PointQuadMaterial>::default(),
             MaterialPlugin::<VolumeMaterial>::default(),
         ))
-            .add_systems(
-                Update,
+        .add_systems(
+            Update,
+            (
+                // Actors are spawned by the scene during Update, so this whole
+                // chain runs after it to pick them up on the frame they
+                // appear.
+                //
+                // Each backend classifies its own style changes: only it
+                // knows whether one of its parameters feeds the geometry or
+                // a material uniform, and centralising that would put
+                // backend knowledge back in shared code.
                 (
-                    // Representations are spawned by the scene during Update,
-                    // so this whole chain runs after it to pick them up on the
-                    // frame they appear.
-                    //
-                    // Each backend classifies its own style changes: only it
-                    // knows whether one of its parameters feeds the geometry or
-                    // a material uniform, and centralising that would put
-                    // backend knowledge back in shared code.
-                    (
-                        mark_dirty,
-                        points::invalidate,
-                        surface::invalidate,
-                        molecule::invalidate,
-                        volume::invalidate,
-                    )
-                        .in_set(Invalidate),
-                    (
-                        points::draw_points,
-                        surface::draw_surfaces,
-                        molecule::draw_molecules,
-                        volume::draw_volumes,
-                    )
-                        .in_set(Backends),
-                    clear_dirty,
+                    mark_dirty,
+                    points::invalidate,
+                    surface::invalidate,
+                    molecule::invalidate,
+                    volume::invalidate,
                 )
-                    .chain()
-                    // Style components are derived from the parameters, so a
-                    // representation has no style at all until that has run.
-                    .after(crate::scene::registry::apply_representation_params),
-            );
+                    .in_set(Invalidate),
+                (
+                    points::draw_points,
+                    surface::draw_surfaces,
+                    molecule::draw_molecules,
+                    volume::draw_volumes,
+                )
+                    .in_set(Backends),
+                clear_dirty,
+            )
+                .chain()
+                // Style components are derived from the parameters, so an
+                // actor has no style at all until that has run.
+                .after(crate::scene::registry::apply_actor_params),
+        );
     }
 }
 
@@ -254,11 +257,11 @@ impl Plugin for DrawPlugin {
 /// in each of them.
 fn mark_dirty(
     mut commands: Commands,
-    new_representations: Query<Entity, Added<RepresentationKindId>>,
-    recoloured: Query<Entity, (With<RepresentationKindId>, Changed<ColorBy>)>,
-    resubset: Query<Entity, (With<RepresentationKindId>, Changed<Subset>)>,
+    new_actors: Query<Entity, Added<ActorKindId>>,
+    recoloured: Query<Entity, (With<ActorKindId>, Changed<ColorBy>)>,
+    resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
     changed_datasets: Query<
-        &Representations,
+        &Actors,
         Or<(
             Changed<PointCloud>,
             Changed<MeshData>,
@@ -267,9 +270,9 @@ fn mark_dirty(
         )>,
     >,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
-    objects: Query<(&SceneObject, &Representations)>,
+    objects: Query<(&SceneObject, &Actors)>,
 ) {
-    for entity in &new_representations {
+    for entity in &new_actors {
         mark(&mut commands, entity, Dirty::ALL);
     }
 
@@ -288,11 +291,11 @@ fn mark_dirty(
     }
 
     // Following the source link rather than the child list is what makes this
-    // correct for shared data: a representation parented under some other node
-    // still redraws when the object it actually draws changes.
+    // correct for shared data: an actor parented under some other node still
+    // redraws when the object it actually draws changes.
     for drawn_by in &changed_datasets {
-        for representation in drawn_by.iter() {
-            mark(&mut commands, representation, Dirty::GEOMETRY);
+        for actor in drawn_by.iter() {
+            mark(&mut commands, actor, Dirty::GEOMETRY);
         }
     }
 
@@ -316,18 +319,18 @@ fn mark_dirty(
         if !touched {
             continue;
         }
-        for representation in drawn_by.iter() {
-            mark(&mut commands, representation, Dirty::GEOMETRY);
+        for actor in drawn_by.iter() {
+            mark(&mut commands, actor, Dirty::GEOMETRY);
         }
     }
 }
 
 /// Clears the flags once every backend has had a chance at them.
 ///
-/// Done centrally rather than per-backend because a representation is only
-/// handled by the one backend that understands it, and the others must not
-/// clear flags they ignored. Cleared in place rather than removed, so the
-/// component stays put and marking never costs an archetype move.
+/// Done centrally rather than per-backend because an actor is only handled by
+/// the one backend that understands it, and the others must not clear flags
+/// they ignored. Cleared in place rather than removed, so the component stays
+/// put and marking never costs an archetype move.
 fn clear_dirty(mut dirty: Query<&mut Dirty>) {
     for mut dirty in &mut dirty {
         if dirty.any() {
@@ -336,12 +339,12 @@ fn clear_dirty(mut dirty: Query<&mut Dirty>) {
     }
 }
 
-/// Resolves the field a representation is coloured by.
+/// Resolves the field an actor is coloured by.
 ///
 /// `None` means flat, and nothing is inferred here. An earlier version fell
-/// back to the first scalar field when none was set, which meant the render was
-/// coloured by a field the UI reported as "flat". The default is now chosen
-/// once, explicitly, when the representation is created — see
+/// back to the first scalar field when none was set, which meant the render
+/// was coloured by a field the UI reported as "flat". The default is now
+/// chosen once, explicitly, when the actor is created — see
 /// `scene::default_colour_field`.
 pub(crate) fn colour_field<'a>(colour: &ColorBy, fields: Option<&'a Fields>) -> Option<&'a Field> {
     // A name that no longer resolves means the field went away; fall back to
@@ -429,7 +432,11 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
     let rgb = match map {
         ColorMap::Viridis => ramp(&VIRIDIS, t),
         ColorMap::CoolWarm => ramp(
-            &[[0.230, 0.299, 0.754], [0.865, 0.865, 0.865], [0.706, 0.016, 0.150]],
+            &[
+                [0.230, 0.299, 0.754],
+                [0.865, 0.865, 0.865],
+                [0.706, 0.016, 0.150],
+            ],
             t,
         ),
         ColorMap::Grayscale => [t, t, t],
@@ -443,9 +450,9 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::ActorOf;
     use crate::scene::data::{BufferMeta, Dtype, NamedArray};
-    use crate::scene::registry::{ParamValue, RepresentationParams};
-    use crate::scene::RepresentationOf;
+    use crate::scene::registry::{ActorParams, ParamValue};
 
     fn array() -> DataArray {
         DataArray {
@@ -487,17 +494,17 @@ mod tests {
             .id()
     }
 
-    /// Spawns a representation drawing `source`, placed under `parent`.
-    fn spawn_representation(app: &mut App, source: Entity, parent: Entity) -> Entity {
+    /// Spawns an actor drawing `source`, placed under `parent`.
+    fn spawn_actor(app: &mut App, source: Entity, parent: Entity) -> Entity {
         let mut params = crate::scene::registry::ParamMap::default();
         params.insert("size".into(), ParamValue::Float(1.0));
         app.world_mut()
             .spawn((
-                RepresentationKindId("points"),
-                RepresentationParams(params),
+                ActorKindId("points"),
+                ActorParams(params),
                 ColorBy::default(),
                 Subset::All,
-                RepresentationOf(source),
+                ActorOf(source),
                 ChildOf(parent),
             ))
             .id()
@@ -508,13 +515,16 @@ mod tests {
     fn scene() -> (App, Entity, Entity) {
         let mut app = app();
         let object = spawn_object(&mut app, "test");
-        let representation = spawn_representation(&mut app, object, object);
+        let actor = spawn_actor(&mut app, object, object);
         app.update();
-        (app, object, representation)
+        (app, object, actor)
     }
 
     fn flags(app: &App, entity: Entity) -> Dirty {
-        app.world().get::<Dirty>(entity).copied().unwrap_or_default()
+        app.world()
+            .get::<Dirty>(entity)
+            .copied()
+            .unwrap_or_default()
     }
 
     fn dirty(app: &App, entity: Entity) -> bool {
@@ -528,12 +538,12 @@ mod tests {
     }
 
     #[test]
-    fn marks_new_representations() {
-        let (app, _, representation) = scene();
+    fn marks_new_actors() {
+        let (app, _, actor) = scene();
         assert_eq!(
-            flags(&app, representation),
+            flags(&app, actor),
             Dirty::ALL,
-            "a representation that has never been drawn needs everything"
+            "an actor that has never been drawn needs everything"
         );
     }
 
@@ -542,21 +552,18 @@ mod tests {
     /// re-tessellate.
     #[test]
     fn recolouring_does_not_ask_for_a_rebuild() {
-        let (mut app, _, representation) = scene();
-        settle(&mut app, representation);
+        let (mut app, _, actor) = scene();
+        settle(&mut app, actor);
 
-        app.world_mut()
-            .get_mut::<ColorBy>(representation)
-            .unwrap()
-            .field = Some("stress".into());
+        app.world_mut().get_mut::<ColorBy>(actor).unwrap().field = Some("stress".into());
         app.update();
-        assert_eq!(flags(&app, representation), Dirty::COLOUR);
+        assert_eq!(flags(&app, actor), Dirty::COLOUR);
     }
 
     #[test]
     fn redraws_when_the_dataset_changes() {
-        let (mut app, object, representation) = scene();
-        settle(&mut app, representation);
+        let (mut app, object, actor) = scene();
+        settle(&mut app, actor);
 
         // Obtaining a `Mut` is not enough — change ticks are written on deref.
         app.world_mut()
@@ -564,87 +571,83 @@ mod tests {
             .unwrap()
             .set_changed();
         app.update();
-        assert_eq!(flags(&app, representation), Dirty::GEOMETRY);
+        assert_eq!(flags(&app, actor), Dirty::GEOMETRY);
     }
 
     /// Marks accumulate rather than overwrite. Several systems classify in one
     /// tick, and an `insert` would let whichever ran last drop the rest.
     #[test]
     fn separate_reasons_accumulate() {
-        let (mut app, object, representation) = scene();
-        settle(&mut app, representation);
+        let (mut app, object, actor) = scene();
+        settle(&mut app, actor);
 
-        app.world_mut()
-            .get_mut::<ColorBy>(representation)
-            .unwrap()
-            .field = Some("stress".into());
+        app.world_mut().get_mut::<ColorBy>(actor).unwrap().field = Some("stress".into());
         app.world_mut()
             .get_mut::<PointCloud>(object)
             .unwrap()
             .set_changed();
         app.update();
 
-        let flags = flags(&app, representation);
+        let flags = flags(&app, actor);
         assert!(flags.colour && flags.geometry, "got {flags:?}");
     }
 
     #[test]
     fn redraws_when_the_array_bytes_change() {
-        let (mut app, _, representation) = scene();
-        settle(&mut app, representation);
+        let (mut app, _, actor) = scene();
+        settle(&mut app, actor);
 
         // The component still points at the same handle, so only the asset
         // event reveals that the contents moved underneath it.
         let id = app
             .world()
-            .get::<SceneObject>(app.world().entity(object_of(&app, representation)).id())
+            .get::<SceneObject>(app.world().entity(object_of(&app, actor)).id())
             .unwrap()
             .arrays[0]
             .handle
             .id();
         app.world_mut().write_message(AssetEvent::Modified { id });
         app.update();
-        assert!(dirty(&app, representation));
+        assert!(dirty(&app, actor));
     }
 
     #[test]
     fn ignores_arrays_the_object_does_not_hold() {
-        let (mut app, _, representation) = scene();
-        settle(&mut app, representation);
+        let (mut app, _, actor) = scene();
+        settle(&mut app, actor);
 
         // A genuinely different asset, not the one the object references.
         let other = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
             .add(array());
-        app.world_mut().write_message(AssetEvent::Modified {
-            id: other.id(),
-        });
+        app.world_mut()
+            .write_message(AssetEvent::Modified { id: other.id() });
         app.update();
-        assert!(!dirty(&app, representation));
+        assert!(!dirty(&app, actor));
     }
 
-    /// The object a representation *draws*, which since the source and transform
-    /// links were separated is no longer the same question as its parent.
-    fn object_of(app: &App, representation: Entity) -> Entity {
+    /// The object an actor *draws*, which since the source and transform links
+    /// were separated is no longer the same question as its parent.
+    fn object_of(app: &App, actor: Entity) -> Entity {
         app.world()
-            .get::<RepresentationOf>(representation)
-            .expect("representation has a source")
+            .get::<ActorOf>(actor)
+            .expect("actor has a source")
             .0
     }
 
     /// The whole point of the split: data comes from the source, not the
     /// transform parent, so one dataset can be drawn at another node's
     /// placement. Before this, `mark_dirty` walked the parent's children and
-    /// such a representation would never have been marked at all.
+    /// such an actor would never have been marked at all.
     #[test]
     fn redraws_from_its_source_not_its_parent() {
         let mut app = app();
         let source = spawn_object(&mut app, "source");
         let elsewhere = spawn_object(&mut app, "elsewhere");
-        let representation = spawn_representation(&mut app, source, elsewhere);
+        let actor = spawn_actor(&mut app, source, elsewhere);
         app.update();
-        settle(&mut app, representation);
+        settle(&mut app, actor);
 
         app.world_mut()
             .get_mut::<PointCloud>(elsewhere)
@@ -652,7 +655,7 @@ mod tests {
             .set_changed();
         app.update();
         assert!(
-            !dirty(&app, representation),
+            !dirty(&app, actor),
             "the transform parent's data is not what is being drawn"
         );
 
@@ -661,17 +664,17 @@ mod tests {
             .unwrap()
             .set_changed();
         app.update();
-        assert!(dirty(&app, representation), "the source's data is");
+        assert!(dirty(&app, actor), "the source's data is");
     }
 
-    /// Two representations of one object redraw together, which is the case
-    /// that could not be expressed at all before.
+    /// Two actors of one object redraw together, which is the case that could
+    /// not be expressed at all before.
     #[test]
-    fn marks_every_representation_of_an_object() {
+    fn marks_every_actor_of_an_object() {
         let mut app = app();
         let source = spawn_object(&mut app, "source");
-        let first = spawn_representation(&mut app, source, source);
-        let second = spawn_representation(&mut app, source, source);
+        let first = spawn_actor(&mut app, source, source);
+        let second = spawn_actor(&mut app, source, source);
         app.update();
         settle(&mut app, first);
         settle(&mut app, second);

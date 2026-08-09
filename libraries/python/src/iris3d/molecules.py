@@ -100,8 +100,8 @@ def arrays_from_atoms(
     which is what makes ball-and-stick possible.
 
     Residue and chain hierarchy is **dropped**: the wire format has nowhere to
-    put it yet, so cartoon representation is not reachable from here. What
-    uploads is a flat set of atoms and bonds.
+    put it yet, so a cartoon actor is not reachable from here. What uploads is
+    a flat set of atoms and bonds.
     """
     struc = _biotite()
 

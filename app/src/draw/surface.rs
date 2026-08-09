@@ -4,8 +4,7 @@
 //! drawing a volumetric mesh as a surface means extracting its boundary faces
 //! first (collect every face, drop the ones shared by two cells), which is a
 //! separate piece of work rather than something to bodge in here. Lines are
-//! skipped for the same reason — they want a line representation, not a
-//! surface.
+//! skipped for the same reason — they want a line actor, not a surface.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -13,9 +12,7 @@ use bevy::prelude::*;
 
 use crate::scene::data::Fields;
 use crate::scene::dataset::CellKind;
-use crate::scene::registry::{
-    flag, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
-};
+use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag};
 use crate::scene::subset::Remap;
 use crate::scene::{DataArray, DatasetKind, MeshData};
 
@@ -38,8 +35,8 @@ const PARAMS: &[ParamSpec] = &[ParamSpec {
     kind: ParamKind::Bool { default: true },
 }];
 
-pub fn register(registry: &mut RepresentationRegistry) {
-    registry.register(RepresentationKind {
+pub fn register(registry: &mut ActorRegistry) {
+    registry.register(ActorKind {
         id: "surface",
         label: "surface",
         supports: |dataset| dataset == DatasetKind::Mesh,
@@ -112,8 +109,7 @@ pub fn draw_surfaces(
         let (positions, indices) = match &kept {
             Some(kept) => {
                 let remap = Remap::new(kept, all.len());
-                let positions: Vec<Vec3> =
-                    kept.iter().map(|index| all[*index as usize]).collect();
+                let positions: Vec<Vec3> = kept.iter().map(|index| all[*index as usize]).collect();
                 let indices: Vec<u32> = all_indices
                     .chunks_exact(3)
                     .filter_map(|corners| remap.cell(corners))
@@ -138,11 +134,16 @@ pub fn draw_surfaces(
             });
 
         if dirty.geometry {
-            let mut mesh =
-                Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            );
             mesh.insert_attribute(
                 Mesh::ATTRIBUTE_POSITION,
-                positions.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>(),
+                positions
+                    .iter()
+                    .map(|p| [p.x, p.y, p.z])
+                    .collect::<Vec<_>>(),
             );
             mesh.insert_indices(Indices::U32(indices));
 
@@ -172,7 +173,9 @@ pub fn draw_surfaces(
             }
             super::ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
             debug!("draw: surface rebuilt with {} vertices", positions.len());
-        } else if dirty.colour && let Some(colours) = tint.clone() {
+        } else if dirty.colour
+            && let Some(colours) = tint.clone()
+        {
             super::repaint(&mut meshes, mesh3d, colours);
         }
 

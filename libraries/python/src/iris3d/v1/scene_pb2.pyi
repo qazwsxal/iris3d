@@ -107,24 +107,24 @@ class ObjectHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ObjectInfo(_message.Message):
-    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "representations", "parent")
+    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "actors", "parent")
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     BUFFERS_FIELD_NUMBER: _ClassVar[int]
     TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
     DATASET_KIND_FIELD_NUMBER: _ClassVar[int]
-    REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
+    ACTORS_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
     handle: ObjectHandle
     name: str
     buffers: _containers.RepeatedCompositeFieldContainer[BufferSpec]
     total_bytes: int
     dataset_kind: str
-    representations: _containers.RepeatedCompositeFieldContainer[RepresentationInfo]
+    actors: _containers.RepeatedCompositeFieldContainer[ActorInfo]
     parent: ObjectHandle
-    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., representations: _Optional[_Iterable[_Union[RepresentationInfo, _Mapping]]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., actors: _Optional[_Iterable[_Union[ActorInfo, _Mapping]]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
-class RepresentationHandle(_message.Message):
+class ActorHandle(_message.Message):
     __slots__ = ("id",)
     ID_FIELD_NUMBER: _ClassVar[int]
     id: int
@@ -244,7 +244,7 @@ class Subset(_message.Message):
     association: Subset.Association
     def __init__(self, data: _Optional[bytes] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ...) -> None: ...
 
-class RepresentationInfo(_message.Message):
+class ActorInfo(_message.Message):
     __slots__ = ("handle", "kind", "source", "parent", "params", "color", "visible", "subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -261,7 +261,7 @@ class RepresentationInfo(_message.Message):
     COLOR_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
-    handle: RepresentationHandle
+    handle: ActorHandle
     kind: str
     source: ObjectHandle
     parent: ObjectHandle
@@ -269,7 +269,7 @@ class RepresentationInfo(_message.Message):
     color: ColorSpec
     visible: bool
     subset: SubsetInfo
-    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., kind: _Optional[str] = ..., source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ...) -> None: ...
 
 class SubsetInfo(_message.Message):
     __slots__ = ("encoding", "association", "selected")
@@ -281,7 +281,7 @@ class SubsetInfo(_message.Message):
     selected: int
     def __init__(self, encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ..., selected: _Optional[int] = ...) -> None: ...
 
-class RepresentationKindInfo(_message.Message):
+class ActorKindInfo(_message.Message):
     __slots__ = ("id", "label", "supports", "params")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
@@ -293,7 +293,7 @@ class RepresentationKindInfo(_message.Message):
     params: _containers.RepeatedCompositeFieldContainer[ParamSpec]
     def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., supports: _Optional[_Iterable[str]] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
 
-class AddRepresentationRequest(_message.Message):
+class AddActorRequest(_message.Message):
     __slots__ = ("source", "kind", "parent", "params", "color", "subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -316,13 +316,13 @@ class AddRepresentationRequest(_message.Message):
     subset: Subset
     def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ...) -> None: ...
 
-class AddRepresentationResponse(_message.Message):
-    __slots__ = ("representation",)
-    REPRESENTATION_FIELD_NUMBER: _ClassVar[int]
-    representation: RepresentationInfo
-    def __init__(self, representation: _Optional[_Union[RepresentationInfo, _Mapping]] = ...) -> None: ...
+class AddActorResponse(_message.Message):
+    __slots__ = ("actor",)
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    actor: ActorInfo
+    def __init__(self, actor: _Optional[_Union[ActorInfo, _Mapping]] = ...) -> None: ...
 
-class SetRepresentationRequest(_message.Message):
+class SetActorRequest(_message.Message):
     __slots__ = ("handle", "params", "color", "visible", "subset", "clear_subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
@@ -337,53 +337,53 @@ class SetRepresentationRequest(_message.Message):
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
     CLEAR_SUBSET_FIELD_NUMBER: _ClassVar[int]
-    handle: RepresentationHandle
+    handle: ActorHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
     subset: Subset
     clear_subset: bool
-    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ...) -> None: ...
 
-class SetRepresentationResponse(_message.Message):
-    __slots__ = ("representation",)
-    REPRESENTATION_FIELD_NUMBER: _ClassVar[int]
-    representation: RepresentationInfo
-    def __init__(self, representation: _Optional[_Union[RepresentationInfo, _Mapping]] = ...) -> None: ...
+class SetActorResponse(_message.Message):
+    __slots__ = ("actor",)
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    actor: ActorInfo
+    def __init__(self, actor: _Optional[_Union[ActorInfo, _Mapping]] = ...) -> None: ...
 
-class RemoveRepresentationRequest(_message.Message):
+class RemoveActorRequest(_message.Message):
     __slots__ = ("handle",)
     HANDLE_FIELD_NUMBER: _ClassVar[int]
-    handle: RepresentationHandle
-    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ...) -> None: ...
+    handle: ActorHandle
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ...) -> None: ...
 
-class RemoveRepresentationResponse(_message.Message):
+class RemoveActorResponse(_message.Message):
     __slots__ = ("removed",)
     REMOVED_FIELD_NUMBER: _ClassVar[int]
     removed: bool
     def __init__(self, removed: _Optional[bool] = ...) -> None: ...
 
-class ListRepresentationsRequest(_message.Message):
+class ListActorsRequest(_message.Message):
     __slots__ = ("source",)
     SOURCE_FIELD_NUMBER: _ClassVar[int]
     source: ObjectHandle
     def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
-class ListRepresentationsResponse(_message.Message):
-    __slots__ = ("representations",)
-    REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
-    representations: _containers.RepeatedCompositeFieldContainer[RepresentationInfo]
-    def __init__(self, representations: _Optional[_Iterable[_Union[RepresentationInfo, _Mapping]]] = ...) -> None: ...
+class ListActorsResponse(_message.Message):
+    __slots__ = ("actors",)
+    ACTORS_FIELD_NUMBER: _ClassVar[int]
+    actors: _containers.RepeatedCompositeFieldContainer[ActorInfo]
+    def __init__(self, actors: _Optional[_Iterable[_Union[ActorInfo, _Mapping]]] = ...) -> None: ...
 
-class ListRepresentationKindsRequest(_message.Message):
+class ListActorKindsRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
-class ListRepresentationKindsResponse(_message.Message):
+class ListActorKindsResponse(_message.Message):
     __slots__ = ("kinds",)
     KINDS_FIELD_NUMBER: _ClassVar[int]
-    kinds: _containers.RepeatedCompositeFieldContainer[RepresentationKindInfo]
-    def __init__(self, kinds: _Optional[_Iterable[_Union[RepresentationKindInfo, _Mapping]]] = ...) -> None: ...
+    kinds: _containers.RepeatedCompositeFieldContainer[ActorKindInfo]
+    def __init__(self, kinds: _Optional[_Iterable[_Union[ActorKindInfo, _Mapping]]] = ...) -> None: ...
 
 class ListObjectsRequest(_message.Message):
     __slots__ = ()
@@ -468,11 +468,11 @@ class DeleteObjectRequest(_message.Message):
     def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., recursive: _Optional[bool] = ...) -> None: ...
 
 class DeleteObjectResponse(_message.Message):
-    __slots__ = ("deleted", "removed", "removed_representations")
+    __slots__ = ("deleted", "removed", "removed_actors")
     DELETED_FIELD_NUMBER: _ClassVar[int]
     REMOVED_FIELD_NUMBER: _ClassVar[int]
-    REMOVED_REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
+    REMOVED_ACTORS_FIELD_NUMBER: _ClassVar[int]
     deleted: bool
     removed: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
-    removed_representations: _containers.RepeatedCompositeFieldContainer[RepresentationHandle]
-    def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ..., removed_representations: _Optional[_Iterable[_Union[RepresentationHandle, _Mapping]]] = ...) -> None: ...
+    removed_actors: _containers.RepeatedCompositeFieldContainer[ActorHandle]
+    def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ..., removed_actors: _Optional[_Iterable[_Union[ActorHandle, _Mapping]]] = ...) -> None: ...

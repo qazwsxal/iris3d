@@ -89,7 +89,7 @@ impl GridData {
 }
 
 /// A molecular structure: atoms, optional bonds, and the residue and chain
-/// hierarchy that cartoon-style representations need.
+/// hierarchy that cartoon-style actors need.
 #[derive(Component, Debug)]
 pub struct MoleculeData {
     /// Atom centres, `[n, 3]` float32.

@@ -32,12 +32,10 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
+use crate::scene::actor::ColorMap;
 use crate::scene::data::Fields;
-use crate::scene::registry::{
-    float, text, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
-};
-use crate::scene::representation::ColorMap;
 use crate::scene::dataset::GridData;
+use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float, text};
 use crate::scene::{DataArray, DatasetKind};
 
 use super::{Dirty, Drawable, mark};
@@ -129,8 +127,8 @@ const PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub fn register(registry: &mut RepresentationRegistry) {
-    registry.register(RepresentationKind {
+pub fn register(registry: &mut ActorRegistry) {
+    registry.register(ActorKind {
         id: "volume",
         label: "volume",
         supports: |dataset| dataset == DatasetKind::Grid,
@@ -255,7 +253,10 @@ fn box_mesh(low: Vec3, high: Vec3) -> Mesh {
         indices.extend_from_slice(&[a, b, c, a, c, d]);
     }
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_POSITION,
         corners.iter().map(|c| [c.x, c.y, c.z]).collect::<Vec<_>>(),
@@ -288,9 +289,9 @@ fn quantise(value: f32, (low, high): (f32, f32)) -> u8 {
 
 /// Packs the density and the colour field into one two-channel 3D texture.
 ///
-/// Two channels rather than two textures, so a step still costs one sample. Red
-/// is the density, which decides opacity; green is whatever the representation
-/// is coloured by. When they are the same field both channels hold it, which
+/// Two channels rather than two textures, so a step still costs one sample.
+/// Red is the density, which decides opacity; green is whatever the actor is
+/// coloured by. When they are the same field both channels hold it, which
 /// costs a byte per sample and keeps the shader free of a special case.
 ///
 /// Eight bits each rather than the float the client sent, for two reasons.
@@ -328,7 +329,8 @@ fn volume_texture(
     });
 
     let density_range = range_of(&density[..expected]);
-    let colour_scale = colour.map(|values| colour_range.unwrap_or_else(|| range_of(&values[..expected])));
+    let colour_scale =
+        colour.map(|values| colour_range.unwrap_or_else(|| range_of(&values[..expected])));
 
     // Reorder while normalising. The wire runs z fastest, which is what a numpy
     // array of shape (x, y, z) gives from a plain `.ravel()`. A 3D texture wants
@@ -460,12 +462,9 @@ pub fn draw_volumes(
                     .and_then(|name| fields.0.get(name))
                     .and_then(|field| arrays.get(&field.array))
                     .map(|array| array.to_f32());
-                let Some(texture) = volume_texture(
-                    &array.to_f32(),
-                    tint.as_deref(),
-                    grid,
-                    colour.range,
-                ) else {
+                let Some(texture) =
+                    volume_texture(&array.to_f32(), tint.as_deref(), grid, colour.range)
+                else {
                     continue;
                 };
                 let handle = images.add(texture);
@@ -580,7 +579,11 @@ mod tests {
         let image = volume_texture(&density, Some(&tint), &grid([2, 2, 2]), None).expect("built");
         let data = image.data.expect("kept the pixels");
         assert_eq!((data[0], data[1]), (0, 255), "lowest density, highest tint");
-        assert_eq!((data[14], data[15]), (255, 0), "highest density, lowest tint");
+        assert_eq!(
+            (data[14], data[15]),
+            (255, 0),
+            "highest density, lowest tint"
+        );
     }
 
     /// A colour field that does not cover the grid is dropped rather than

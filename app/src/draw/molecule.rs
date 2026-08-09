@@ -2,9 +2,9 @@
 //!
 //! One sphere per atom and one cylinder per bond, but baked into one vertex
 //! buffer with per-vertex colours rather than an entity each. Atom count no
-//! longer drives entity count, and — because the whole representation is a
-//! single `Mesh3d` on the representation entity — rebuilding is just replacing
-//! that mesh, with no child entities to reconcile or leak.
+//! longer drives entity count, and — because the whole actor is a single
+//! `Mesh3d` on the actor entity — rebuilding is just replacing that mesh, with
+//! no child entities to reconcile or leak.
 //!
 //! Cost is that the mesh scales with atom count: an icosphere per atom is
 //! roughly 42 vertices, so a protein still wants impostor spheres rather than
@@ -15,9 +15,7 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 
 use crate::scene::data::Fields;
-use crate::scene::registry::{
-    float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
-};
+use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float};
 use crate::scene::subset::Remap;
 use crate::scene::{DataArray, DatasetKind, MoleculeData};
 
@@ -117,8 +115,8 @@ const PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub fn register(registry: &mut RepresentationRegistry) {
-    registry.register(RepresentationKind {
+pub fn register(registry: &mut ActorRegistry) {
+    registry.register(ActorKind {
         id: "ball-and-stick",
         label: "ball and stick",
         supports: |dataset| dataset == DatasetKind::Molecule,
@@ -185,7 +183,8 @@ impl Template {
         else {
             return None;
         };
-        let Some(VertexAttributeValues::Float32x3(normals)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+        let Some(VertexAttributeValues::Float32x3(normals)) =
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
         else {
             return None;
         };
@@ -230,7 +229,10 @@ impl Merged {
     }
 
     fn build(self) -> Mesh {
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colours);
@@ -382,7 +384,10 @@ pub fn draw_molecules(
                 // When atoms are field-coloured, a bond takes the mean of its
                 // endpoints so the mapping stays continuous along the chain.
                 let bond_colour = if tint.is_some() {
-                    mean(atom_colours[pair[0] as usize], atom_colours[pair[1] as usize])
+                    mean(
+                        atom_colours[pair[0] as usize],
+                        atom_colours[pair[1] as usize],
+                    )
                 } else {
                     stick
                 };
