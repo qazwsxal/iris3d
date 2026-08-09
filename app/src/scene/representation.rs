@@ -8,18 +8,21 @@
 //!
 //! Nothing here draws anything. A rendering backend is a plugin that queries
 //! `(&Representation, &ChildOf)`, reads the parent's dataset, and produces
-//! whatever it produces. Deliberately no backend is chosen yet.
-
-// Scaffolding: these types describe data and how it should be drawn, but no
-// rendering backend consumes them yet. Scoped to this module so genuine dead
-// code elsewhere still surfaces. Remove once a backend lands.
-#![allow(dead_code)]
+//! whatever it produces. [`crate::draw`] is the current one — a straightforward
+//! `Mesh3d`-per-representation baseline — and the split exists so a second can
+//! run beside it rather than replace it.
 
 use bevy::prelude::*;
 
 use super::dataset::DatasetKind;
 
 /// A way of drawing the parent object.
+// Wireframe, Isosurface, Glyphs, Cartoon and SpaceFilling are declared but no
+// backend constructs them; `unimplemented_for` exists to show them in the UI as
+// unavailable. Both they and this allow go when representation kinds move to a
+// registry that backends populate, at which point a kind exists iff something
+// can draw it.
+#[allow(dead_code)]
 #[derive(Component, Debug, Clone, PartialEq)]
 pub enum Representation {
     /// Points drawn as camera-facing discs. `size` is the diameter in world
@@ -76,7 +79,8 @@ impl Representation {
     /// Representations a backend can actually draw for this dataset kind.
     ///
     /// Only implemented variants are listed. Offering the rest would put
-    /// choices in the UI that silently do nothing — see [`Self::implemented`].
+    /// choices in the UI that silently do nothing — see
+    /// [`Self::unimplemented_for`], which is how the rest are surfaced.
     pub fn available_for(kind: DatasetKind) -> Vec<Self> {
         match kind {
             DatasetKind::Points => vec![Representation::Points { size: 0.05 }],
@@ -101,16 +105,6 @@ impl Representation {
         }
     }
 
-    /// Whether a backend draws this variant today.
-    pub fn implemented(&self) -> bool {
-        matches!(
-            self,
-            Representation::Points { .. }
-                | Representation::Surface
-                | Representation::BallAndStick { .. }
-        )
-    }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Representation::Points { .. } => "points",
@@ -126,6 +120,8 @@ impl Representation {
     }
 }
 
+// Reachable only through `Representation::Glyphs`, which nothing constructs.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlyphKind {
     /// For vector fields.
@@ -169,5 +165,11 @@ pub enum ColorMap {
     CoolWarm,
     Grayscale,
     /// Standard element colouring for molecular data.
+    ///
+    /// Never selected today: molecules apply CPK colours directly and never
+    /// consult the map, so this variant is what that behaviour *should* be
+    /// named once element colouring routes through `draw::sample` like every
+    /// other map.
+    #[allow(dead_code)]
     ByElement,
 }

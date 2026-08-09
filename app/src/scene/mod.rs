@@ -13,8 +13,9 @@
 //! made to follow the mesh it belongs to.
 //!
 //! Nothing here knows about gRPC, and nothing here draws. A rendering backend
-//! plugs in by consuming [`Representation`] and the dataset components; no
-//! backend is chosen yet.
+//! plugs in by consuming [`Representation`] and the dataset components — see
+//! [`crate::draw`], which is one such backend and deliberately not the only
+//! possible one.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;

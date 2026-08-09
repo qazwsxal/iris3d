@@ -10,11 +10,6 @@
 //! ordinary [`Field`](super::Field)s, so colour mapping and selection work the
 //! same everywhere.
 
-// Scaffolding: these types describe data and how it should be drawn, but no
-// rendering backend consumes them yet. Scoped to this module so genuine dead
-// code elsewhere still surfaces. Remove once a backend lands.
-#![allow(dead_code)]
-
 use bevy::prelude::*;
 use std::ops::Range;
 
@@ -50,6 +45,9 @@ pub enum CellKind {
 
 impl CellKind {
     /// Indices per cell.
+    // Wanted by subsets: deciding whether a cell survives a point selection
+    // means walking its corners, which needs the arity.
+    #[allow(dead_code)]
     pub fn arity(self) -> u64 {
         match self {
             CellKind::Lines => 2,
@@ -64,6 +62,7 @@ impl CellKind {
 ///
 /// Not yet constructible from ingest — the wire format has no way to carry
 /// origin, spacing and dimensions. See the note in `scene::ingest`.
+#[allow(dead_code)]
 #[derive(Component, Debug)]
 pub struct GridData {
     pub origin: Vec3,
@@ -71,6 +70,7 @@ pub struct GridData {
     pub dims: UVec3,
 }
 
+#[allow(dead_code)]
 impl GridData {
     pub fn point_count(&self) -> u64 {
         self.dims.x as u64 * self.dims.y as u64 * self.dims.z as u64
@@ -87,7 +87,13 @@ pub struct MoleculeData {
     pub elements: Option<Handle<DataArray>>,
     pub bonds: Option<Bonds>,
     /// Empty for small molecules, which have no residue hierarchy.
+    ///
+    /// Also empty for *everything* today: neither the wire format nor the
+    /// Python side carries the hierarchy, so nothing reads these until cartoon
+    /// rendering — which cannot work without them.
+    #[allow(dead_code)]
     pub residues: Vec<Residue>,
+    #[allow(dead_code)]
     pub chains: Vec<Chain>,
 }
 
@@ -96,6 +102,9 @@ pub struct Bonds {
     /// Atom index pairs, `[m, 2]` uint32.
     pub pairs: Handle<DataArray>,
     /// Bond types, `[m]` uint8 — see [`BondType`].
+    // Unread until bonds are drawn with their multiplicity; ball-and-stick
+    // currently draws every bond as one cylinder.
+    #[allow(dead_code)]
     pub orders: Option<Handle<DataArray>>,
 }
 
@@ -106,6 +115,10 @@ pub struct Bonds {
 /// single/double/triple/aromatic would lose the distinction between an
 /// aromatic single and an aromatic double, and leave coordination bonds with
 /// nowhere to go.
+// Nothing decodes `Bonds::orders` yet, so the whole enum is unreachable until
+// bond multiplicity is drawn. Kept because it is the wire contract, not an
+// implementation detail — see the table in `scene.proto`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BondType {
@@ -124,6 +137,7 @@ pub enum BondType {
     Aromatic = 9,
 }
 
+#[allow(dead_code)]
 impl BondType {
     pub fn from_raw(value: u8) -> Option<Self> {
         Some(match value {
@@ -163,6 +177,9 @@ impl BondType {
     }
 }
 
+// Residue, Chain and SecondaryStructure exist for cartoon rendering and are
+// unread until it lands; ingest never populates them. See `MoleculeData`.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Residue {
     pub name: String,
@@ -172,6 +189,7 @@ pub struct Residue {
     pub secondary: SecondaryStructure,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Chain {
     pub id: String,
@@ -179,6 +197,7 @@ pub struct Chain {
     pub residues: Range<u32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SecondaryStructure {
     #[default]
@@ -195,6 +214,9 @@ pub enum SecondaryStructure {
 pub enum DatasetKind {
     Points,
     Mesh,
+    /// Unreachable until the wire format can carry origin, spacing and
+    /// dimensions — see [`GridData`].
+    #[allow(dead_code)]
     Grid,
     Molecule,
     /// Arrays with no recognised structure. Still a valid object — this is the
