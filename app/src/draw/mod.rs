@@ -19,7 +19,7 @@ use crate::scene::registry::{RepresentationKindId, RepresentationRegistry};
 use crate::scene::representation::ColorMap;
 use crate::scene::{
     ColorBy, DataArray, MeshData, MoleculeData, PointCloud, RepresentationOf, Representations,
-    SceneObject,
+    SceneObject, Subset,
 };
 
 mod molecule;
@@ -104,6 +104,7 @@ pub(crate) type Drawable<'a, Style, Material> = (
     Entity,
     &'a Style,
     &'a ColorBy,
+    &'a Subset,
     &'a RepresentationOf,
     &'a Dirty,
     Option<&'a Mesh3d>,
@@ -246,6 +247,7 @@ fn mark_dirty(
     mut commands: Commands,
     new_representations: Query<Entity, Added<RepresentationKindId>>,
     recoloured: Query<Entity, (With<RepresentationKindId>, Changed<ColorBy>)>,
+    resubset: Query<Entity, (With<RepresentationKindId>, Changed<Subset>)>,
     changed_datasets: Query<
         &Representations,
         Or<(
@@ -268,6 +270,12 @@ fn mark_dirty(
     // atom and bond.
     for entity in &recoloured {
         mark(&mut commands, entity, Dirty::COLOUR);
+    }
+
+    // A different selection means different vertices, so this is a rebuild
+    // rather than a repaint.
+    for entity in &resubset {
+        mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 
     // Following the source link rather than the child list is what makes this
@@ -479,6 +487,7 @@ mod tests {
                 RepresentationKindId("points"),
                 RepresentationParams(params),
                 ColorBy::default(),
+                Subset::All,
                 RepresentationOf(source),
                 ChildOf(parent),
             ))

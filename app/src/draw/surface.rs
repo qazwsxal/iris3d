@@ -16,6 +16,7 @@ use crate::scene::dataset::CellKind;
 use crate::scene::registry::{
     flag, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
 };
+use crate::scene::subset::Remap;
 use crate::scene::{DataArray, DatasetKind, MeshData};
 
 use super::{Dirty, Drawable, mark};
@@ -66,7 +67,7 @@ pub fn draw_surfaces(
     dirty: Query<Drawable<SurfaceStyle, StandardMaterial>>,
     surfaces: Query<(&MeshData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -88,24 +89,53 @@ pub fn draw_surfaces(
         ) else {
             continue;
         };
-        let positions = position_array.to_vec3();
-        let Some(indices) = index_array.to_u32() else {
+        let all = position_array.to_vec3();
+        let Some(all_indices) = index_array.to_u32() else {
             warn!("draw: mesh indices are not an integer type");
             continue;
         };
-        if positions.is_empty() || indices.is_empty() {
+        if all.is_empty() || all_indices.is_empty() {
             continue;
         }
-        if let Some(out_of_range) = indices.iter().find(|i| **i as usize >= positions.len()) {
+        if let Some(out_of_range) = all_indices.iter().find(|i| **i as usize >= all.len()) {
             warn!(
                 "draw: mesh index {out_of_range} exceeds {} vertices",
-                positions.len()
+                all.len()
             );
             continue;
         }
 
+        // A triangle survives only if all three of its corners do, and the
+        // surviving points are renumbered, so the connectivity has to be
+        // rewritten rather than merely filtered.
+        let kept = subset.selected(all.len(), &arrays);
+        let (positions, indices) = match &kept {
+            Some(kept) => {
+                let remap = Remap::new(kept, all.len());
+                let positions: Vec<Vec3> =
+                    kept.iter().map(|index| all[*index as usize]).collect();
+                let indices: Vec<u32> = all_indices
+                    .chunks_exact(3)
+                    .filter_map(|corners| remap.cell(corners))
+                    .flatten()
+                    .collect();
+                if indices.is_empty() {
+                    info!("draw: a subset left no whole triangles; nothing to draw");
+                    continue;
+                }
+                (positions, indices)
+            }
+            None => (all, all_indices),
+        };
+
         let tint = super::colour_field(colour, fields)
-            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
+            .and_then(|field| {
+                super::vertex_colours(field, colour, &arrays, position_array.count() as usize)
+            })
+            .map(|colours| match &kept {
+                Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
+                None => colours,
+            });
 
         if dirty.geometry {
             let mut mesh =
@@ -123,7 +153,11 @@ pub fn draw_surfaces(
                 .and_then(|fields| fields.0.get("normals"))
                 .and_then(|field| arrays.get(&field.array))
                 .map(|array| array.to_vec3())
-                .filter(|normals| normals.len() == positions.len());
+                .filter(|normals| normals.len() == position_array.count() as usize)
+                .map(|normals| match &kept {
+                    Some(kept) => kept.iter().map(|index| normals[*index as usize]).collect(),
+                    None => normals,
+                });
 
             match supplied {
                 Some(normals) => mesh.insert_attribute(

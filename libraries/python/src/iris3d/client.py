@@ -37,6 +37,7 @@ from .v1.scene_pb2 import (
     RepresentationInfo,
     RepresentationKindInfo,
     SetParentRequest,
+    Subset,
     SetRepresentationRequest,
     SetTransformRequest,
     UploadObjectRequest,
@@ -142,6 +143,18 @@ class Coloring:
 
 
 @dataclass(frozen=True)
+class SubsetSummary:
+    """A representation's selection, described without returning its values."""
+
+    #: "indices" or "mask".
+    encoding: str
+    #: "point" or "cell".
+    association: str
+    #: How many elements the selection keeps.
+    selected: int
+
+
+@dataclass(frozen=True)
 class RepresentationSummary:
     """One way something is being drawn."""
 
@@ -156,6 +169,8 @@ class RepresentationSummary:
     params: dict[str, float | bool]
     coloring: Coloring
     visible: bool
+    #: How much of the source is drawn, or None for all of it.
+    subset: SubsetSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +236,49 @@ def _coloring(spec: ColorSpec) -> Coloring:
     )
 
 
+_ENCODINGS = {
+    Subset.ENCODING_INDICES: "indices",
+    Subset.ENCODING_MASK: "mask",
+}
+_ASSOCIATIONS = {
+    Subset.ASSOCIATION_PER_POINT: "point",
+    Subset.ASSOCIATION_PER_CELL: "cell",
+}
+
+
+def _subset(selection: np.ndarray, *, per_cell: bool = False) -> Subset:
+    """Packs a numpy selection for the wire.
+
+    The encoding follows the dtype, because that is what the caller already
+    expressed: a boolean array is a mask over every element, an integer array
+    names the elements to keep. Asking for both would be one more way to
+    disagree with yourself.
+    """
+    selection = np.ascontiguousarray(selection)
+    if selection.ndim != 1:
+        raise ValueError(f"a subset must be one-dimensional, got shape {selection.shape}")
+
+    if selection.dtype == np.bool_:
+        encoding = Subset.ENCODING_MASK
+        selection = selection.view(np.uint8)
+    elif np.issubdtype(selection.dtype, np.integer):
+        encoding = Subset.ENCODING_INDICES
+    else:
+        raise TypeError(
+            "a subset must be a boolean mask or an integer index array, "
+            f"not {selection.dtype}"
+        )
+
+    return Subset(
+        data=_wire_ready(selection).tobytes(),
+        dtype=to_proto_dtype(selection.dtype),
+        encoding=encoding,
+        association=(
+            Subset.ASSOCIATION_PER_CELL if per_cell else Subset.ASSOCIATION_PER_POINT
+        ),
+    )
+
+
 def _representation(info: RepresentationInfo) -> RepresentationSummary:
     return RepresentationSummary(
         handle=info.handle.id,
@@ -233,6 +291,15 @@ def _representation(info: RepresentationInfo) -> RepresentationSummary:
         },
         coloring=_coloring(info.color),
         visible=info.visible,
+        subset=(
+            SubsetSummary(
+                encoding=_ENCODINGS.get(info.subset.encoding, "unknown"),
+                association=_ASSOCIATIONS.get(info.subset.association, "point"),
+                selected=info.subset.selected,
+            )
+            if info.HasField("subset")
+            else None
+        ),
     )
 
 
@@ -479,6 +546,8 @@ class Client:
         parent: int | None = None,
         params: Mapping[str, float | bool] | None = None,
         coloring: Coloring | None = None,
+        subset: np.ndarray | None = None,
+        per_cell: bool = False,
     ) -> RepresentationSummary:
         """Draws an object an additional way.
 
@@ -497,6 +566,19 @@ class Client:
 
         Parameters left out take the kind's default, not the value some other
         representation happens to have.
+
+        ``subset`` draws only part of the source — a boolean mask over every
+        element, or an integer array of the elements to keep. This is what
+        makes several representations worth having: one structure shown as
+        cartoon over its protein and ball-and-stick over its ligand is two
+        representations with two subsets. Selections are computed here rather
+        than described to the server, so anything numpy can express works::
+
+            client.add_representation(mesh, subset=positions[:, 2] > 0)
+
+        A mesh cell survives only when all of its corners do, and a bond only
+        when both its atoms do, so a cut leaves a clean boundary rather than
+        stretched or dangling geometry.
         """
         request = AddRepresentationRequest(
             source=ObjectHandle(id=source),
@@ -507,6 +589,8 @@ class Client:
             request.parent.CopyFrom(ObjectHandle(id=parent))
         if coloring is not None:
             request.color.CopyFrom(_color_spec(coloring))
+        if subset is not None:
+            request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
         return _representation(self._scene.AddRepresentation(request).representation)
 
     def set_representation(
@@ -516,6 +600,9 @@ class Client:
         *,
         coloring: Coloring | None = None,
         visible: bool | None = None,
+        subset: np.ndarray | None = None,
+        per_cell: bool = False,
+        clear_subset: bool = False,
     ) -> RepresentationSummary:
         """Changes a representation, leaving anything unnamed alone.
 
@@ -526,15 +613,25 @@ class Client:
 
         Out-of-range values are clamped rather than rejected, so a slider driven
         past its limit does not raise.
+
+        Omitting ``subset`` leaves the selection alone; ``clear_subset=True``
+        goes back to drawing the whole dataset. The two are separate because
+        "unchanged" and "cleared" both have to be expressible.
         """
+        if subset is not None and clear_subset:
+            raise ValueError("pass a subset or clear_subset, not both")
+
         request = SetRepresentationRequest(
             handle=RepresentationHandle(id=handle),
             params=_params(params),
+            clear_subset=clear_subset,
         )
         if coloring is not None:
             request.color.CopyFrom(_color_spec(coloring))
         if visible is not None:
             request.visible = visible
+        if subset is not None:
+            request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
         return _representation(self._scene.SetRepresentation(request).representation)
 
     def remove_representation(self, handle: int) -> bool:

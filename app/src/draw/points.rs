@@ -119,7 +119,7 @@ pub fn draw_points(
     dirty: Query<Drawable<PointsStyle, PointQuadMaterial>>,
     clouds: Query<(&PointCloud, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -130,15 +130,28 @@ pub fn draw_points(
             continue;
         };
 
-        let centres = array.to_vec3();
-        if centres.is_empty() {
+        let all = array.to_vec3();
+        if all.is_empty() {
             continue;
         }
+        // Points have no connectivity, so a subset is a plain filter — nothing
+        // refers to a point by index, so nothing needs renumbering.
+        let kept = subset.selected(all.len(), &arrays);
+        let centres: Vec<Vec3> = match &kept {
+            Some(kept) => kept.iter().map(|index| all[*index as usize]).collect(),
+            None => all,
+        };
         let count = centres.len();
 
         if dirty.geometry || dirty.colour {
             let tint = super::colour_field(colour, fields)
-                .and_then(|field| super::vertex_colours(field, colour, &arrays, count));
+                .and_then(|field| super::vertex_colours(field, colour, &arrays, array.count() as usize))
+                // Colours are computed over the whole field, then narrowed to
+                // the drawn points, so a subset does not shift the mapping.
+                .map(|colours| match &kept {
+                    Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
+                    None => colours,
+                });
             let flat = colour.flat.to_linear().to_f32_array();
             let colours = quad_colours(count, tint.as_ref(), flat);
 
@@ -191,7 +204,7 @@ pub fn draw_points(
 mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype, NamedArray};
-    use crate::scene::{ColorBy, RepresentationKindId, RepresentationOf, SceneObject};
+    use crate::scene::{ColorBy, RepresentationKindId, RepresentationOf, SceneObject, Subset};
 
     /// Runs the invalidation chain and this backend, with no renderer behind
     /// it: everything being asserted is about assets, not pixels.
@@ -242,6 +255,7 @@ mod tests {
                 RepresentationKindId("points"),
                 PointsStyle { size: 0.05 },
                 ColorBy::default(),
+                Subset::All,
                 RepresentationOf(object),
             ))
             .id();
@@ -326,6 +340,38 @@ mod tests {
             Some(0.5),
             "the new size should have reached the uniform"
         );
+    }
+
+    /// A subset reaches the vertex buffer, and changing it rebuilds rather than
+    /// repaints — the vertex count moves, so a repaint would be wrong.
+    #[test]
+    fn a_subset_draws_fewer_points() {
+        let (mut app, _, representation) = app();
+        let indices = app
+            .world_mut()
+            .resource_mut::<Assets<DataArray>>()
+            .add(DataArray {
+                dtype: Dtype::Uint32,
+                shape: vec![2],
+                data: [0u32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+            });
+
+        *app.world_mut().get_mut::<Subset>(representation).unwrap() = Subset::Selected {
+            array: indices,
+            encoding: crate::scene::SubsetEncoding::Indices,
+            association: crate::scene::data::Association::PerPoint,
+        };
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Mesh>>()
+                .get(mesh_of(&app, representation))
+                .map(|mesh| mesh.count_vertices()),
+            Some(8),
+            "two of four points, four vertices each"
+        );
+        assert_eq!(counts(&app), (1, 1), "still reusing the same assets");
     }
 
     /// A hundred slider frames should leave exactly the assets one frame does.

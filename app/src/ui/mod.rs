@@ -23,6 +23,7 @@ use crate::scene::registry::{
 };
 use crate::scene::{
     ColorBy, DataArray, DatasetKind, RepresentationOf, Representations, SceneCommand, SceneObject,
+    Subset,
 };
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
@@ -149,6 +150,7 @@ struct RepresentationRow {
     specs: &'static [ParamSpec],
     params: ParamMap,
     colour: ColorBy,
+    subset: Subset,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -167,7 +169,12 @@ fn draw_ui(
         Option<&Representations>,
         Option<&ChildOf>,
     )>,
-    representations: Query<(&RepresentationKindId, &RepresentationParams, &ColorBy)>,
+    representations: Query<(
+        &RepresentationKindId,
+        &RepresentationParams,
+        &ColorBy,
+        &Subset,
+    )>,
     registry: Res<RepresentationRegistry>,
     arrays: Res<Assets<DataArray>>,
     mut captured: ResMut<PointerCaptured>,
@@ -214,7 +221,7 @@ fn draw_ui(
             .into_iter()
             .flat_map(|list| list.iter())
             .filter_map(|entity| {
-                let (id, params, colour) = representations.get(entity).ok()?;
+                let (id, params, colour, subset) = representations.get(entity).ok()?;
                 // A kind with no registration cannot be drawn or configured, so
                 // there is nothing useful to show for it.
                 let registered = registry.get(id.0)?;
@@ -224,6 +231,7 @@ fn draw_ui(
                     specs: registered.params,
                     params: params.0.clone(),
                     colour: colour.clone(),
+                    subset: subset.clone(),
                 })
             })
             .collect();
@@ -234,6 +242,14 @@ fn draw_ui(
 
         for array in &object.arrays {
             owners.insert(array.handle.id(), (id.0, array.meta.name.clone()));
+        }
+        // A representation's selection is an array too, and it is held by the
+        // representation rather than the object. Without this the inventory
+        // calls it unreferenced, which is exactly backwards.
+        for representation in &drawn {
+            if let Subset::Selected { array, .. } = &representation.subset {
+                owners.insert(array.id(), (id.0, "subset".into()));
+            }
         }
 
         let mut field_names: Vec<FieldRow> = fields
@@ -519,6 +535,12 @@ fn representation_controls(
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(current.label).strong());
+            // Worth saying outright: two identical-looking rows over one object
+            // are otherwise indistinguishable when what differs is which part
+            // of the data each draws.
+            if matches!(current.subset, Subset::Selected { .. }) {
+                ui.label(egui::RichText::new("subset").weak());
+            }
             if ui.small_button("remove").clicked() {
                 actions
                     .0
@@ -682,6 +704,9 @@ fn apply_actions(
                     &mut counter,
                     object,
                     object,
+                    // Selections are computed by a client, not clicked together
+                    // here, so the tree only ever adds a whole-dataset one.
+                    Subset::All,
                     (
                         RepresentationKindId(registered.id),
                         RepresentationParams(registered.defaults()),

@@ -176,8 +176,36 @@ class Range(_message.Message):
     high: float
     def __init__(self, low: _Optional[float] = ..., high: _Optional[float] = ...) -> None: ...
 
+class Subset(_message.Message):
+    __slots__ = ("data", "dtype", "encoding", "association")
+    class Encoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        ENCODING_UNSPECIFIED: _ClassVar[Subset.Encoding]
+        ENCODING_INDICES: _ClassVar[Subset.Encoding]
+        ENCODING_MASK: _ClassVar[Subset.Encoding]
+    ENCODING_UNSPECIFIED: Subset.Encoding
+    ENCODING_INDICES: Subset.Encoding
+    ENCODING_MASK: Subset.Encoding
+    class Association(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = ()
+        ASSOCIATION_UNSPECIFIED: _ClassVar[Subset.Association]
+        ASSOCIATION_PER_POINT: _ClassVar[Subset.Association]
+        ASSOCIATION_PER_CELL: _ClassVar[Subset.Association]
+    ASSOCIATION_UNSPECIFIED: Subset.Association
+    ASSOCIATION_PER_POINT: Subset.Association
+    ASSOCIATION_PER_CELL: Subset.Association
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    ENCODING_FIELD_NUMBER: _ClassVar[int]
+    ASSOCIATION_FIELD_NUMBER: _ClassVar[int]
+    data: bytes
+    dtype: Dtype
+    encoding: Subset.Encoding
+    association: Subset.Association
+    def __init__(self, data: _Optional[bytes] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ...) -> None: ...
+
 class RepresentationInfo(_message.Message):
-    __slots__ = ("handle", "kind", "source", "parent", "params", "color", "visible")
+    __slots__ = ("handle", "kind", "source", "parent", "params", "color", "visible", "subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -192,6 +220,7 @@ class RepresentationInfo(_message.Message):
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
+    SUBSET_FIELD_NUMBER: _ClassVar[int]
     handle: RepresentationHandle
     kind: str
     source: ObjectHandle
@@ -199,7 +228,18 @@ class RepresentationInfo(_message.Message):
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
-    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., kind: _Optional[str] = ..., source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ...) -> None: ...
+    subset: SubsetInfo
+    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., kind: _Optional[str] = ..., source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ...) -> None: ...
+
+class SubsetInfo(_message.Message):
+    __slots__ = ("encoding", "association", "selected")
+    ENCODING_FIELD_NUMBER: _ClassVar[int]
+    ASSOCIATION_FIELD_NUMBER: _ClassVar[int]
+    SELECTED_FIELD_NUMBER: _ClassVar[int]
+    encoding: Subset.Encoding
+    association: Subset.Association
+    selected: int
+    def __init__(self, encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ..., selected: _Optional[int] = ...) -> None: ...
 
 class RepresentationKindInfo(_message.Message):
     __slots__ = ("id", "label", "supports", "params")
@@ -214,7 +254,7 @@ class RepresentationKindInfo(_message.Message):
     def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., supports: _Optional[_Iterable[str]] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
 
 class AddRepresentationRequest(_message.Message):
-    __slots__ = ("source", "kind", "parent", "params", "color")
+    __slots__ = ("source", "kind", "parent", "params", "color", "subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -227,12 +267,14 @@ class AddRepresentationRequest(_message.Message):
     PARENT_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
+    SUBSET_FIELD_NUMBER: _ClassVar[int]
     source: ObjectHandle
     kind: str
     parent: ObjectHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
-    def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ...) -> None: ...
+    subset: Subset
+    def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ...) -> None: ...
 
 class AddRepresentationResponse(_message.Message):
     __slots__ = ("representation",)
@@ -241,7 +283,7 @@ class AddRepresentationResponse(_message.Message):
     def __init__(self, representation: _Optional[_Union[RepresentationInfo, _Mapping]] = ...) -> None: ...
 
 class SetRepresentationRequest(_message.Message):
-    __slots__ = ("handle", "params", "color", "visible")
+    __slots__ = ("handle", "params", "color", "visible", "subset", "clear_subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -253,11 +295,15 @@ class SetRepresentationRequest(_message.Message):
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
+    SUBSET_FIELD_NUMBER: _ClassVar[int]
+    CLEAR_SUBSET_FIELD_NUMBER: _ClassVar[int]
     handle: RepresentationHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
-    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ...) -> None: ...
+    subset: Subset
+    clear_subset: bool
+    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ...) -> None: ...
 
 class SetRepresentationResponse(_message.Message):
     __slots__ = ("representation",)

@@ -18,6 +18,7 @@ use crate::scene::data::Fields;
 use crate::scene::registry::{
     float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
 };
+use crate::scene::subset::Remap;
 use crate::scene::{DataArray, DatasetKind, MoleculeData};
 
 use super::{Dirty, Drawable, mark};
@@ -247,7 +248,7 @@ pub fn draw_molecules(
     layouts: Query<&MoleculeLayout>,
     molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -263,23 +264,45 @@ pub fn draw_molecules(
             continue;
         };
 
-        let positions = position_array.to_vec3();
-        if positions.is_empty() {
+        let all = position_array.to_vec3();
+        if all.is_empty() {
             continue;
         }
 
-        let elements: Vec<u32> = molecule
+        let all_elements: Vec<u32> = molecule
             .elements
             .as_ref()
             .and_then(|handle| arrays.get(handle))
             .and_then(|array| array.to_u32())
-            .unwrap_or_else(|| vec![6; positions.len()]);
+            .unwrap_or_else(|| vec![6; all.len()]);
+
+        // Atoms are renumbered by a subset, and bonds refer to atoms by index,
+        // so both the positions and the bond list have to be rewritten.
+        let kept = subset.selected(all.len(), &arrays);
+        let remap = kept.as_ref().map(|kept| Remap::new(kept, all.len()));
+        let narrow = |values: &[u32]| -> Vec<u32> {
+            match &kept {
+                Some(kept) => kept.iter().map(|index| values[*index as usize]).collect(),
+                None => values.to_vec(),
+            }
+        };
+        let positions: Vec<Vec3> = match &kept {
+            Some(kept) => kept.iter().map(|index| all[*index as usize]).collect(),
+            None => all,
+        };
+        let elements = narrow(&all_elements);
 
         // A selected field wins over CPK. Without this the tree can claim an
         // object is coloured by b_factor while the render shows element
         // colours — the field is listed, so it has to actually apply.
         let tint = super::colour_field(colour, fields)
-            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
+            .and_then(|field| {
+                super::vertex_colours(field, colour, &arrays, position_array.count() as usize)
+            })
+            .map(|colours| match &kept {
+                Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
+                None => colours,
+            });
         let stick = colour.flat.to_linear().to_f32_array();
         let atom_colours: Vec<[f32; 4]> = (0..positions.len())
             .map(|index| {
@@ -331,7 +354,20 @@ pub fn draw_molecules(
                 .get(&bonds.pairs)
                 .and_then(|array| array.to_u32())
                 .unwrap_or_default();
-            for pair in pairs.chunks_exact(2) {
+            for original in pairs.chunks_exact(2) {
+                // A bond is drawn only when both its atoms are: half a bond
+                // sticking out into space reads as broken geometry, not as a
+                // deliberate cut.
+                let pair = match &remap {
+                    Some(remap) => {
+                        let (Some(a), Some(b)) = (remap.get(original[0]), remap.get(original[1]))
+                        else {
+                            continue;
+                        };
+                        [a, b]
+                    }
+                    None => [original[0], original[1]],
+                };
                 let (Some(a), Some(b)) = (
                     positions.get(pair[0] as usize),
                     positions.get(pair[1] as usize),

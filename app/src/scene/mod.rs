@@ -33,6 +33,7 @@ pub mod ingest;
 pub mod link;
 pub mod registry;
 pub mod representation;
+pub mod subset;
 
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
@@ -41,6 +42,7 @@ pub use dataset::{DatasetKind, MeshData, MoleculeData, PointCloud};
 pub use link::{RepresentationOf, Representations};
 pub use registry::{RepresentationKindId, RepresentationParams, RepresentationRegistry};
 pub use representation::ColorBy;
+pub use subset::{Subset, SubsetEncoding};
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
 /// against a pre-existing malformed hierarchy sending validation into a loop.
@@ -114,6 +116,19 @@ pub struct RepresentationSummary {
     pub params: registry::ParamMap,
     pub colour: ColorBy,
     pub visible: bool,
+    /// How much of the source is drawn, or `None` for all of it. The selection
+    /// values are not carried back — the caller sent them, and they can be
+    /// large.
+    pub subset: Option<SubsetSummary>,
+}
+
+/// A representation's selection, described without returning it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubsetSummary {
+    pub encoding: SubsetEncoding,
+    pub association: data::Association,
+    /// How many elements it keeps.
+    pub selected: u64,
 }
 
 /// A way of drawing that a backend has registered, described for a client.
@@ -227,6 +242,8 @@ pub enum SceneCommand {
         params: registry::ParamMap,
         /// `None` colours by the first scalar field, as an upload does.
         colour: Option<ColorBy>,
+        /// `None` draws the whole dataset.
+        subset: Option<subset::SubsetRequest>,
         reply: oneshot::Sender<Result<RepresentationSummary, SceneError>>,
     },
     SetRepresentation {
@@ -238,6 +255,10 @@ pub enum SceneCommand {
         /// `None` leaves colouring alone; `Some` replaces it outright.
         colour: Option<ColorBy>,
         visible: Option<bool>,
+        /// `None` leaves the selection alone; `Some(None)` clears it back to
+        /// drawing everything. Absent and cleared have to be distinguishable,
+        /// which is what the nesting buys.
+        subset: Option<Option<subset::SubsetRequest>>,
         reply: oneshot::Sender<Result<RepresentationSummary, SceneError>>,
     },
     RemoveRepresentation {
@@ -296,6 +317,7 @@ type Representors<'w, 's> = Query<
         &'static mut RepresentationParams,
         &'static mut ColorBy,
         &'static mut Visibility,
+        &'static mut Subset,
         &'static RepresentationOf,
         Option<&'static ChildOf>,
     ),
@@ -310,6 +332,7 @@ type RepresentationItem<'a> = (
     &'a RepresentationParams,
     &'a ColorBy,
     &'a Visibility,
+    &'a Subset,
     &'a RepresentationOf,
     Option<&'a ChildOf>,
 );
@@ -467,7 +490,11 @@ pub fn apply_scene_commands(
                             .into_iter()
                             .flat_map(|list| list.iter())
                             .filter_map(|entity| {
-                                summarise_representation(representations.get(entity).ok()?, &ids)
+                                summarise_representation(
+                                    representations.get(entity).ok()?,
+                                    &ids,
+                                    &arrays,
+                                )
                             })
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -504,6 +531,7 @@ pub fn apply_scene_commands(
                 parent,
                 params,
                 colour,
+                subset,
                 reply,
             } => {
                 let result = add_representation(
@@ -519,6 +547,8 @@ pub fn apply_scene_commands(
                     parent,
                     params,
                     colour,
+                    subset,
+                    &mut arrays,
                 );
                 let _ = reply.send(result);
             }
@@ -528,6 +558,7 @@ pub fn apply_scene_commands(
                 params,
                 colour,
                 visible,
+                subset,
                 reply,
             } => {
                 let result = set_representation(
@@ -535,10 +566,12 @@ pub fn apply_scene_commands(
                     &drawn,
                     &mut representations,
                     &ids,
+                    &mut arrays,
                     id,
                     params,
                     colour,
                     visible,
+                    subset,
                 );
                 let _ = reply.send(result);
             }
@@ -570,8 +603,8 @@ pub fn apply_scene_commands(
                 };
                 let mut listing: Vec<RepresentationSummary> = representations
                     .iter()
-                    .filter(|item| filter.is_none_or(|object| item.6.0 == object))
-                    .filter_map(|item| summarise_representation(item, &ids))
+                    .filter(|item| filter.is_none_or(|object| item.7.0 == object))
+                    .filter_map(|item| summarise_representation(item, &ids, &arrays))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
                 let _ = reply.send(Ok(listing));
@@ -612,6 +645,8 @@ fn add_representation(
     parent: Option<u64>,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
+    subset: Option<subset::SubsetRequest>,
+    arrays: &mut Assets<DataArray>,
 ) -> Result<RepresentationSummary, SceneError> {
     let source_entity = *index.get(&source).ok_or(SceneError::NoSuchObject(source))?;
     let parent_entity = match parent {
@@ -654,11 +689,26 @@ fn add_representation(
         ..default()
     });
 
+    let subset = subset.map_or(Subset::All, |request| request.into_subset(arrays));
+    let summarised_subset = match &subset {
+        Subset::All => None,
+        Subset::Selected {
+            encoding,
+            association,
+            ..
+        } => subset::size(&subset, arrays).map(|selected| SubsetSummary {
+            encoding: *encoding,
+            association: *association,
+            selected,
+        }),
+    };
+
     let (id, entity) = link::spawn_representation(
         commands,
         counter,
         source_entity,
         parent_entity,
+        subset,
         (
             RepresentationKindId(registered.id),
             RepresentationParams(params.clone()),
@@ -684,6 +734,7 @@ fn add_representation(
         params,
         colour,
         visible: true,
+        subset: summarised_subset,
     })
 }
 
@@ -694,10 +745,12 @@ fn set_representation(
     drawn: &HashMap<u64, Entity>,
     representations: &mut Representors,
     ids: &Query<&UniqueID>,
+    arrays: &mut Assets<DataArray>,
     id: u64,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
     visible: Option<bool>,
+    subset: Option<Option<subset::SubsetRequest>>,
 ) -> Result<RepresentationSummary, SceneError> {
     let entity = *drawn.get(&id).ok_or(SceneError::NoSuchRepresentation(id))?;
     let Ok(mut item) = representations.get_mut(entity) else {
@@ -734,12 +787,16 @@ fn set_representation(
             Visibility::Hidden
         };
     }
+    if let Some(subset) = subset {
+        *item.6 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
+    }
 
     summarise_representation(
         representations
             .get(entity)
             .expect("the entity was just written"),
         ids,
+        arrays,
     )
     .ok_or(SceneError::NoSuchRepresentation(id))
 }
@@ -795,6 +852,7 @@ fn spawn_object(
                 counter,
                 spawned,
                 spawned,
+                Subset::All,
                 (
                     RepresentationKindId(default_kind.id),
                     RepresentationParams(params.clone()),
@@ -809,6 +867,8 @@ fn spawn_object(
                 params,
                 colour,
                 visible: true,
+                // An upload draws all of what it uploaded.
+                subset: None,
             }
         })
         .into_iter()
@@ -1056,8 +1116,9 @@ fn default_colour_field(fields: Option<&data::Fields>) -> Option<String> {
 /// `None` when the source object has no handle, which should not happen and is
 /// not worth inventing one for — such a representation is about to be reaped.
 fn summarise_representation(
-    (_, id, kind, params, colour, visibility, source, parent): RepresentationItem<'_>,
+    (_, id, kind, params, colour, visibility, subset, source, parent): RepresentationItem<'_>,
     ids: &Query<&UniqueID>,
+    arrays: &Assets<DataArray>,
 ) -> Option<RepresentationSummary> {
     Some(RepresentationSummary {
         id: id.0,
@@ -1071,6 +1132,18 @@ fn summarise_representation(
         // What this representation was told; an object hidden above it still
         // hides it on screen, which is `InheritedVisibility`'s business.
         visible: *visibility != Visibility::Hidden,
+        subset: match subset {
+            Subset::All => None,
+            Subset::Selected {
+                encoding,
+                association,
+                ..
+            } => subset::size(subset, arrays).map(|selected| SubsetSummary {
+                encoding: *encoding,
+                association: *association,
+                selected,
+            }),
+        },
     })
 }
 

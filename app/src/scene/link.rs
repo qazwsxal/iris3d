@@ -15,7 +15,7 @@ use bevy::prelude::*;
 
 use crate::counter::{GlobalIDCounter, UniqueID};
 
-use super::RepresentationKindId;
+use super::{RepresentationKindId, Subset};
 
 /// The object whose data this representation draws.
 ///
@@ -48,11 +48,16 @@ pub struct Representations(Vec<Entity>);
 /// hierarchy, so it inherits its parent's placement and visibility. Bevy's
 /// `Mesh3d` requires `Transform` but *not* `Visibility`, so a backend that only
 /// added `Mesh3d` would leave an entity the visibility systems never collect.
+///
+/// `subset` is a parameter rather than something the caller folds into `extra`
+/// because every backend queries one, so it cannot be optional — and a bundle
+/// carrying the same component twice is a panic, not a last-write-wins.
 pub fn spawn_representation(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
     source: Entity,
     parent: Entity,
+    subset: Subset,
     extra: impl Bundle,
 ) -> (u64, Entity) {
     let id = counter.next();
@@ -61,6 +66,7 @@ pub fn spawn_representation(
             RepresentationOf(source),
             ChildOf(parent),
             UniqueID(id),
+            subset,
             Transform::default(),
             Visibility::default(),
             extra,

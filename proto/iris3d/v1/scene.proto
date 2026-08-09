@@ -285,6 +285,57 @@ message Range {
   float high = 2;
 }
 
+// Subset restricts a representation to part of its source dataset.
+//
+// This is what several representations of one object are for: chain A as
+// cartoon and the ligand as ball-and-stick is one structure drawn twice over
+// different parts of it.
+//
+// The selection is carried inline rather than by naming an uploaded buffer,
+// because UploadObject creates an object and there is no way to add an array to
+// an existing one — the buffer-name form would silently require a second
+// streaming RPC. Selections are small: a mask over 250k points is 250 KB.
+//
+// There is no selection language. iris3d's position throughout is that clients
+// parse their own formats and push arrays, and a client already holds the
+// residue and chain structure needed to express "chain A" far more naturally
+// than a grammar invented here would.
+//
+// A selection that does not fit the data — the wrong length for a mask, or
+// nothing left after dropping out-of-range indices — draws everything and logs
+// a warning rather than drawing nothing, which would be indistinguishable from
+// a broken renderer.
+message Subset {
+  enum Encoding {
+    ENCODING_UNSPECIFIED = 0;
+
+    // `data` is element indices, in any order. Out-of-range entries are
+    // dropped.
+    ENCODING_INDICES = 1;
+
+    // `data` is one value per element, non-zero to keep. Must have exactly as
+    // many entries as there are elements.
+    ENCODING_MASK = 2;
+  }
+
+  // What the values index into. Points and atoms, or cells and bonds.
+  enum Association {
+    ASSOCIATION_UNSPECIFIED = 0;
+    ASSOCIATION_PER_POINT = 1;
+    ASSOCIATION_PER_CELL = 2;
+  }
+
+  // Raw little-endian values, packed as for BufferSpec.
+  bytes data = 1;
+
+  Dtype dtype = 2;
+
+  Encoding encoding = 3;
+
+  // Defaults to per-point when unspecified.
+  Association association = 4;
+}
+
 // RepresentationInfo describes one way something is being drawn.
 message RepresentationInfo {
   RepresentationHandle handle = 1;
@@ -307,6 +358,22 @@ message RepresentationInfo {
   // False if this representation has been hidden individually. An object being
   // hidden does not show up here.
   bool visible = 7;
+
+  // How much of the source is drawn. Absent means all of it.
+  //
+  // The selection values themselves are not echoed back — they can be large and
+  // the client sent them — so `data` is empty here and only the encoding,
+  // dtype and element count are reported.
+  optional SubsetInfo subset = 8;
+}
+
+// SubsetInfo describes a representation's selection without returning it.
+message SubsetInfo {
+  Subset.Encoding encoding = 1;
+  Subset.Association association = 2;
+
+  // Number of elements the selection keeps.
+  uint64 selected = 3;
 }
 
 // RepresentationKindInfo describes a way of drawing that this build supports.
@@ -339,6 +406,9 @@ message AddRepresentationRequest {
 
   // Absent colours by the first scalar field, matching what an upload does.
   optional ColorSpec color = 5;
+
+  // Absent draws the whole dataset.
+  optional Subset subset = 6;
 }
 
 message AddRepresentationResponse {
@@ -357,6 +427,14 @@ message SetRepresentationRequest {
 
   // Hide or show this representation alone, without touching its object.
   optional bool visible = 4;
+
+  // Absent leaves the selection alone; present replaces it.
+  optional Subset subset = 5;
+
+  // Go back to drawing the whole dataset. Needed as its own field because an
+  // absent `subset` already means "leave it alone", so there is otherwise no
+  // way to say "clear it".
+  bool clear_subset = 6;
 }
 
 message SetRepresentationResponse {

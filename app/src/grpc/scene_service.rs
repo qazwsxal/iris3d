@@ -8,11 +8,13 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::scene::data::Association;
 use crate::scene::registry::{ParamKind, ParamMap, ParamValue};
 use crate::scene::representation::ColorMap;
+use crate::scene::subset::SubsetRequest;
 use crate::scene::{
     BufferMeta, ColorBy, Dtype, KindSummary, NamedBuffer, ObjectSummary, RepresentationSummary,
-    SceneCommand, SceneError,
+    SceneCommand, SceneError, SubsetEncoding,
 };
 
 use super::proto::{
@@ -24,8 +26,9 @@ use super::proto::{
     ParamValue as ProtoParam, Range, RemoveRepresentationRequest, RemoveRepresentationResponse,
     RepresentationHandle, RepresentationInfo, RepresentationKindInfo, SetParentRequest,
     SetParentResponse, SetRepresentationRequest, SetRepresentationResponse, SetTransformRequest,
-    SetTransformResponse, UploadObjectRequest, UploadObjectResponse, param_spec,
-    param_value::Value, scene_service_server::SceneService, upload_object_request::Payload,
+    SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadObjectRequest,
+    UploadObjectResponse, param_spec, param_value::Value, scene_service_server::SceneService,
+    subset as subset_proto, upload_object_request::Payload,
 };
 use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
 use bevy::math::{Quat, Vec3};
@@ -257,6 +260,7 @@ impl SceneService for SceneBridgeService {
         let parent = request.parent.map(|handle| handle.id);
         let params = params_from_proto(request.params)?;
         let colour = request.color.map(colour_from_proto).transpose()?;
+        let subset = request.subset.map(subset_from_proto).transpose()?;
 
         let summary = self
             .submit(|reply| SceneCommand::AddRepresentation {
@@ -265,6 +269,7 @@ impl SceneService for SceneBridgeService {
                 parent,
                 params,
                 colour,
+                subset,
                 reply,
             })
             .await?
@@ -287,6 +292,18 @@ impl SceneService for SceneBridgeService {
         let params = params_from_proto(request.params)?;
         let colour = request.color.map(colour_from_proto).transpose()?;
         let visible = request.visible;
+        // Three states, not two: leave the selection alone, replace it, or
+        // clear it back to drawing everything.
+        let subset = match (request.subset, request.clear_subset) {
+            (Some(_), true) => {
+                return Err(Status::invalid_argument(
+                    "a subset and clear_subset were both given",
+                ));
+            }
+            (Some(subset), false) => Some(Some(subset_from_proto(subset)?)),
+            (None, true) => Some(None),
+            (None, false) => None,
+        };
 
         let summary = self
             .submit(|reply| SceneCommand::SetRepresentation {
@@ -294,6 +311,7 @@ impl SceneService for SceneBridgeService {
                 params,
                 colour,
                 visible,
+                subset,
                 reply,
             })
             .await?
@@ -462,7 +480,60 @@ fn representation_info(summary: &RepresentationSummary) -> RepresentationInfo {
         params: params_to_proto(&summary.params),
         color: Some(colour_to_proto(&summary.colour)),
         visible: summary.visible,
+        subset: summary.subset.map(|subset| SubsetInfo {
+            encoding: match subset.encoding {
+                SubsetEncoding::Indices => subset_proto::Encoding::Indices,
+                SubsetEncoding::Mask => subset_proto::Encoding::Mask,
+            } as i32,
+            association: match subset.association {
+                Association::PerPoint => subset_proto::Association::PerPoint,
+                Association::PerCell => subset_proto::Association::PerCell,
+            } as i32,
+            selected: subset.selected,
+        }),
     }
+}
+
+/// Reads a selection off the wire.
+///
+/// The values stay raw here: this runs on the transport thread with no access
+/// to the world, so — exactly as an upload does — the bytes cross the channel
+/// and the scene turns them into a shared asset on its own tick.
+fn subset_from_proto(subset: ProtoSubset) -> Result<SubsetRequest, Status> {
+    let dtype = decode_dtype(subset.dtype)
+        .ok_or_else(|| Status::invalid_argument("subset dtype is required"))?;
+    let encoding = match subset_proto::Encoding::try_from(subset.encoding) {
+        Ok(subset_proto::Encoding::Indices) => SubsetEncoding::Indices,
+        Ok(subset_proto::Encoding::Mask) => SubsetEncoding::Mask,
+        _ => {
+            return Err(Status::invalid_argument(
+                "subset encoding must be indices or mask",
+            ));
+        }
+    };
+    let association = match subset_proto::Association::try_from(subset.association) {
+        Ok(subset_proto::Association::PerCell) => Association::PerCell,
+        // Per-point is the common case and the sensible reading of "unset".
+        _ => Association::PerPoint,
+    };
+
+    let width = dtype.size();
+    if !(subset.data.len() as u64).is_multiple_of(width) {
+        return Err(Status::invalid_argument(format!(
+            "subset has {} bytes, which is not a whole number of {dtype} values",
+            subset.data.len()
+        )));
+    }
+    if subset.data.is_empty() {
+        return Err(Status::invalid_argument("subset is empty"));
+    }
+
+    Ok(SubsetRequest {
+        data: subset.data,
+        dtype,
+        encoding,
+        association,
+    })
 }
 
 fn kind_info(summary: &KindSummary) -> RepresentationKindInfo {
@@ -643,18 +714,9 @@ fn buffer_meta(index: usize, spec: &BufferSpec) -> Result<BufferMeta, Status> {
         )));
     }
 
-    let dtype = match ProtoDtype::try_from(spec.dtype) {
-        Ok(ProtoDtype::Uint8) => Dtype::Uint8,
-        Ok(ProtoDtype::Int8) => Dtype::Int8,
-        Ok(ProtoDtype::Uint16) => Dtype::Uint16,
-        Ok(ProtoDtype::Int16) => Dtype::Int16,
-        Ok(ProtoDtype::Uint32) => Dtype::Uint32,
-        Ok(ProtoDtype::Int32) => Dtype::Int32,
-        Ok(ProtoDtype::Uint64) => Dtype::Uint64,
-        Ok(ProtoDtype::Int64) => Dtype::Int64,
-        Ok(ProtoDtype::Float32) => Dtype::Float32,
-        Ok(ProtoDtype::Float64) => Dtype::Float64,
-        Ok(ProtoDtype::Unspecified) | Err(_) => {
+    let dtype = match decode_dtype(spec.dtype) {
+        Some(dtype) => dtype,
+        None => {
             return Err(Status::invalid_argument(format!(
                 "buffer {index} (\"{}\"): unknown dtype {}",
                 spec.name, spec.dtype
@@ -666,6 +728,23 @@ fn buffer_meta(index: usize, spec: &BufferSpec) -> Result<BufferMeta, Status> {
         name: spec.name.clone(),
         dtype,
         shape: spec.shape.clone(),
+    })
+}
+
+/// Wire dtype to its domain equivalent, `None` for unset or unrecognised.
+fn decode_dtype(dtype: i32) -> Option<Dtype> {
+    Some(match ProtoDtype::try_from(dtype) {
+        Ok(ProtoDtype::Uint8) => Dtype::Uint8,
+        Ok(ProtoDtype::Int8) => Dtype::Int8,
+        Ok(ProtoDtype::Uint16) => Dtype::Uint16,
+        Ok(ProtoDtype::Int16) => Dtype::Int16,
+        Ok(ProtoDtype::Uint32) => Dtype::Uint32,
+        Ok(ProtoDtype::Int32) => Dtype::Int32,
+        Ok(ProtoDtype::Uint64) => Dtype::Uint64,
+        Ok(ProtoDtype::Int64) => Dtype::Int64,
+        Ok(ProtoDtype::Float32) => Dtype::Float32,
+        Ok(ProtoDtype::Float64) => Dtype::Float64,
+        Ok(ProtoDtype::Unspecified) | Err(_) => return None,
     })
 }
 
