@@ -25,8 +25,10 @@ use crate::scene::{
 mod molecule;
 mod points;
 mod surface;
+mod volume;
 
 pub use points::PointQuadMaterial;
+pub use volume::VolumeMaterial;
 
 /// What about a representation's drawable output is out of date.
 ///
@@ -189,6 +191,7 @@ pub struct DrawPlugin;
 impl Plugin for DrawPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "point_quad.wgsl");
+        embedded_asset!(app, "volume.wgsl");
 
         // Declaring the kinds is what makes them exist at all — `scene` holds
         // no list of its own. `init_resource` rather than `insert_resource` so
@@ -201,9 +204,13 @@ impl Plugin for DrawPlugin {
             points::register(&mut registry);
             surface::register(&mut registry);
             molecule::register(&mut registry);
+            volume::register(&mut registry);
         }
 
-        app.add_plugins(MaterialPlugin::<PointQuadMaterial>::default())
+        app.add_plugins((
+            MaterialPlugin::<PointQuadMaterial>::default(),
+            MaterialPlugin::<VolumeMaterial>::default(),
+        ))
             .add_systems(
                 Update,
                 (
@@ -220,12 +227,14 @@ impl Plugin for DrawPlugin {
                         points::invalidate,
                         surface::invalidate,
                         molecule::invalidate,
+                        volume::invalidate,
                     )
                         .in_set(Invalidate),
                     (
                         points::draw_points,
                         surface::draw_surfaces,
                         molecule::draw_molecules,
+                        volume::draw_volumes,
                     )
                         .in_set(Backends),
                     clear_dirty,
