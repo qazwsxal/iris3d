@@ -1,0 +1,22 @@
+# Normalise line endings.
+#
+# Without this, checkouts on Windows produce CRLF working copies while the
+# index holds LF, and any tool that rewrites a file can turn a one-line change
+# into a whole-file diff. Storing LF in the repository and checking out LF
+# everywhere keeps diffs honest across platforms and CI.
+* text=auto eol=lf
+
+# Binary formats, so git neither diffs them nor touches their bytes.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.bcif binary
+
+# Generated protobuf stubs: still text, but not worth reviewing by hand.
+libraries/python/src/iris3d/v1/*_pb2.py linguist-generated=true
+libraries/python/src/iris3d/v1/*_pb2.pyi linguist-generated=true
+libraries/python/src/iris3d/v1/*_pb2_grpc.py linguist-generated=true
+
+# Lockfiles are generated too, but must stay reviewable in diffs.
+app/Cargo.lock linguist-generated=true
+libraries/python/uv.lock linguist-generated=true
