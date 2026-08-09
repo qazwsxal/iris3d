@@ -25,7 +25,9 @@ def layout(datasets, gap=3.0):
         # Shift so this dataset's own centre lands in the middle of its slot.
         placements[name] = (cursor + width / 2.0 - centre, 0.0, 0.0)
         cursor += width + gap
-    return placements
+    # The cursor comes back too, so a dataset that is not in this mapping can
+    # still be given the next free slot.
+    return placements, cursor
 
 
 def datasets():
@@ -48,6 +50,44 @@ def datasets():
     return everything
 
 
+def hydrogen(client, root, cursor, gap=3.0):
+    """Adds the 3d_z2 orbital as a grid, drawn as a volume.
+
+    Kept out of :func:`datasets` because a grid does not fit a plain
+    ``{name: arrays}`` mapping. It is *declared*, not inferred: a grid's sample
+    positions are implicit, so no array reveals it and none carries the spacing.
+    That is also why it is the only sample here that uploads no positions at all
+    — 64³ samples state their geometry in nine numbers.
+
+    Watch for two lobes along z, a ring around the waist, and a gap between
+    them. Lobes lying sideways would mean the axis order is read the wrong way
+    round.
+    """
+    arrays, grid = testdata.hydrogen_orbital(n=64)
+    handle = client.upload_object("hydrogen 3dz2", arrays, grid=grid)
+    client.set_parent(handle, root)
+
+    # The grid is centred on its own origin, so only the slot offset applies.
+    width = grid.dims[0] * grid.spacing[0]
+    client.set_transform(handle, translation=(cursor + width / 2.0, 0.0, 0.0))
+
+    # The upload already made a volume, because `volume` is the kind registered
+    # for grids. Point it at the probability, which is the square of the
+    # amplitude and so has no sign to lose, and turn the opacity well up: most
+    # of the box is nearly empty, and at 1.0 the lobes barely register.
+    #
+    # This grid spans 24 units against the torus's 8, so it dominates the
+    # default framing. Orbit round it rather than judging it from where the
+    # camera lands.
+    drawn = client.list_representations(handle)[0]
+    client.set_representation(
+        drawn.handle,
+        {"field": "probability", "mode": "blend", "opacity": 12.0, "steps": 256.0},
+        coloring=iris3d.Coloring(field="probability", map="viridis"),
+    )
+    return handle
+
+
 def main():
     # Waits for the app to come up, so this can be launched alongside it.
     with iris3d.Client(wait_timeout=iris3d.DEFAULT_CONNECT_TIMEOUT) as client:
@@ -58,11 +98,13 @@ def main():
         root = client.create_object("examples")
 
         everything = datasets()
-        placements = layout(everything)
+        placements, cursor = layout(everything)
         for name, arrays in everything.items():
             handle = client.upload_object(name, arrays)
             client.set_parent(handle, root)
             client.set_transform(handle, translation=placements[name])
+
+        hydrogen(client, root, cursor)
 
         print(f"\n{'handle':<8}{'object':<18}{'kind':<11}{'drawn as':<16}arrays")
         print("-" * 78)
