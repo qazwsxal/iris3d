@@ -16,9 +16,9 @@ use crate::scene::dataset::CellKind;
 use crate::scene::registry::{
     flag, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
 };
-use crate::scene::{ColorBy, DataArray, DatasetKind, MeshData, RepresentationOf};
+use crate::scene::{DataArray, DatasetKind, MeshData};
 
-use super::NeedsRedraw;
+use super::{Dirty, Drawable, mark};
 
 /// Cell surfaces, shaded.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
@@ -51,15 +51,25 @@ pub fn register(registry: &mut RepresentationRegistry) {
     });
 }
 
+/// `double_sided` is a material property; nothing about the mesh depends on it.
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<SurfaceStyle>>) {
+    for entity in &changed {
+        mark(&mut commands, entity, Dirty::MATERIAL);
+    }
+}
+
 pub fn draw_surfaces(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &SurfaceStyle, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
+    dirty: Query<Drawable<SurfaceStyle, StandardMaterial>>,
     surfaces: Query<(&MeshData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, source) in &dirty {
+    for (entity, style, colour, source, dirty, mesh3d, material3d) in &dirty {
+        if !dirty.any() {
+            continue;
+        }
         let Ok((data, fields)) = surfaces.get(source.0) else {
             continue;
         };
@@ -94,60 +104,73 @@ pub fn draw_surfaces(
             continue;
         }
 
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-        mesh.insert_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            positions.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>(),
-        );
-        mesh.insert_indices(Indices::U32(indices));
+        let tint = super::colour_field(colour, fields)
+            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
 
-        // "normals" has no structural role in ingest, so it arrives as an
-        // ordinary three-component field. Use it when it is there, otherwise
-        // derive flat normals so the surface is at least shaded.
-        let supplied = fields
-            .and_then(|fields| fields.0.get("normals"))
-            .and_then(|field| arrays.get(&field.array))
-            .map(|array| array.to_vec3())
-            .filter(|normals| normals.len() == positions.len());
+        if dirty.geometry {
+            let mut mesh =
+                Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+            mesh.insert_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                positions.iter().map(|p| [p.x, p.y, p.z]).collect::<Vec<_>>(),
+            );
+            mesh.insert_indices(Indices::U32(indices));
 
-        match supplied {
-            Some(normals) => mesh.insert_attribute(
-                Mesh::ATTRIBUTE_NORMAL,
-                normals.iter().map(|n| [n.x, n.y, n.z]).collect::<Vec<_>>(),
-            ),
-            None => mesh.compute_normals(),
+            // "normals" has no structural role in ingest, so it arrives as an
+            // ordinary three-component field. Use it when it is there, otherwise
+            // derive flat normals so the surface is at least shaded.
+            let supplied = fields
+                .and_then(|fields| fields.0.get("normals"))
+                .and_then(|field| arrays.get(&field.array))
+                .map(|array| array.to_vec3())
+                .filter(|normals| normals.len() == positions.len());
+
+            match supplied {
+                Some(normals) => mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_NORMAL,
+                    normals.iter().map(|n| [n.x, n.y, n.z]).collect::<Vec<_>>(),
+                ),
+                None => mesh.compute_normals(),
+            }
+
+            if let Some(colours) = tint.clone() {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+            }
+            super::ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
+            debug!("draw: surface rebuilt with {} vertices", positions.len());
+        } else if dirty.colour && let Some(colours) = tint.clone() {
+            super::repaint(&mut meshes, mesh3d, colours);
         }
 
-        let tinted = super::colour_field(colour, fields)
-            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
-        let tinted = match tinted {
-            Some(colours) => {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
-                true
-            }
-            None => false,
-        };
-
-        let vertices = positions.len();
-        commands.entity(entity).insert((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                // Vertex colours multiply the base, so it has to be white for
-                // them to come through unaltered.
-                base_color: if tinted { Color::WHITE } else { colour.flat },
-                perceptual_roughness: 0.55,
-                double_sided: style.double_sided,
-                // `double_sided` only lights the back faces; they still have to
-                // survive culling to be lit at all.
-                cull_mode: if style.double_sided {
-                    None
-                } else {
-                    Some(bevy::render::render_resource::Face::Back)
+        // Colouring is a material change too, not only a vertex one: whether the
+        // base is white or the flat colour depends on there being a tint at all,
+        // so switching a field on or off has to rewrite both.
+        if dirty.any() {
+            super::ensure_material(
+                &mut commands,
+                entity,
+                &mut materials,
+                material3d,
+                StandardMaterial {
+                    // Vertex colours multiply the base, so it has to be white for
+                    // them to come through unaltered.
+                    base_color: if tint.is_some() {
+                        Color::WHITE
+                    } else {
+                        colour.flat
+                    },
+                    perceptual_roughness: 0.55,
+                    double_sided: style.double_sided,
+                    // `double_sided` only lights the back faces; they still have
+                    // to survive culling to be lit at all.
+                    cull_mode: if style.double_sided {
+                        None
+                    } else {
+                        Some(bevy::render::render_resource::Face::Back)
+                    },
+                    ..default()
                 },
-                ..default()
-            })),
-        ));
-
-        debug!("draw: surface with {vertices} vertices");
+            );
+        }
     }
 }

@@ -20,9 +20,9 @@ use crate::scene::data::Fields;
 use crate::scene::registry::{
     float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
 };
-use crate::scene::{ColorBy, DataArray, DatasetKind, PointCloud, RepresentationOf};
+use crate::scene::{DataArray, DatasetKind, PointCloud};
 
-use super::NeedsRedraw;
+use super::{Dirty, Drawable, mark};
 
 /// Points drawn as camera-facing discs. `size` is a diameter in world units, so
 /// a sensible value depends on the data's own scale — there is no universally
@@ -93,16 +93,36 @@ impl Material for PointQuadMaterial {
     }
 }
 
+/// `size` reaches the shader as a uniform, so changing it is a material write
+/// and never touches the mesh.
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<PointsStyle>>) {
+    for entity in &changed {
+        mark(&mut commands, entity, Dirty::MATERIAL);
+    }
+}
+
+/// One vertex colour per corner, so a repaint writes the same value four times.
+fn quad_colours(centres: usize, tint: Option<&Vec<[f32; 4]>>, flat: [f32; 4]) -> Vec<[f32; 4]> {
+    let mut colours = Vec::with_capacity(centres * 4);
+    for index in 0..centres {
+        let rgba = tint.map_or(flat, |colours| colours[index]);
+        colours.extend_from_slice(&[rgba; 4]);
+    }
+    colours
+}
+
 pub fn draw_points(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PointQuadMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &PointsStyle, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
+    dirty: Query<Drawable<PointsStyle, PointQuadMaterial>>,
     clouds: Query<(&PointCloud, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, source) in &dirty {
-        let size = &style.size;
+    for (entity, style, colour, source, dirty, mesh3d, material3d) in &dirty {
+        if !dirty.any() {
+            continue;
+        }
         let Ok((cloud, fields)) = clouds.get(source.0) else {
             continue;
         };
@@ -114,41 +134,211 @@ pub fn draw_points(
         if centres.is_empty() {
             continue;
         }
-
-        let tint = super::colour_field(colour, fields)
-            .and_then(|field| super::vertex_colours(field, colour, &arrays, centres.len()));
-        let flat = colour.flat.to_linear().to_f32_array();
-
         let count = centres.len();
-        let mut positions = Vec::with_capacity(count * 4);
-        let mut uvs = Vec::with_capacity(count * 4);
-        let mut colours = Vec::with_capacity(count * 4);
-        let mut indices = Vec::with_capacity(count * 6);
 
-        for (index, centre) in centres.iter().enumerate() {
-            let rgba = tint.as_ref().map_or(flat, |colours| colours[index]);
-            let base = (index * 4) as u32;
-            for corner in CORNERS {
-                positions.push([centre.x, centre.y, centre.z]);
-                uvs.push(corner);
-                colours.push(rgba);
+        if dirty.geometry || dirty.colour {
+            let tint = super::colour_field(colour, fields)
+                .and_then(|field| super::vertex_colours(field, colour, &arrays, count));
+            let flat = colour.flat.to_linear().to_f32_array();
+            let colours = quad_colours(count, tint.as_ref(), flat);
+
+            if dirty.geometry {
+                let mut positions = Vec::with_capacity(count * 4);
+                let mut uvs = Vec::with_capacity(count * 4);
+                let mut indices = Vec::with_capacity(count * 6);
+
+                for (index, centre) in centres.iter().enumerate() {
+                    let base = (index * 4) as u32;
+                    for corner in CORNERS {
+                        positions.push([centre.x, centre.y, centre.z]);
+                        uvs.push(corner);
+                    }
+                    indices
+                        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+
+                let mut mesh =
+                    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+                mesh.insert_indices(Indices::U32(indices));
+                super::ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
+                debug!("draw: {count} point quads rebuilt");
+            } else {
+                super::repaint(&mut meshes, mesh3d, colours);
+                debug!("draw: {count} point quads repainted");
             }
-            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
 
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
-        mesh.insert_indices(Indices::U32(indices));
+        // After the geometry branch, which may have created the material this
+        // then writes through.
+        if dirty.material || dirty.geometry {
+            super::ensure_material(
+                &mut commands,
+                entity,
+                &mut materials,
+                material3d,
+                PointQuadMaterial {
+                    params: Vec4::new(style.size, 0.0, 0.0, 0.0),
+                },
+            );
+        }
+    }
+}
 
-        commands.entity(entity).insert((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(materials.add(PointQuadMaterial {
-                params: Vec4::new(*size, 0.0, 0.0, 0.0),
-            })),
-        ));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::data::{BufferMeta, Dtype, NamedArray};
+    use crate::scene::{ColorBy, RepresentationKindId, RepresentationOf, SceneObject};
 
-        debug!("draw: {count} point quads at size {size}");
+    /// Runs the invalidation chain and this backend, with no renderer behind
+    /// it: everything being asserted is about assets, not pixels.
+    fn app() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_message::<AssetEvent<DataArray>>();
+        app.init_resource::<Assets<DataArray>>();
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<Assets<PointQuadMaterial>>();
+        app.add_systems(
+            Update,
+            (
+                (super::super::mark_dirty, invalidate),
+                draw_points,
+                super::super::clear_dirty,
+            )
+                .chain(),
+        );
+
+        let positions = app
+            .world_mut()
+            .resource_mut::<Assets<DataArray>>()
+            .add(DataArray {
+                dtype: Dtype::Float32,
+                shape: vec![4, 3],
+                data: vec![0; 48],
+            });
+        let object = app
+            .world_mut()
+            .spawn((
+                SceneObject {
+                    name: "cloud".into(),
+                    arrays: vec![NamedArray {
+                        meta: BufferMeta {
+                            name: "positions".into(),
+                            dtype: Dtype::Float32,
+                            shape: vec![4, 3],
+                        },
+                        handle: positions.clone(),
+                    }],
+                },
+                PointCloud { positions },
+            ))
+            .id();
+        let representation = app
+            .world_mut()
+            .spawn((
+                RepresentationKindId("points"),
+                PointsStyle { size: 0.05 },
+                ColorBy::default(),
+                RepresentationOf(object),
+            ))
+            .id();
+
+        app.update();
+        (app, object, representation)
+    }
+
+    fn mesh_of(app: &App, entity: Entity) -> AssetId<Mesh> {
+        app.world().get::<Mesh3d>(entity).expect("drawn").0.id()
+    }
+
+    fn material_of(app: &App, entity: Entity) -> AssetId<PointQuadMaterial> {
+        app.world()
+            .get::<MeshMaterial3d<PointQuadMaterial>>(entity)
+            .expect("drawn")
+            .0
+            .id()
+    }
+
+    fn counts(app: &App) -> (usize, usize) {
+        (
+            app.world().resource::<Assets<Mesh>>().len(),
+            app.world().resource::<Assets<PointQuadMaterial>>().len(),
+        )
+    }
+
+    #[test]
+    fn drawing_produces_one_mesh_and_one_material() {
+        let (app, _, representation) = app();
+        assert_eq!(counts(&app), (1, 1));
+        assert_eq!(
+            app.world()
+                .resource::<Assets<Mesh>>()
+                .get(mesh_of(&app, representation))
+                .map(|mesh| mesh.count_vertices()),
+            Some(16),
+            "four points, four vertices each"
+        );
+    }
+
+    /// Recolouring rewrites the existing buffer. Before graded invalidation
+    /// this allocated a whole new mesh, so dragging a colour-map slider leaked
+    /// one per frame.
+    #[test]
+    fn recolouring_reuses_the_mesh() {
+        let (mut app, _, representation) = app();
+        let (mesh, material) = (mesh_of(&app, representation), material_of(&app, representation));
+
+        app.world_mut()
+            .get_mut::<ColorBy>(representation)
+            .unwrap()
+            .flat = Color::srgb(1.0, 0.0, 0.0);
+        app.update();
+
+        assert_eq!(mesh_of(&app, representation), mesh, "mesh should be reused");
+        assert_eq!(material_of(&app, representation), material);
+        assert_eq!(counts(&app), (1, 1), "nothing should have been allocated");
+    }
+
+    /// Point size is a shader uniform, so changing it touches neither the mesh
+    /// nor the material *asset* — only the value inside it.
+    #[test]
+    fn resizing_reuses_both_assets() {
+        let (mut app, _, representation) = app();
+        let (mesh, material) = (mesh_of(&app, representation), material_of(&app, representation));
+
+        app.world_mut()
+            .get_mut::<PointsStyle>(representation)
+            .unwrap()
+            .size = 0.5;
+        app.update();
+
+        assert_eq!(mesh_of(&app, representation), mesh);
+        assert_eq!(material_of(&app, representation), material);
+        assert_eq!(counts(&app), (1, 1));
+        assert_eq!(
+            app.world()
+                .resource::<Assets<PointQuadMaterial>>()
+                .get(material)
+                .map(|m| m.params.x),
+            Some(0.5),
+            "the new size should have reached the uniform"
+        );
+    }
+
+    /// A hundred slider frames should leave exactly the assets one frame does.
+    #[test]
+    fn dragging_a_slider_allocates_nothing() {
+        let (mut app, _, representation) = app();
+        for step in 0..100 {
+            app.world_mut()
+                .get_mut::<PointsStyle>(representation)
+                .unwrap()
+                .size = 0.01 + step as f32 * 0.001;
+            app.update();
+        }
+        assert_eq!(counts(&app), (1, 1));
     }
 }

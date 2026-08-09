@@ -15,10 +15,11 @@ use bevy::asset::embedded_asset;
 use bevy::prelude::*;
 
 use crate::scene::data::{Field, Fields};
-use crate::scene::registry::{RepresentationKindId, RepresentationParams, RepresentationRegistry};
+use crate::scene::registry::{RepresentationKindId, RepresentationRegistry};
 use crate::scene::representation::ColorMap;
 use crate::scene::{
-    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, Representations, SceneObject,
+    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, RepresentationOf, Representations,
+    SceneObject,
 };
 
 mod molecule;
@@ -27,18 +28,160 @@ mod surface;
 
 pub use points::PointQuadMaterial;
 
-/// Marks a representation entity whose drawable output is out of date.
+/// What about a representation's drawable output is out of date.
 ///
-/// Backends consume this rather than `Added<Representation>`, so a change to
-/// the representation, its colouring, the dataset, or the underlying array
-/// bytes all produce a redraw — not just the initial upload.
-#[derive(Component)]
-pub struct NeedsRedraw;
+/// Graded rather than a single flag, because the three differ by orders of
+/// magnitude in cost. Re-tessellating a protein to drag a colour-map slider
+/// meant rebuilding a merged mesh of tens of thousands of vertices per frame to
+/// change four bytes each.
+///
+/// Flags accumulate and are cleared together once every backend has had its
+/// turn. Geometry subsumes colour: a rebuild produces vertex colours anyway.
+#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Dirty {
+    /// Vertex buffers must be rebuilt from the data.
+    pub geometry: bool,
+    /// Vertex colours must be recomputed. The geometry itself stands, so the
+    /// vertex count is unchanged and colours can be written in place.
+    pub colour: bool,
+    /// A material property changed and nothing about the mesh did.
+    pub material: bool,
+}
+
+impl Dirty {
+    /// Everything, for a representation that has never been drawn.
+    pub const ALL: Self = Self {
+        geometry: true,
+        colour: true,
+        material: true,
+    };
+    pub const GEOMETRY: Self = Self {
+        geometry: true,
+        ..Self::NOTHING
+    };
+    pub const COLOUR: Self = Self {
+        colour: true,
+        ..Self::NOTHING
+    };
+    pub const MATERIAL: Self = Self {
+        material: true,
+        ..Self::NOTHING
+    };
+    const NOTHING: Self = Self {
+        geometry: false,
+        colour: false,
+        material: false,
+    };
+
+    pub fn any(self) -> bool {
+        self.geometry || self.colour || self.material
+    }
+}
+
+/// Records that part of a representation needs redoing.
+///
+/// Merges rather than overwrites: several systems mark independently in one
+/// tick — the generic classifier and each backend's own — and an `insert` would
+/// let whichever ran last drop the others' findings. `or_default` also means no
+/// backend has to arrange for the component to exist first.
+pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
+    commands
+        .entity(entity)
+        .entry::<Dirty>()
+        .or_default()
+        .and_modify(move |mut dirty| {
+            dirty.geometry |= what.geometry;
+            dirty.colour |= what.colour;
+            dirty.material |= what.material;
+        });
+}
+
+/// What every backend needs to redraw one representation: its own style, how it
+/// is coloured, whose data it draws, what is out of date, and whatever it
+/// produced last time — which is what makes reuse rather than reallocation
+/// possible.
+pub(crate) type Drawable<'a, Style, Material> = (
+    Entity,
+    &'a Style,
+    &'a ColorBy,
+    &'a RepresentationOf,
+    &'a Dirty,
+    Option<&'a Mesh3d>,
+    Option<&'a MeshMaterial3d<Material>>,
+);
+
+/// Ordering label for the systems that decide what is out of date, so every one
+/// of them has marked before any backend reads the result.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Invalidate;
 
 /// Ordering label for the backends, so dirty marking runs before them and
 /// clearing runs after.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 struct Backends;
+
+/// Replaces a mesh in place when the representation already has one.
+///
+/// Reusing the handle keeps the entity pointing at the same asset — and, more
+/// to the point, stops every rebuild leaking a fresh `Mesh` into `Assets`.
+pub(crate) fn ensure_mesh(
+    commands: &mut Commands,
+    entity: Entity,
+    meshes: &mut Assets<Mesh>,
+    existing: Option<&Mesh3d>,
+    mesh: Mesh,
+) {
+    if let Some(Mesh3d(handle)) = existing
+        && let Some(mut slot) = meshes.get_mut(handle)
+    {
+        *slot = mesh;
+        return;
+    }
+    commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
+}
+
+/// As [`ensure_mesh`], for the material.
+pub(crate) fn ensure_material<M: Material>(
+    commands: &mut Commands,
+    entity: Entity,
+    materials: &mut Assets<M>,
+    existing: Option<&MeshMaterial3d<M>>,
+    material: M,
+) {
+    if let Some(MeshMaterial3d(handle)) = existing
+        && let Some(mut slot) = materials.get_mut(handle)
+    {
+        *slot = material;
+        return;
+    }
+    commands
+        .entity(entity)
+        .insert(MeshMaterial3d(materials.add(material)));
+}
+
+/// Overwrites a mesh's vertex colours without touching anything else.
+///
+/// Only legal when the vertex count is unchanged, which is exactly when the
+/// geometry is not also dirty.
+pub(crate) fn repaint(meshes: &mut Assets<Mesh>, existing: Option<&Mesh3d>, colours: Vec<[f32; 4]>) {
+    let Some(Mesh3d(handle)) = existing else {
+        return;
+    };
+    let Some(mut mesh) = meshes.get_mut(handle) else {
+        return;
+    };
+    if mesh.count_vertices() != colours.len() {
+        // Should not happen, and silently painting a prefix would be worse than
+        // waiting for the rebuild that is evidently coming.
+        warn!(
+            "draw: {} vertex colours for a mesh of {} vertices; skipping the repaint",
+            colours.len(),
+            mesh.count_vertices()
+        );
+        return;
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+}
 
 pub struct DrawPlugin;
 
@@ -66,7 +209,18 @@ impl Plugin for DrawPlugin {
                     // Representations are spawned by the scene during Update,
                     // so this whole chain runs after it to pick them up on the
                     // frame they appear.
-                    mark_dirty,
+                    //
+                    // Each backend classifies its own style changes: only it
+                    // knows whether one of its parameters feeds the geometry or
+                    // a material uniform, and centralising that would put
+                    // backend knowledge back in shared code.
+                    (
+                        mark_dirty,
+                        points::invalidate,
+                        surface::invalidate,
+                        molecule::invalidate,
+                    )
+                        .in_set(Invalidate),
                     (
                         points::draw_points,
                         surface::draw_surfaces,
@@ -83,16 +237,15 @@ impl Plugin for DrawPlugin {
     }
 }
 
-/// Flags representations that need rebuilding.
+/// Flags what needs redoing, for the reasons any backend would agree on.
+///
+/// Style parameters are not among them — what a parameter affects is the
+/// backend's business, so each classifies its own. See the `invalidate` system
+/// in each of them.
 fn mark_dirty(
     mut commands: Commands,
-    changed_representations: Query<
-        Entity,
-        (
-            With<RepresentationKindId>,
-            Or<(Changed<RepresentationParams>, Changed<ColorBy>)>,
-        ),
-    >,
+    new_representations: Query<Entity, Added<RepresentationKindId>>,
+    recoloured: Query<Entity, (With<RepresentationKindId>, Changed<ColorBy>)>,
     changed_datasets: Query<
         &Representations,
         Or<(
@@ -105,8 +258,16 @@ fn mark_dirty(
     mut array_events: MessageReader<AssetEvent<DataArray>>,
     objects: Query<(&SceneObject, &Representations)>,
 ) {
-    for entity in &changed_representations {
-        commands.entity(entity).insert(NeedsRedraw);
+    for entity in &new_representations {
+        mark(&mut commands, entity, Dirty::ALL);
+    }
+
+    // Colour only: the vertices stay exactly where they are, so the mesh is
+    // repainted rather than rebuilt. For a merged protein that is the
+    // difference between writing a colour per vertex and re-tessellating every
+    // atom and bond.
+    for entity in &recoloured {
+        mark(&mut commands, entity, Dirty::COLOUR);
     }
 
     // Following the source link rather than the child list is what makes this
@@ -114,7 +275,7 @@ fn mark_dirty(
     // still redraws when the object it actually draws changes.
     for drawn_by in &changed_datasets {
         for representation in drawn_by.iter() {
-            commands.entity(representation).insert(NeedsRedraw);
+            mark(&mut commands, representation, Dirty::GEOMETRY);
         }
     }
 
@@ -139,19 +300,22 @@ fn mark_dirty(
             continue;
         }
         for representation in drawn_by.iter() {
-            commands.entity(representation).insert(NeedsRedraw);
+            mark(&mut commands, representation, Dirty::GEOMETRY);
         }
     }
 }
 
-/// Clears the flag once every backend has had a chance at it.
+/// Clears the flags once every backend has had a chance at them.
 ///
 /// Done centrally rather than per-backend because a representation is only
 /// handled by the one backend that understands it, and the others must not
-/// clear a flag they ignored.
-fn clear_dirty(mut commands: Commands, dirty: Query<Entity, With<NeedsRedraw>>) {
-    for entity in &dirty {
-        commands.entity(entity).remove::<NeedsRedraw>();
+/// clear flags they ignored. Cleared in place rather than removed, so the
+/// component stays put and marking never costs an archetype move.
+fn clear_dirty(mut dirty: Query<&mut Dirty>) {
+    for mut dirty in &mut dirty {
+        if dirty.any() {
+            *dirty = Dirty::default();
+        }
     }
 }
 
@@ -263,7 +427,7 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
 mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype, NamedArray};
-    use crate::scene::registry::ParamValue;
+    use crate::scene::registry::{ParamValue, RepresentationParams};
     use crate::scene::RepresentationOf;
 
     fn array() -> DataArray {
@@ -331,12 +495,16 @@ mod tests {
         (app, object, representation)
     }
 
+    fn flags(app: &App, entity: Entity) -> Dirty {
+        app.world().get::<Dirty>(entity).copied().unwrap_or_default()
+    }
+
     fn dirty(app: &App, entity: Entity) -> bool {
-        app.world().get::<NeedsRedraw>(entity).is_some()
+        flags(app, entity).any()
     }
 
     fn settle(app: &mut App, entity: Entity) {
-        app.world_mut().entity_mut(entity).remove::<NeedsRedraw>();
+        app.world_mut().entity_mut(entity).insert(Dirty::default());
         app.update();
         assert!(!dirty(app, entity), "should not redraw without a change");
     }
@@ -344,25 +512,18 @@ mod tests {
     #[test]
     fn marks_new_representations() {
         let (app, _, representation) = scene();
-        assert!(dirty(&app, representation));
+        assert_eq!(
+            flags(&app, representation),
+            Dirty::ALL,
+            "a representation that has never been drawn needs everything"
+        );
     }
 
+    /// The point of grading: recolouring must not ask for a rebuild, because
+    /// the vertices have not moved and a merged protein is expensive to
+    /// re-tessellate.
     #[test]
-    fn redraws_when_a_parameter_changes() {
-        let (mut app, _, representation) = scene();
-        settle(&mut app, representation);
-
-        app.world_mut()
-            .get_mut::<RepresentationParams>(representation)
-            .unwrap()
-            .0
-            .insert("size".into(), ParamValue::Float(5.0));
-        app.update();
-        assert!(dirty(&app, representation));
-    }
-
-    #[test]
-    fn redraws_when_colouring_changes() {
+    fn recolouring_does_not_ask_for_a_rebuild() {
         let (mut app, _, representation) = scene();
         settle(&mut app, representation);
 
@@ -371,7 +532,7 @@ mod tests {
             .unwrap()
             .field = Some("stress".into());
         app.update();
-        assert!(dirty(&app, representation));
+        assert_eq!(flags(&app, representation), Dirty::COLOUR);
     }
 
     #[test]
@@ -385,7 +546,28 @@ mod tests {
             .unwrap()
             .set_changed();
         app.update();
-        assert!(dirty(&app, representation));
+        assert_eq!(flags(&app, representation), Dirty::GEOMETRY);
+    }
+
+    /// Marks accumulate rather than overwrite. Several systems classify in one
+    /// tick, and an `insert` would let whichever ran last drop the rest.
+    #[test]
+    fn separate_reasons_accumulate() {
+        let (mut app, object, representation) = scene();
+        settle(&mut app, representation);
+
+        app.world_mut()
+            .get_mut::<ColorBy>(representation)
+            .unwrap()
+            .field = Some("stress".into());
+        app.world_mut()
+            .get_mut::<PointCloud>(object)
+            .unwrap()
+            .set_changed();
+        app.update();
+
+        let flags = flags(&app, representation);
+        assert!(flags.colour && flags.geometry, "got {flags:?}");
     }
 
     #[test]

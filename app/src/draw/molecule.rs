@@ -18,9 +18,71 @@ use crate::scene::data::Fields;
 use crate::scene::registry::{
     float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
 };
-use crate::scene::{ColorBy, DataArray, DatasetKind, MoleculeData, RepresentationOf};
+use crate::scene::{DataArray, DatasetKind, MoleculeData};
 
-use super::NeedsRedraw;
+use super::{Dirty, Drawable, mark};
+
+/// Where each atom and bond ended up in the merged vertex buffer.
+///
+/// Written when the geometry is built, so a later colour change can find the
+/// vertices belonging to atom *n* without rebuilding anything. This is the only
+/// bookkeeping the whole in-place repaint needs, and it is what stops a
+/// colour-map drag re-tessellating every sphere and cylinder in a protein.
+#[derive(Component, Debug)]
+pub struct MoleculeLayout {
+    /// Vertices in one atom's sphere.
+    atom_vertices: usize,
+    /// Vertices in one bond's cylinder.
+    bond_vertices: usize,
+    atoms: usize,
+    /// Endpoint atom indices of the bonds actually drawn, in the order drawn.
+    /// Bonds referring to missing atoms are skipped, so this is not simply the
+    /// input bond list.
+    bonds: Vec<[u32; 2]>,
+}
+
+impl MoleculeLayout {
+    fn vertices(&self) -> usize {
+        self.atoms * self.atom_vertices + self.bonds.len() * self.bond_vertices
+    }
+
+    /// Expands per-atom colours to per-vertex, giving each bond the mean of its
+    /// endpoints so the mapping stays continuous along a chain.
+    fn colours(&self, atom_colours: &[[f32; 4]], stick: [f32; 4], tinted: bool) -> Vec<[f32; 4]> {
+        let mut colours = Vec::with_capacity(self.vertices());
+        for atom in 0..self.atoms {
+            let colour = atom_colours.get(atom).copied().unwrap_or(stick);
+            colours.extend(std::iter::repeat_n(colour, self.atom_vertices));
+        }
+        for [a, b] in &self.bonds {
+            let colour = if tinted {
+                mean(
+                    atom_colours.get(*a as usize).copied().unwrap_or(stick),
+                    atom_colours.get(*b as usize).copied().unwrap_or(stick),
+                )
+            } else {
+                stick
+            };
+            colours.extend(std::iter::repeat_n(colour, self.bond_vertices));
+        }
+        colours
+    }
+}
+
+fn mean(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let mut mean = [0.0; 4];
+    for channel in 0..4 {
+        mean[channel] = (a[channel] + b[channel]) * 0.5;
+    }
+    mean
+}
+
+/// Atom radii and bond thickness are geometry: both change where vertices go.
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<BallAndStickStyle>>) {
+    for entity in &changed {
+        mark(&mut commands, entity, Dirty::GEOMETRY);
+    }
+}
 
 /// Spheres at atoms, cylinders along bonds.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
@@ -181,10 +243,15 @@ pub fn draw_molecules(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &BallAndStickStyle, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
+    dirty: Query<Drawable<BallAndStickStyle, StandardMaterial>>,
+    layouts: Query<&MoleculeLayout>,
     molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, source) in &dirty {
+    for (entity, style, colour, source, dirty, mesh3d, material3d) in &dirty {
+        if !dirty.any() {
+            continue;
+        }
+        let layout = layouts.get(entity).ok();
         let BallAndStickStyle {
             atom_scale,
             bond_radius,
@@ -208,6 +275,36 @@ pub fn draw_molecules(
             .and_then(|array| array.to_u32())
             .unwrap_or_else(|| vec![6; positions.len()]);
 
+        // A selected field wins over CPK. Without this the tree can claim an
+        // object is coloured by b_factor while the render shows element
+        // colours — the field is listed, so it has to actually apply.
+        let tint = super::colour_field(colour, fields)
+            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
+        let stick = colour.flat.to_linear().to_f32_array();
+        let atom_colours: Vec<[f32; 4]> = (0..positions.len())
+            .map(|index| {
+                tint.as_ref().map_or_else(
+                    || element_colour(elements.get(index).copied().unwrap_or(6)),
+                    |colours| colours[index],
+                )
+            })
+            .collect();
+
+        // Nothing moved, so the vertex count is unchanged and the existing
+        // buffer can simply be painted over. This is the path a colour-map drag
+        // takes, and it is why the layout is cached at all.
+        if !dirty.geometry {
+            if let Some(layout) = layout {
+                super::repaint(
+                    &mut meshes,
+                    mesh3d,
+                    layout.colours(&atom_colours, stick, tint.is_some()),
+                );
+                debug!("draw: molecule repainted, {} vertices", layout.vertices());
+            }
+            continue;
+        }
+
         let (Some(sphere), Some(cylinder)) = (
             Template::from_mesh(&Sphere::new(1.0).mesh().ico(2).unwrap()),
             Template::from_mesh(&Cylinder::new(1.0, 1.0).mesh().resolution(10).build()),
@@ -216,29 +313,19 @@ pub fn draw_molecules(
             continue;
         };
 
-        // A selected field wins over CPK. Without this the tree can claim an
-        // object is coloured by b_factor while the render shows element
-        // colours — the field is listed, so it has to actually apply.
-        let tint = super::colour_field(colour, fields)
-            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
-
         let mut merged = Merged::default();
 
         for (index, position) in positions.iter().enumerate() {
             let atomic_number = elements.get(index).copied().unwrap_or(6);
             let radius = element_radius(atomic_number) * atom_scale.max(0.01);
-            let atom_colour = tint
-                .as_ref()
-                .map_or_else(|| element_colour(atomic_number), |colours| colours[index]);
             merged.stamp(
                 &sphere,
                 &Transform::from_translation(*position).with_scale(Vec3::splat(radius)),
-                atom_colour,
+                atom_colours[index],
             );
         }
 
-        let stick = colour.flat.to_linear().to_f32_array();
-        let mut sticks = 0usize;
+        let mut drawn_bonds: Vec<[u32; 2]> = Vec::new();
         if let Some(bonds) = &molecule.bonds {
             let pairs = arrays
                 .get(&bonds.pairs)
@@ -258,16 +345,10 @@ pub fn draw_molecules(
                 }
                 // When atoms are field-coloured, a bond takes the mean of its
                 // endpoints so the mapping stays continuous along the chain.
-                let bond_colour = match &tint {
-                    Some(colours) => {
-                        let (i, j) = (pair[0] as usize, pair[1] as usize);
-                        let mut mean = [0.0; 4];
-                        for channel in 0..4 {
-                            mean[channel] = (colours[i][channel] + colours[j][channel]) * 0.5;
-                        }
-                        mean
-                    }
-                    None => stick,
+                let bond_colour = if tint.is_some() {
+                    mean(atom_colours[pair[0] as usize], atom_colours[pair[1] as usize])
+                } else {
+                    stick
                 };
                 merged.stamp(
                     &cylinder,
@@ -277,19 +358,30 @@ pub fn draw_molecules(
                         .with_scale(Vec3::new(*bond_radius, length, *bond_radius)),
                     bond_colour,
                 );
-                sticks += 1;
+                drawn_bonds.push([pair[0], pair[1]]);
             }
         }
 
         let vertices = merged.positions.len();
-        commands.entity(entity).insert((
-            Mesh3d(meshes.add(merged.build())),
-            MeshMaterial3d(materials.add(StandardMaterial {
+        let sticks = drawn_bonds.len();
+        super::ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, merged.build());
+        super::ensure_material(
+            &mut commands,
+            entity,
+            &mut materials,
+            material3d,
+            StandardMaterial {
                 base_color: Color::WHITE,
                 perceptual_roughness: 0.4,
                 ..default()
-            })),
-        ));
+            },
+        );
+        commands.entity(entity).insert(MoleculeLayout {
+            atom_vertices: sphere.positions.len(),
+            bond_vertices: cylinder.positions.len(),
+            atoms: positions.len(),
+            bonds: drawn_bonds,
+        });
 
         debug!(
             "draw: molecule merged into one mesh — {} atoms, {sticks} bonds, {vertices} vertices",
