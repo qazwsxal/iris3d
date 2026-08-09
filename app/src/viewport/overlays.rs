@@ -108,7 +108,12 @@ pub fn draw_overlays(
     }
 }
 
-/// Union of the Aabbs on an object's representation children.
+/// Union of the Aabbs on an object and whatever is parented to it.
+///
+/// Walks `Children`, not `Representations`: this is a question about space, and
+/// what belongs in an object's box is what is *drawn at* its placement. A
+/// representation sourced from elsewhere and parented here counts; one sourced
+/// from here but parented elsewhere does not, because that is where it appears.
 fn subtree_bounds(
     entity: Entity,
     children: Option<&Children>,

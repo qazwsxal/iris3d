@@ -1,7 +1,8 @@
 //! Rendering backends.
 //!
 //! Each backend is a system that picks up representation entities of one kind,
-//! reads the parent's dataset, and builds something drawable onto the
+//! reads the dataset of the object the representation is *of* — which need not
+//! be its transform parent — and builds something drawable onto the
 //! representation entity itself. Nothing in [`crate::scene`] knows these exist,
 //! so a backend can be replaced or run alongside another.
 //!
@@ -16,7 +17,8 @@ use bevy::prelude::*;
 use crate::scene::data::{Field, Fields};
 use crate::scene::representation::ColorMap;
 use crate::scene::{
-    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, Representation, SceneObject,
+    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, Representation, Representations,
+    SceneObject,
 };
 
 mod molecule;
@@ -76,7 +78,7 @@ fn mark_dirty(
         ),
     >,
     changed_datasets: Query<
-        &Children,
+        &Representations,
         Or<(
             Changed<PointCloud>,
             Changed<MeshData>,
@@ -85,18 +87,18 @@ fn mark_dirty(
         )>,
     >,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
-    objects: Query<(&SceneObject, &Children)>,
-    representations: Query<(), With<Representation>>,
+    objects: Query<(&SceneObject, &Representations)>,
 ) {
     for entity in &changed_representations {
         commands.entity(entity).insert(NeedsRedraw);
     }
 
-    for children in &changed_datasets {
-        for child in children.iter() {
-            if representations.contains(child) {
-                commands.entity(child).insert(NeedsRedraw);
-            }
+    // Following the source link rather than the child list is what makes this
+    // correct for shared data: a representation parented under some other node
+    // still redraws when the object it actually draws changes.
+    for drawn_by in &changed_datasets {
+        for representation in drawn_by.iter() {
+            commands.entity(representation).insert(NeedsRedraw);
         }
     }
 
@@ -112,7 +114,7 @@ fn mark_dirty(
     if modified.is_empty() {
         return;
     }
-    for (object, children) in &objects {
+    for (object, drawn_by) in &objects {
         let touched = object
             .arrays
             .iter()
@@ -120,10 +122,8 @@ fn mark_dirty(
         if !touched {
             continue;
         }
-        for child in children.iter() {
-            if representations.contains(child) {
-                commands.entity(child).insert(NeedsRedraw);
-            }
+        for representation in drawn_by.iter() {
+            commands.entity(representation).insert(NeedsRedraw);
         }
     }
 }
@@ -247,9 +247,8 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
 mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype, NamedArray};
+    use crate::scene::RepresentationOf;
 
-    /// Builds an object with one point-cloud dataset and one representation
-    /// child, and returns both entities.
     fn array() -> DataArray {
         DataArray {
             dtype: Dtype::Float32,
@@ -258,21 +257,24 @@ mod tests {
         }
     }
 
-    fn scene() -> (App, Entity, Entity) {
+    fn app() -> App {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
         app.add_systems(Update, mark_dirty);
+        app
+    }
 
+    /// Spawns an object holding one point-cloud dataset.
+    fn spawn_object(app: &mut App, name: &str) -> Entity {
         let positions = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
             .add(array());
-        let object = app
-            .world_mut()
+        app.world_mut()
             .spawn((
                 SceneObject {
-                    name: "test".into(),
+                    name: name.into(),
                     arrays: vec![NamedArray {
                         meta: BufferMeta {
                             name: "positions".into(),
@@ -282,20 +284,29 @@ mod tests {
                         handle: positions.clone(),
                     }],
                 },
-                PointCloud {
-                    positions: positions.clone(),
-                },
+                PointCloud { positions },
             ))
-            .id();
-        let representation = app
-            .world_mut()
+            .id()
+    }
+
+    /// Spawns a representation drawing `source`, placed under `parent`.
+    fn spawn_representation(app: &mut App, source: Entity, parent: Entity) -> Entity {
+        app.world_mut()
             .spawn((
                 Representation::Points { size: 1.0 },
                 ColorBy::default(),
-                ChildOf(object),
+                RepresentationOf(source),
+                ChildOf(parent),
             ))
-            .id();
+            .id()
+    }
 
+    /// One object drawn in place — source and transform parent the same, which
+    /// is what an upload produces.
+    fn scene() -> (App, Entity, Entity) {
+        let mut app = app();
+        let object = spawn_object(&mut app, "test");
+        let representation = spawn_representation(&mut app, object, object);
         app.update();
         (app, object, representation)
     }
@@ -391,11 +402,65 @@ mod tests {
         assert!(!dirty(&app, representation));
     }
 
+    /// The object a representation *draws*, which since the source and transform
+    /// links were separated is no longer the same question as its parent.
     fn object_of(app: &App, representation: Entity) -> Entity {
         app.world()
-            .get::<ChildOf>(representation)
-            .expect("representation has a parent")
-            .parent()
+            .get::<RepresentationOf>(representation)
+            .expect("representation has a source")
+            .0
+    }
+
+    /// The whole point of the split: data comes from the source, not the
+    /// transform parent, so one dataset can be drawn at another node's
+    /// placement. Before this, `mark_dirty` walked the parent's children and
+    /// such a representation would never have been marked at all.
+    #[test]
+    fn redraws_from_its_source_not_its_parent() {
+        let mut app = app();
+        let source = spawn_object(&mut app, "source");
+        let elsewhere = spawn_object(&mut app, "elsewhere");
+        let representation = spawn_representation(&mut app, source, elsewhere);
+        app.update();
+        settle(&mut app, representation);
+
+        app.world_mut()
+            .get_mut::<PointCloud>(elsewhere)
+            .unwrap()
+            .set_changed();
+        app.update();
+        assert!(
+            !dirty(&app, representation),
+            "the transform parent's data is not what is being drawn"
+        );
+
+        app.world_mut()
+            .get_mut::<PointCloud>(source)
+            .unwrap()
+            .set_changed();
+        app.update();
+        assert!(dirty(&app, representation), "the source's data is");
+    }
+
+    /// Two representations of one object redraw together, which is the case
+    /// that could not be expressed at all before.
+    #[test]
+    fn marks_every_representation_of_an_object() {
+        let mut app = app();
+        let source = spawn_object(&mut app, "source");
+        let first = spawn_representation(&mut app, source, source);
+        let second = spawn_representation(&mut app, source, source);
+        app.update();
+        settle(&mut app, first);
+        settle(&mut app, second);
+
+        app.world_mut()
+            .get_mut::<PointCloud>(source)
+            .unwrap()
+            .set_changed();
+        app.update();
+        assert!(dirty(&app, first));
+        assert!(dirty(&app, second));
     }
 }
 

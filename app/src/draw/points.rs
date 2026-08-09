@@ -17,7 +17,7 @@ use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
 use crate::scene::data::Fields;
-use crate::scene::{ColorBy, DataArray, PointCloud, Representation};
+use crate::scene::{ColorBy, DataArray, PointCloud, Representation, RepresentationOf};
 
 use super::NeedsRedraw;
 
@@ -60,14 +60,14 @@ pub fn draw_points(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PointQuadMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &Representation, &ColorBy, &ChildOf), With<NeedsRedraw>>,
+    dirty: Query<(Entity, &Representation, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
     clouds: Query<(&PointCloud, Option<&Fields>)>,
 ) {
-    for (entity, representation, colour, parent) in &dirty {
+    for (entity, representation, colour, source) in &dirty {
         let Representation::Points { size } = representation else {
             continue;
         };
-        let Ok((cloud, fields)) = clouds.get(parent.parent()) else {
+        let Ok((cloud, fields)) = clouds.get(source.0) else {
             continue;
         };
         let Some(array) = arrays.get(&cloud.positions) else {

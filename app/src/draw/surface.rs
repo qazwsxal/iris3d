@@ -13,7 +13,7 @@ use bevy::prelude::*;
 
 use crate::scene::data::Fields;
 use crate::scene::dataset::CellKind;
-use crate::scene::{ColorBy, DataArray, MeshData, Representation};
+use crate::scene::{ColorBy, DataArray, MeshData, Representation, RepresentationOf};
 
 use super::NeedsRedraw;
 
@@ -22,14 +22,14 @@ pub fn draw_surfaces(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &Representation, &ColorBy, &ChildOf), With<NeedsRedraw>>,
+    dirty: Query<(Entity, &Representation, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
     surfaces: Query<(&MeshData, Option<&Fields>)>,
 ) {
-    for (entity, representation, colour, parent) in &dirty {
+    for (entity, representation, colour, source) in &dirty {
         if !matches!(representation, Representation::Surface) {
             continue;
         }
-        let Ok((data, fields)) = surfaces.get(parent.parent()) else {
+        let Ok((data, fields)) = surfaces.get(source.0) else {
             continue;
         };
         if data.cells.kind != CellKind::Triangles {

@@ -1,15 +1,17 @@
 //! How an object gets drawn.
 //!
-//! Representations are **child entities** of the scene object, so one dataset
-//! can carry several at once — a protein as cartoon *and* licorice, a grid as
+//! Representations are **entities of their own**, linked to the object they
+//! draw by [`RepresentationOf`](super::RepresentationOf), so one dataset can
+//! carry several at once — a protein as cartoon *and* licorice, a grid as
 //! outline *and* volume. That also makes it possible to run two rendering
 //! approaches over the same data side by side and compare them, which is a
 //! goal rather than an accident.
 //!
 //! Nothing here draws anything. A rendering backend is a plugin that queries
-//! `(&Representation, &ChildOf)`, reads the parent's dataset, and produces
-//! whatever it produces. [`crate::draw`] is the current one — a straightforward
-//! `Mesh3d`-per-representation baseline — and the split exists so a second can
+//! `(&Representation, &RepresentationOf)`, reads the *source* object's dataset
+//! — which is not necessarily the transform parent — and produces whatever it
+//! produces. [`crate::draw`] is the current one, a straightforward
+//! `Mesh3d`-per-representation baseline, and the split exists so a second can
 //! run beside it rather than replace it.
 
 use bevy::prelude::*;

@@ -16,7 +16,9 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiCon
 use crate::counter::UniqueID;
 use crate::scene::data::{FieldKind, Fields};
 use crate::scene::representation::ColorMap;
-use crate::scene::{ColorBy, DataArray, DatasetKind, Representation, SceneCommand, SceneObject};
+use crate::scene::{
+    ColorBy, DataArray, DatasetKind, Representation, Representations, SceneCommand, SceneObject,
+};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
 pub struct UiPlugin;
@@ -146,6 +148,7 @@ fn draw_ui(
         &Visibility,
         Option<&Fields>,
         Option<&Children>,
+        Option<&Representations>,
         Option<&ChildOf>,
     )>,
     representations: Query<(&Representation, &ColorBy)>,
@@ -179,22 +182,31 @@ fn draw_ui(
     // Which object holds each array, for the inventory panel.
     let mut owners: HashMap<AssetId<DataArray>, (u64, String)> = HashMap::new();
 
-    for (entity, id, object, kind, visibility, fields, children, parent) in &objects {
-        let mut child_objects = Vec::new();
-        let mut drawn = Vec::new();
-        if let Some(children) = children {
-            for child in children.iter() {
-                if objects.contains(child) {
-                    child_objects.push(child);
-                } else if let Ok((representation, colour)) = representations.get(child) {
-                    drawn.push(RepresentationRow {
-                        entity: child,
+    for (entity, id, object, kind, visibility, fields, children, drawn_by, parent) in &objects {
+        // Nested objects come from the transform hierarchy; representations
+        // come from the source link. A representation may well be a child of
+        // some other object, so these two lists are no longer one list split in
+        // half.
+        let child_objects: Vec<Entity> = children
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|child| objects.contains(*child))
+            .collect();
+        let drawn: Vec<RepresentationRow> = drawn_by
+            .into_iter()
+            .flat_map(|list| list.iter())
+            .filter_map(|entity| {
+                representations
+                    .get(entity)
+                    .ok()
+                    .map(|(representation, colour)| RepresentationRow {
+                        entity,
                         representation: representation.clone(),
                         colour: colour.clone(),
-                    });
-                }
-            }
-        }
+                    })
+            })
+            .collect();
 
         for array in &object.arrays {
             owners.insert(array.handle.id(), (id.0, array.meta.name.clone()));

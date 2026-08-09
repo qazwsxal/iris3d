@@ -5,8 +5,10 @@
 //!
 //! - [`data`] — raw arrays as shared assets, plus what their bytes mean.
 //! - [`dataset`] — what an object *is*: points, mesh, grid, molecule.
-//! - [`representation`] — how it gets *drawn*, as child entities so one dataset
-//!   can be shown several ways at once.
+//! - [`representation`] — how it gets *drawn*, as separate entities so one
+//!   dataset can be shown several ways at once.
+//! - [`link`] — which object a representation draws, which is *not* the same
+//!   question as where it sits.
 //!
 //! Objects form a tree. There is no separate group type: an object with no data
 //! is a grouping node, and any object may parent any other, so a field can be
@@ -28,12 +30,14 @@ use crate::grpc::GrpcBridge;
 pub mod data;
 pub mod dataset;
 pub mod ingest;
+pub mod link;
 pub mod representation;
 
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
 pub use data::{BufferMeta, DataArray, Dtype, NamedArray, NamedBuffer};
 pub use dataset::{DatasetKind, MeshData, MoleculeData, PointCloud};
+pub use link::{RepresentationOf, Representations};
 pub use representation::{ColorBy, Representation};
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
@@ -44,8 +48,15 @@ pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<DataArray>()
-            .add_systems(Update, apply_scene_commands);
+        app.init_asset::<DataArray>().add_systems(
+            Update,
+            // The reaper runs after the drain so a representation orphaned by a
+            // deletion in this tick is gone before any backend looks at it.
+            (
+                apply_scene_commands,
+                link::reap_orphaned_representations.after(apply_scene_commands),
+            ),
+        );
     }
 }
 
@@ -154,6 +165,11 @@ pub enum SceneCommand {
 }
 
 /// Read-only view of the objects in the scene.
+///
+/// Yields [`Representations`] rather than `Children`: the two answer different
+/// questions now, and every use here wants the representations drawing an
+/// object, not the mix of representations and nested objects sitting under it.
+/// Walking the tree needs a separate `Query<&Children>`.
 type Objects<'w, 's> = Query<
     'w,
     's,
@@ -162,7 +178,7 @@ type Objects<'w, 's> = Query<
         &'static UniqueID,
         &'static SceneObject,
         &'static DatasetKind,
-        Option<&'static Children>,
+        Option<&'static Representations>,
     ),
 >;
 
@@ -177,6 +193,7 @@ type Objects<'w, 's> = Query<
 /// drain are therefore tracked in `pending_parent` and consulted during cycle
 /// validation — without that, two `SetParent` commands arriving in one tick
 /// could each look safe in isolation and together form a cycle.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_scene_commands(
     mut commands: Commands,
     bridge: Res<GrpcBridge>,
@@ -185,6 +202,7 @@ pub fn apply_scene_commands(
     mut transforms: Query<&mut Transform>,
     objects: Objects,
     ids: Query<&UniqueID>,
+    children: Query<&Children>,
     child_of: Query<&ChildOf>,
     globals: Query<&GlobalTransform>,
     representations: Query<&Representation>,
@@ -300,11 +318,11 @@ pub fn apply_scene_commands(
             SceneCommand::ListObjects { reply } => {
                 let mut listing: Vec<ObjectSummary> = objects
                     .iter()
-                    .map(|(entity, id, object, kind, children)| {
-                        let drawn = children
+                    .map(|(entity, id, object, kind, drawn_by)| {
+                        let drawn = drawn_by
                             .into_iter()
-                            .flatten()
-                            .filter_map(|child| representations.get(*child).ok())
+                            .flat_map(|list| list.iter())
+                            .filter_map(|entity| representations.get(entity).ok())
                             .map(|representation| representation.as_str().to_string())
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -326,6 +344,7 @@ pub fn apply_scene_commands(
                     &mut commands,
                     &mut index,
                     &objects,
+                    &children,
                     &ids,
                     id,
                     recursive,
@@ -360,38 +379,37 @@ fn spawn_object(
         None,
     );
 
-    let mut entity = commands.spawn((
-        object,
-        UniqueID(id),
-        kind,
-        fields.unwrap_or_default(),
-        Transform::default(),
-        Visibility::default(),
-    ));
+    let spawned = commands
+        .spawn((
+            object,
+            UniqueID(id),
+            kind,
+            fields.unwrap_or_default(),
+            Transform::default(),
+            Visibility::default(),
+        ))
+        .id();
+    index.insert(id, spawned);
 
     // Give the object something to draw, so an upload is visible without a
-    // follow-up call.
+    // follow-up call. Source and placement are the same object here; they only
+    // differ once a client asks for a representation of one object under
+    // another.
     if let Some(representation) = default_representation.clone() {
-        entity.with_children(|object| {
-            // Transform and Visibility make the child a full participant in the
-            // hierarchy, so it inherits the object's placement and visibility.
-            // Bevy's `Mesh3d` requires `Transform` but *not* `Visibility`, so a
-            // backend that only adds `Mesh3d` here would end up with an entity
-            // the visibility systems never collect.
-            object.spawn((
+        link::spawn_representation(
+            commands,
+            counter,
+            spawned,
+            spawned,
+            (
                 representation,
                 ColorBy {
                     field: colour_field,
                     ..default()
                 },
-                Transform::default(),
-                Visibility::default(),
-            ));
-        });
+            ),
+        );
     }
-
-    let spawned = entity.id();
-    index.insert(id, spawned);
 
     info!(
         "scene: added {} object {} \"{}\" ({} arrays, {} bytes, {})",
@@ -510,10 +528,17 @@ fn effective_parent(
 /// parented to it as well. Child *objects* are detached first; child
 /// *representations* are left alone so they are despawned along with their
 /// object.
+///
+/// Representations *sourced* from a doomed object are taken down explicitly,
+/// because they need not be parented to it. One parented elsewhere would
+/// survive the despawn with its `Mesh3d` intact and go on drawing data that no
+/// longer exists.
+#[allow(clippy::too_many_arguments)]
 fn delete_object(
     commands: &mut Commands,
     index: &mut HashMap<u64, Entity>,
     objects: &Objects,
+    children: &Query<&Children>,
     ids: &Query<&UniqueID>,
     id: u64,
     recursive: bool,
@@ -522,16 +547,28 @@ fn delete_object(
         return Vec::new();
     };
 
-    let mut removed = vec![id];
+    let mut doomed = vec![entity];
 
     if recursive {
-        collect_descendants(entity, objects, ids, &mut removed);
-    } else if let Ok((_, _, _, _, Some(children))) = objects.get(entity) {
-        for child in children.iter() {
+        collect_descendants(entity, objects, children, &mut doomed);
+    } else if let Ok(list) = children.get(entity) {
+        for child in list.iter() {
             // Only detach objects. Representations belong to this object and
             // should die with it.
             if objects.contains(child) {
                 commands.entity(child).remove::<ChildOf>();
+            }
+        }
+    }
+
+    let mut removed = Vec::with_capacity(doomed.len());
+    for object in doomed {
+        if let Ok(unique) = ids.get(object) {
+            removed.push(unique.0);
+        }
+        if let Ok((.., Some(drawn_by))) = objects.get(object) {
+            for representation in drawn_by.iter() {
+                commands.entity(representation).despawn();
             }
         }
     }
@@ -553,18 +590,23 @@ fn delete_object(
     removed
 }
 
-fn collect_descendants(entity: Entity, objects: &Objects, ids: &Query<&UniqueID>, out: &mut Vec<u64>) {
-    let Ok((_, _, _, _, Some(children))) = objects.get(entity) else {
+/// Appends every descendant *object* of `entity`, skipping representations,
+/// which are children too but are not part of the object tree.
+fn collect_descendants(
+    entity: Entity,
+    objects: &Objects,
+    children: &Query<&Children>,
+    out: &mut Vec<Entity>,
+) {
+    let Ok(list) = children.get(entity) else {
         return;
     };
-    for child in children.iter() {
+    for child in list.iter() {
         if !objects.contains(child) {
             continue;
         }
-        if let Ok(unique) = ids.get(child) {
-            out.push(unique.0);
-        }
-        collect_descendants(child, objects, ids, out);
+        out.push(child);
+        collect_descendants(child, objects, children, out);
     }
 }
 

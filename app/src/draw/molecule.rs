@@ -15,7 +15,7 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 
 use crate::scene::data::Fields;
-use crate::scene::{ColorBy, DataArray, MoleculeData, Representation};
+use crate::scene::{ColorBy, DataArray, MoleculeData, Representation, RepresentationOf};
 
 use super::NeedsRedraw;
 
@@ -131,10 +131,10 @@ pub fn draw_molecules(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &Representation, &ColorBy, &ChildOf), With<NeedsRedraw>>,
+    dirty: Query<(Entity, &Representation, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
     molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
-    for (entity, representation, colour, parent) in &dirty {
+    for (entity, representation, colour, source) in &dirty {
         let Representation::BallAndStick {
             atom_scale,
             bond_radius,
@@ -142,7 +142,7 @@ pub fn draw_molecules(
         else {
             continue;
         };
-        let Ok((molecule, fields)) = molecules.get(parent.parent()) else {
+        let Ok((molecule, fields)) = molecules.get(source.0) else {
             continue;
         };
         let Some(position_array) = arrays.get(&molecule.positions) else {
