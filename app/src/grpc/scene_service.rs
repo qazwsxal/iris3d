@@ -3,7 +3,6 @@
 //! Uploads are assembled here, on the tokio side, and only handed to the ECS
 //! once complete and validated. A rejected stream never reaches the scene.
 
-use crossbeam_channel::Sender;
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
@@ -18,6 +17,7 @@ use crate::scene::{
     SceneCommand, SceneError, SubsetEncoding,
 };
 
+use super::SceneSender;
 use super::proto::{
     AddRepresentationRequest, AddRepresentationResponse, BoolParam, BufferSpec, Chunk, Color,
     ChoiceParam, ColorSpec, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
@@ -50,11 +50,11 @@ const MAX_EAGER_RESERVE: u64 = 64 * 1024 * 1024;
 
 /// Adapts the `SceneService` wire contract onto the scene command channel.
 pub struct SceneBridgeService {
-    commands: Sender<SceneCommand>,
+    commands: SceneSender,
 }
 
 impl SceneBridgeService {
-    pub fn new(commands: Sender<SceneCommand>) -> Self {
+    pub fn new(commands: SceneSender) -> Self {
         Self { commands }
     }
 

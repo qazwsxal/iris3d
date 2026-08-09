@@ -9,6 +9,8 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use std::time::Duration;
 
+use crate::redraw::KeepAwake;
+
 pub mod overlays;
 
 pub use overlays::OverlaySettings;
@@ -311,8 +313,16 @@ fn screenshot(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut request: ResMut<ScreenshotRequest>,
+    mut awake: ResMut<KeepAwake>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    // An automatic capture is a countdown, and both timers here need frames to
+    // run down. Nobody is at the keyboard producing events in this case, so ask
+    // for the frames.
+    if request.exit_at.is_some() || (request.path.is_some() && !request.fired) {
+        awake.nudge();
+    }
+
     if let Some(timer) = request.exit_at.as_mut() {
         if timer.tick(time.delta()).just_finished() {
             exit.write(AppExit::Success);
@@ -342,6 +352,8 @@ fn screenshot(
 
     request.fired = true;
     info!("viewport: saving screenshot to {path}");
+    // The capture only lands once a frame has been drawn and read back.
+    awake.nudge();
     commands
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(path));

@@ -11,6 +11,7 @@
 //! fully assembled on the tokio side before the ECS ever sees them.
 
 use bevy::prelude::*;
+use bevy::winit::{EventLoopProxy, EventLoopProxyWrapper, WinitUserEvent};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 use std::net::SocketAddr;
 use tonic::transport::Server;
@@ -40,18 +41,22 @@ const MAX_DECODING_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 pub struct GrpcBridge {
     tx: Sender<SceneCommand>,
     rx: Receiver<SceneCommand>,
+    wake: Option<EventLoopProxy<WinitUserEvent>>,
 }
 
 impl GrpcBridge {
-    pub fn new() -> Self {
+    pub fn new(wake: Option<EventLoopProxy<WinitUserEvent>>) -> Self {
         let (tx, rx) = unbounded();
-        Self { tx, rx }
+        Self { tx, rx, wake }
     }
 
     /// A handle for submitting commands. Cheap to clone; hand one to every
     /// producer that needs to talk to the scene.
-    pub fn sender(&self) -> Sender<SceneCommand> {
-        self.tx.clone()
+    pub fn sender(&self) -> SceneSender {
+        SceneSender {
+            commands: self.tx.clone(),
+            wake: self.wake.clone(),
+        }
     }
 
     pub fn try_recv(&self) -> Result<SceneCommand, TryRecvError> {
@@ -61,9 +66,41 @@ impl GrpcBridge {
 
 impl Default for GrpcBridge {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
+
+/// A handle for submitting [`SceneCommand`]s that also wakes the window.
+///
+/// The window only updates in response to events (see [`crate::redraw`]), and a
+/// command arriving on the gRPC thread is not an event winit knows about.
+/// Without the wake-up a scripted change would sit in the channel until the
+/// idle tick came round, so waking is part of sending rather than something a
+/// caller has to remember.
+#[derive(Clone)]
+pub struct SceneSender {
+    commands: Sender<SceneCommand>,
+    wake: Option<EventLoopProxy<WinitUserEvent>>,
+}
+
+impl SceneSender {
+    /// Queues a command for the next tick, and makes sure a tick happens.
+    pub fn send(&self, command: SceneCommand) -> Result<(), SceneGone> {
+        self.commands.send(command).map_err(|_| SceneGone)?;
+        if let Some(wake) = &self.wake {
+            // The only way this fails is the event loop having already exited,
+            // which the caller finds out about when its reply never arrives.
+            let _ = wake.send_event(WinitUserEvent::WakeUp);
+        }
+        Ok(())
+    }
+}
+
+/// The scene is no longer draining commands, so nothing more can be submitted.
+/// Only happens once the app is on its way out. The command is dropped rather
+/// than handed back, because there is nowhere else to put it.
+#[derive(Debug)]
+pub struct SceneGone;
 
 /// Serves the gRPC surface and inserts the [`GrpcBridge`] the scene drains.
 pub struct GrpcPlugin {
@@ -83,7 +120,18 @@ impl Default for GrpcPlugin {
 
 impl Plugin for GrpcPlugin {
     fn build(&self, app: &mut App) {
-        let bridge = GrpcBridge::new();
+        // Added by `WinitPlugin`, so this plugin has to come after
+        // `DefaultPlugins`. Without the proxy the server still works; commands
+        // just wait for the next update instead of causing one.
+        let wake = app
+            .world()
+            .get_resource::<EventLoopProxyWrapper>()
+            .map(|proxy| (**proxy).clone());
+        if wake.is_none() {
+            warn!("grpc: no event loop to wake; commands will wait for the next update");
+        }
+
+        let bridge = GrpcBridge::new(wake);
         spawn_server(self.addr, bridge.sender());
         app.insert_resource(bridge);
     }
@@ -93,7 +141,7 @@ impl Plugin for GrpcPlugin {
 ///
 /// The server only needs the command channel, so it can come up before the
 /// Bevy app starts ticking; requests simply queue until the scene drains them.
-fn spawn_server(addr: SocketAddr, commands: Sender<SceneCommand>) {
+fn spawn_server(addr: SocketAddr, commands: SceneSender) {
     let spawned = std::thread::Builder::new()
         .name("iris3d-grpc".to_string())
         .spawn(move || {

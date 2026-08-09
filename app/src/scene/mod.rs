@@ -26,6 +26,7 @@ use tokio::sync::oneshot;
 
 use crate::counter::{GlobalIDCounter, UniqueID};
 use crate::grpc::GrpcBridge;
+use crate::redraw::KeepAwake;
 
 pub mod data;
 pub mod dataset;
@@ -366,11 +367,17 @@ pub fn apply_scene_commands(
     child_of: Query<&ChildOf>,
     globals: Query<&GlobalTransform>,
     mut representations: Representors,
+    mut awake: ResMut<KeepAwake>,
 ) {
     let batch: Vec<SceneCommand> = std::iter::from_fn(|| bridge.try_recv().ok()).collect();
     if batch.is_empty() {
         return;
     }
+
+    // What these commands ask for takes several frames to appear, and the
+    // update loop is otherwise asleep. Hold it open until the scene has caught
+    // up with them.
+    awake.nudge();
 
     let mut index: HashMap<u64, Entity> = objects.iter().map(|(e, id, ..)| (id.0, e)).collect();
     // Representations get the same treatment as objects: spawned entities are
