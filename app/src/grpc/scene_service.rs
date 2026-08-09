@@ -8,15 +8,26 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::scene::{BufferMeta, Dtype, NamedBuffer, ObjectSummary, SceneCommand, SceneError};
+use crate::scene::registry::{ParamKind, ParamMap, ParamValue};
+use crate::scene::representation::ColorMap;
+use crate::scene::{
+    BufferMeta, ColorBy, Dtype, KindSummary, NamedBuffer, ObjectSummary, RepresentationSummary,
+    SceneCommand, SceneError,
+};
 
 use super::proto::{
-    BufferSpec, Chunk, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
-    DeleteObjectResponse, Dtype as ProtoDtype, ListObjectsRequest, ListObjectsResponse,
-    ObjectHandle, ObjectHeader, ObjectInfo, SetParentRequest, SetParentResponse,
-    SetTransformRequest, SetTransformResponse, UploadObjectRequest, UploadObjectResponse,
-    scene_service_server::SceneService, upload_object_request::Payload,
+    AddRepresentationRequest, AddRepresentationResponse, BoolParam, BufferSpec, Chunk, Color,
+    ColorSpec, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
+    DeleteObjectResponse, Dtype as ProtoDtype, FloatParam, ListObjectsRequest, ListObjectsResponse,
+    ListRepresentationKindsRequest, ListRepresentationKindsResponse, ListRepresentationsRequest,
+    ListRepresentationsResponse, ObjectHandle, ObjectHeader, ObjectInfo, ParamSpec as ProtoSpec,
+    ParamValue as ProtoParam, Range, RemoveRepresentationRequest, RemoveRepresentationResponse,
+    RepresentationHandle, RepresentationInfo, RepresentationKindInfo, SetParentRequest,
+    SetParentResponse, SetRepresentationRequest, SetRepresentationResponse, SetTransformRequest,
+    SetTransformResponse, UploadObjectRequest, UploadObjectResponse, param_spec,
+    param_value::Value, scene_service_server::SceneService, upload_object_request::Payload,
 };
+use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
 use bevy::math::{Quat, Vec3};
 
 /// Ceiling on the total declared size of a single object. Generous enough for
@@ -217,21 +228,272 @@ impl SceneService for SceneBridgeService {
             .await?;
 
         Ok(Response::new(DeleteObjectResponse {
-            deleted: !removed.is_empty(),
+            deleted: !removed.objects.is_empty(),
             removed: removed
+                .objects
                 .into_iter()
                 .map(|id| ObjectHandle { id })
                 .collect(),
+            removed_representations: removed
+                .representations
+                .into_iter()
+                .map(|id| RepresentationHandle { id })
+                .collect(),
+        }))
+    }
+
+    async fn add_representation(
+        &self,
+        request: Request<AddRepresentationRequest>,
+    ) -> Result<Response<AddRepresentationResponse>, Status> {
+        let request = request.into_inner();
+        let source = request
+            .source
+            .ok_or_else(|| Status::invalid_argument("source is required"))?
+            .id;
+        // Empty rather than absent means "whatever you would have chosen", so
+        // there is no separate way to say it.
+        let kind = (!request.kind.is_empty()).then_some(request.kind);
+        let parent = request.parent.map(|handle| handle.id);
+        let params = params_from_proto(request.params)?;
+        let colour = request.color.map(colour_from_proto).transpose()?;
+
+        let summary = self
+            .submit(|reply| SceneCommand::AddRepresentation {
+                source,
+                kind,
+                parent,
+                params,
+                colour,
+                reply,
+            })
+            .await?
+            .map_err(scene_error)?;
+
+        Ok(Response::new(AddRepresentationResponse {
+            representation: Some(representation_info(&summary)),
+        }))
+    }
+
+    async fn set_representation(
+        &self,
+        request: Request<SetRepresentationRequest>,
+    ) -> Result<Response<SetRepresentationResponse>, Status> {
+        let request = request.into_inner();
+        let id = request
+            .handle
+            .ok_or_else(|| Status::invalid_argument("handle is required"))?
+            .id;
+        let params = params_from_proto(request.params)?;
+        let colour = request.color.map(colour_from_proto).transpose()?;
+        let visible = request.visible;
+
+        let summary = self
+            .submit(|reply| SceneCommand::SetRepresentation {
+                id,
+                params,
+                colour,
+                visible,
+                reply,
+            })
+            .await?
+            .map_err(scene_error)?;
+
+        Ok(Response::new(SetRepresentationResponse {
+            representation: Some(representation_info(&summary)),
+        }))
+    }
+
+    async fn remove_representation(
+        &self,
+        request: Request<RemoveRepresentationRequest>,
+    ) -> Result<Response<RemoveRepresentationResponse>, Status> {
+        let id = request
+            .into_inner()
+            .handle
+            .ok_or_else(|| Status::invalid_argument("handle is required"))?
+            .id;
+
+        let removed = self
+            .submit(|reply| SceneCommand::RemoveRepresentation { id, reply })
+            .await?;
+
+        Ok(Response::new(RemoveRepresentationResponse { removed }))
+    }
+
+    async fn list_representations(
+        &self,
+        request: Request<ListRepresentationsRequest>,
+    ) -> Result<Response<ListRepresentationsResponse>, Status> {
+        let source = request.into_inner().source.map(|handle| handle.id);
+
+        let listing = self
+            .submit(|reply| SceneCommand::ListRepresentations { source, reply })
+            .await?
+            .map_err(scene_error)?;
+
+        Ok(Response::new(ListRepresentationsResponse {
+            representations: listing.iter().map(representation_info).collect(),
+        }))
+    }
+
+    async fn list_representation_kinds(
+        &self,
+        _request: Request<ListRepresentationKindsRequest>,
+    ) -> Result<Response<ListRepresentationKindsResponse>, Status> {
+        let kinds = self
+            .submit(|reply| SceneCommand::ListRepresentationKinds { reply })
+            .await?;
+
+        Ok(Response::new(ListRepresentationKindsResponse {
+            kinds: kinds.iter().map(kind_info).collect(),
         }))
     }
 }
 
 fn scene_error(error: SceneError) -> Status {
     match error {
-        SceneError::NoSuchObject(_) => Status::not_found(error.to_string()),
+        SceneError::NoSuchObject(_) | SceneError::NoSuchRepresentation(_) => {
+            Status::not_found(error.to_string())
+        }
+        // The caller named something that does not exist in this build, which
+        // it could have discovered with ListRepresentationKinds.
+        SceneError::UnknownKind(_) => Status::invalid_argument(error.to_string()),
         // The request was well-formed but the scene is not in a state where it
         // can be honoured.
-        SceneError::WouldCycle { .. } => Status::failed_precondition(error.to_string()),
+        SceneError::WouldCycle { .. } | SceneError::KindNotSupported { .. } => {
+            Status::failed_precondition(error.to_string())
+        }
+    }
+}
+
+fn params_from_proto(params: std::collections::HashMap<String, ProtoParam>) -> Result<ParamMap, Status> {
+    params
+        .into_iter()
+        .map(|(key, value)| {
+            let value = match value.value {
+                Some(Value::Number(number)) => ParamValue::Float(number as f32),
+                Some(Value::Flag(flag)) => ParamValue::Bool(flag),
+                // An empty `oneof` says nothing at all, and guessing which
+                // parameter was meant is worse than saying so.
+                None => {
+                    return Err(Status::invalid_argument(format!(
+                        "parameter \"{key}\" has no value set"
+                    )));
+                }
+            };
+            Ok((key, value))
+        })
+        .collect()
+}
+
+fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, ProtoParam> {
+    params
+        .iter()
+        .map(|(key, value)| {
+            let value = match value {
+                ParamValue::Float(number) => Value::Number(*number as f64),
+                ParamValue::Bool(flag) => Value::Flag(*flag),
+            };
+            (
+                key.clone(),
+                ProtoParam {
+                    value: Some(value),
+                },
+            )
+        })
+        .collect()
+}
+
+/// A `ColorSpec` describes colouring completely, so anything unset takes its
+/// default rather than the representation's current value.
+fn colour_from_proto(spec: ColorSpec) -> Result<ColorBy, Status> {
+    let map = if spec.map.is_empty() {
+        ColorMap::default()
+    } else {
+        ColorMap::from_str(&spec.map)
+            .ok_or_else(|| Status::invalid_argument(format!("no colour map \"{}\"", spec.map)))?
+    };
+
+    let range = spec
+        .range
+        .map(|range| {
+            if range.low > range.high {
+                Err(Status::invalid_argument(
+                    "colour range low is above its high",
+                ))
+            } else {
+                Ok((range.low, range.high))
+            }
+        })
+        .transpose()?;
+
+    Ok(ColorBy {
+        field: spec.field,
+        map,
+        range,
+        flat: spec
+            .flat
+            .map(|c| BevyColor::srgb(c.r, c.g, c.b))
+            .unwrap_or(ColorBy::default().flat),
+    })
+}
+
+fn colour_to_proto(colour: &ColorBy) -> ColorSpec {
+    let flat = Srgba::from(colour.flat).to_f32_array();
+    ColorSpec {
+        field: colour.field.clone(),
+        map: colour.map.as_str().to_string(),
+        range: colour.range.map(|(low, high)| Range { low, high }),
+        flat: Some(Color {
+            r: flat[0],
+            g: flat[1],
+            b: flat[2],
+        }),
+    }
+}
+
+fn representation_info(summary: &RepresentationSummary) -> RepresentationInfo {
+    RepresentationInfo {
+        handle: Some(RepresentationHandle { id: summary.id }),
+        kind: summary.kind.clone(),
+        source: Some(ObjectHandle { id: summary.source }),
+        parent: summary.parent.map(|id| ObjectHandle { id }),
+        params: params_to_proto(&summary.params),
+        color: Some(colour_to_proto(&summary.colour)),
+        visible: summary.visible,
+    }
+}
+
+fn kind_info(summary: &KindSummary) -> RepresentationKindInfo {
+    RepresentationKindInfo {
+        id: summary.id.clone(),
+        label: summary.label.clone(),
+        supports: summary.supports.clone(),
+        params: summary
+            .params
+            .iter()
+            .map(|spec| ProtoSpec {
+                id: spec.id.to_string(),
+                label: spec.label.to_string(),
+                kind: Some(match spec.kind {
+                    ParamKind::Float {
+                        default,
+                        min,
+                        max,
+                        logarithmic,
+                    } => param_spec::Kind::Number(FloatParam {
+                        default_value: default as f64,
+                        min: min as f64,
+                        max: max as f64,
+                        logarithmic,
+                    }),
+                    ParamKind::Bool { default } => param_spec::Kind::Flag(BoolParam {
+                        default_value: default,
+                    }),
+                }),
+            })
+            .collect(),
     }
 }
 
@@ -418,7 +680,7 @@ fn object_info(summary: &ObjectSummary) -> ObjectInfo {
         buffers: summary.buffers.iter().map(buffer_spec).collect(),
         total_bytes: summary.total_bytes,
         dataset_kind: summary.kind.as_str().to_string(),
-        representations: summary.representations.clone(),
+        drawn_by: summary.representations.iter().map(representation_info).collect(),
         parent: summary.parent.map(|id| ObjectHandle { id }),
     }
 }

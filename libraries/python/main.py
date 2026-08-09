@@ -72,7 +72,7 @@ def main():
             print(
                 f"{summary.handle:<8}{indent + summary.name:<18}"
                 f"{summary.dataset_kind:<11}"
-                f"{', '.join(summary.representations) or '-':<16}{arrays}"
+                f"{', '.join(r.kind for r in summary.representations) or '-':<16}{arrays}"
             )
 
         total = sum(s.total_bytes for s in client.list_objects())

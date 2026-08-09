@@ -15,17 +15,29 @@ import grpc
 import numpy as np
 
 from .v1.scene_pb2 import (
+    AddRepresentationRequest,
     BufferSpec,
     Chunk,
+    Color,
+    ColorSpec,
     CreateObjectRequest,
     DeleteObjectRequest,
     Dtype,
     ListObjectsRequest,
+    ListRepresentationKindsRequest,
+    ListRepresentationsRequest,
     ObjectHandle,
     ObjectHeader,
     ObjectInfo,
+    ParamValue,
     Quaternion,
+    Range,
+    RemoveRepresentationRequest,
+    RepresentationHandle,
+    RepresentationInfo,
+    RepresentationKindInfo,
     SetParentRequest,
+    SetRepresentationRequest,
     SetTransformRequest,
     UploadObjectRequest,
     Vector3,
@@ -108,10 +120,151 @@ class ObjectSummary:
     #: Structure inferred by the server: "points", "mesh", "grid", "molecule"
     #: or "raw".
     dataset_kind: str
-    #: Ways the object is currently drawn; empty if nothing draws it.
-    representations: tuple[str, ...]
+    #: Everything currently drawing this object's data; empty if nothing does.
+    representations: tuple["RepresentationSummary", ...]
     #: Parent handle in the scene tree, or None for a root object.
     parent: int | None
+
+
+@dataclass(frozen=True)
+class Coloring:
+    """How a representation takes its colour."""
+
+    #: Field mapped across the colour map. None paints flat — or, for a
+    #: molecule, standard element colours.
+    field: str | None = None
+    #: "viridis", "cool-warm", "grayscale" or "element".
+    map: str = "viridis"
+    #: Value range the map spans. None autoscales to the field's own range.
+    range: tuple[float, float] | None = None
+    #: sRGB, used when ``field`` is None.
+    flat: tuple[float, float, float] | None = None
+
+
+@dataclass(frozen=True)
+class RepresentationSummary:
+    """One way something is being drawn."""
+
+    handle: int
+    #: Registered kind id, e.g. "points" or "ball-and-stick".
+    kind: str
+    #: Handle of the object whose data is drawn.
+    source: int
+    #: Handle of the object whose transform is inherited — usually ``source``.
+    parent: int | None
+    #: Complete and in range, whatever was sent to produce it.
+    params: dict[str, float | bool]
+    coloring: Coloring
+    visible: bool
+
+
+@dataclass(frozen=True)
+class ParamInfo:
+    """One setting a representation kind accepts."""
+
+    id: str
+    label: str
+    #: "float" or "bool".
+    type: str
+    default: float | bool
+    #: Allowed range, for float parameters only.
+    range: tuple[float, float] | None = None
+    logarithmic: bool = False
+
+
+@dataclass(frozen=True)
+class RepresentationKindSummary:
+    """A way of drawing that the running server supports."""
+
+    id: str
+    label: str
+    #: Dataset kinds this can draw, matching ``ObjectSummary.dataset_kind``.
+    supports: tuple[str, ...]
+    params: tuple[ParamInfo, ...]
+
+
+def _param_value(value: float | bool) -> ParamValue:
+    """Wraps a Python value for the wire.
+
+    ``bool`` is checked first: it is a subclass of ``int``, so testing for a
+    number would swallow it and send True as 1.0 — which the server would then
+    reject as the wrong type for a boolean parameter.
+    """
+    if isinstance(value, bool):
+        return ParamValue(flag=value)
+    if isinstance(value, (int, float)):
+        return ParamValue(number=float(value))
+    raise TypeError(f"parameter values must be a number or a bool, not {type(value).__name__}")
+
+
+def _params(params: Mapping[str, float | bool] | None) -> dict[str, ParamValue]:
+    return {key: _param_value(value) for key, value in (params or {}).items()}
+
+
+def _color_spec(coloring: Coloring) -> ColorSpec:
+    spec = ColorSpec(map=coloring.map)
+    if coloring.field is not None:
+        spec.field = coloring.field
+    if coloring.range is not None:
+        spec.range.CopyFrom(Range(low=coloring.range[0], high=coloring.range[1]))
+    if coloring.flat is not None:
+        spec.flat.CopyFrom(Color(r=coloring.flat[0], g=coloring.flat[1], b=coloring.flat[2]))
+    return spec
+
+
+def _coloring(spec: ColorSpec) -> Coloring:
+    return Coloring(
+        field=spec.field if spec.HasField("field") else None,
+        map=spec.map,
+        range=(spec.range.low, spec.range.high) if spec.HasField("range") else None,
+        flat=(spec.flat.r, spec.flat.g, spec.flat.b) if spec.HasField("flat") else None,
+    )
+
+
+def _representation(info: RepresentationInfo) -> RepresentationSummary:
+    return RepresentationSummary(
+        handle=info.handle.id,
+        kind=info.kind,
+        source=info.source.id,
+        parent=info.parent.id if info.HasField("parent") else None,
+        params={
+            key: value.flag if value.WhichOneof("value") == "flag" else value.number
+            for key, value in info.params.items()
+        },
+        coloring=_coloring(info.color),
+        visible=info.visible,
+    )
+
+
+def _kind(info: RepresentationKindInfo) -> RepresentationKindSummary:
+    params = []
+    for spec in info.params:
+        if spec.WhichOneof("kind") == "flag":
+            params.append(
+                ParamInfo(
+                    id=spec.id,
+                    label=spec.label,
+                    type="bool",
+                    default=spec.flag.default_value,
+                )
+            )
+        else:
+            params.append(
+                ParamInfo(
+                    id=spec.id,
+                    label=spec.label,
+                    type="float",
+                    default=spec.number.default_value,
+                    range=(spec.number.min, spec.number.max),
+                    logarithmic=spec.number.logarithmic,
+                )
+            )
+    return RepresentationKindSummary(
+        id=info.id,
+        label=info.label,
+        supports=tuple(info.supports),
+        params=tuple(params),
+    )
 
 
 def _summary(info: ObjectInfo) -> ObjectSummary:
@@ -129,7 +282,7 @@ def _summary(info: ObjectInfo) -> ObjectSummary:
         ),
         total_bytes=info.total_bytes,
         dataset_kind=info.dataset_kind,
-        representations=tuple(info.representations),
+        representations=tuple(_representation(rep) for rep in info.drawn_by),
         parent=info.parent.id if info.HasField("parent") else None,
     )
 
@@ -317,3 +470,97 @@ class Client:
             DeleteObjectRequest(handle=ObjectHandle(id=handle), recursive=recursive)
         )
         return tuple(h.id for h in response.removed)
+
+    def add_representation(
+        self,
+        source: int,
+        kind: str = "",
+        *,
+        parent: int | None = None,
+        params: Mapping[str, float | bool] | None = None,
+        coloring: Coloring | None = None,
+    ) -> RepresentationSummary:
+        """Draws an object an additional way.
+
+        Adds rather than replaces: an object may be drawn several ways at once,
+        each configured on its own. ``kind`` defaults to whatever the server
+        would have chosen for this dataset — see :meth:`representation_kinds`
+        for what a build supports.
+
+        ``parent`` is the object whose *transform* is inherited, as distinct
+        from ``source``, whose *data* is drawn. Passing a different object
+        renders one dataset in two places without uploading it twice::
+
+            ghost = client.create_object("ghost")
+            client.set_transform(ghost, translation=(10, 0, 0))
+            client.add_representation(protein, parent=ghost)
+
+        Parameters left out take the kind's default, not the value some other
+        representation happens to have.
+        """
+        request = AddRepresentationRequest(
+            source=ObjectHandle(id=source),
+            kind=kind,
+            params=_params(params),
+        )
+        if parent is not None:
+            request.parent.CopyFrom(ObjectHandle(id=parent))
+        if coloring is not None:
+            request.color.CopyFrom(_color_spec(coloring))
+        return _representation(self._scene.AddRepresentation(request).representation)
+
+    def set_representation(
+        self,
+        handle: int,
+        params: Mapping[str, float | bool] | None = None,
+        *,
+        coloring: Coloring | None = None,
+        visible: bool | None = None,
+    ) -> RepresentationSummary:
+        """Changes a representation, leaving anything unnamed alone.
+
+        Parameters are merged, so passing one setting keeps the rest — the
+        opposite of :meth:`add_representation`, where an absent parameter takes
+        its default. ``coloring`` is all-or-nothing: passing it replaces the
+        colouring outright.
+
+        Out-of-range values are clamped rather than rejected, so a slider driven
+        past its limit does not raise.
+        """
+        request = SetRepresentationRequest(
+            handle=RepresentationHandle(id=handle),
+            params=_params(params),
+        )
+        if coloring is not None:
+            request.color.CopyFrom(_color_spec(coloring))
+        if visible is not None:
+            request.visible = visible
+        return _representation(self._scene.SetRepresentation(request).representation)
+
+    def remove_representation(self, handle: int) -> bool:
+        """Stops drawing something one way, leaving the object and its data.
+
+        Returns False if the handle was already gone.
+        """
+        response = self._scene.RemoveRepresentation(
+            RemoveRepresentationRequest(handle=RepresentationHandle(id=handle))
+        )
+        return response.removed
+
+    def list_representations(self, source: int | None = None) -> list[RepresentationSummary]:
+        """Lists representations, optionally only those drawing one object."""
+        request = ListRepresentationsRequest()
+        if source is not None:
+            request.source.CopyFrom(ObjectHandle(id=source))
+        response = self._scene.ListRepresentations(request)
+        return [_representation(info) for info in response.representations]
+
+    def representation_kinds(self) -> list[RepresentationKindSummary]:
+        """Lists the ways of drawing this server supports.
+
+        Kinds come from whichever rendering backends the server was built with,
+        so ask rather than assuming: a hardcoded list here would eventually
+        offer something that silently does nothing.
+        """
+        response = self._scene.ListRepresentationKinds(ListRepresentationKindsRequest())
+        return [_kind(info) for info in response.kinds]

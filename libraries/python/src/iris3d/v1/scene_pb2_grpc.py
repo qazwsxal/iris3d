@@ -52,6 +52,31 @@ class SceneServiceStub(object):
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectRequest.SerializeToString,
                 response_deserializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectResponse.FromString,
                 _registered_method=True)
+        self.AddRepresentation = channel.unary_unary(
+                '/iris3d.v1.SceneService/AddRepresentation',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationResponse.FromString,
+                _registered_method=True)
+        self.SetRepresentation = channel.unary_unary(
+                '/iris3d.v1.SceneService/SetRepresentation',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationResponse.FromString,
+                _registered_method=True)
+        self.RemoveRepresentation = channel.unary_unary(
+                '/iris3d.v1.SceneService/RemoveRepresentation',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationResponse.FromString,
+                _registered_method=True)
+        self.ListRepresentations = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListRepresentations',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsResponse.FromString,
+                _registered_method=True)
+        self.ListRepresentationKinds = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListRepresentationKinds',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsResponse.FromString,
+                _registered_method=True)
 
 
 class SceneServiceServicer(object):
@@ -119,6 +144,55 @@ class SceneServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AddRepresentation(self, request, context):
+        """Draws an object an additional way.
+
+        Adds; it does not replace. An object may carry any number of
+        representations at once — a protein as cartoon and as licorice, a mesh as
+        surface and as wireframe — and each is configured independently.
+
+        The data drawn and the placement it is drawn at are separate: `source`
+        says whose arrays to read, `parent` says whose transform to inherit. Give
+        them different objects and one dataset appears in two places without being
+        uploaded twice.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetRepresentation(self, request, context):
+        """Changes an existing representation. Only what is named is altered.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RemoveRepresentation(self, request, context):
+        """Removes one representation, leaving the object and its data alone.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListRepresentations(self, request, context):
+        """Lists representations, optionally only those drawing one object.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListRepresentationKinds(self, request, context):
+        """Lists the ways of drawing this build actually supports.
+
+        Kinds are contributed by whichever rendering backends are compiled in
+        rather than fixed by the schema, so a client that asks cannot offer a
+        choice that silently does nothing — and needs no hardcoded table of its
+        own.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SceneServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -151,6 +225,31 @@ def add_SceneServiceServicer_to_server(servicer, server):
                     servicer.DeleteObject,
                     request_deserializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectRequest.FromString,
                     response_serializer=iris3d_dot_v1_dot_scene__pb2.DeleteObjectResponse.SerializeToString,
+            ),
+            'AddRepresentation': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddRepresentation,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.AddRepresentationResponse.SerializeToString,
+            ),
+            'SetRepresentation': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetRepresentation,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.SetRepresentationResponse.SerializeToString,
+            ),
+            'RemoveRepresentation': grpc.unary_unary_rpc_method_handler(
+                    servicer.RemoveRepresentation,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationResponse.SerializeToString,
+            ),
+            'ListRepresentations': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListRepresentations,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationsResponse.SerializeToString,
+            ),
+            'ListRepresentationKinds': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListRepresentationKinds,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -323,6 +422,141 @@ class SceneService(object):
             '/iris3d.v1.SceneService/DeleteObject',
             iris3d_dot_v1_dot_scene__pb2.DeleteObjectRequest.SerializeToString,
             iris3d_dot_v1_dot_scene__pb2.DeleteObjectResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddRepresentation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/AddRepresentation',
+            iris3d_dot_v1_dot_scene__pb2.AddRepresentationRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.AddRepresentationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetRepresentation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/SetRepresentation',
+            iris3d_dot_v1_dot_scene__pb2.SetRepresentationRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.SetRepresentationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RemoveRepresentation(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/RemoveRepresentation',
+            iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.RemoveRepresentationResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListRepresentations(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/ListRepresentations',
+            iris3d_dot_v1_dot_scene__pb2.ListRepresentationsRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListRepresentationsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListRepresentationKinds(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/ListRepresentationKinds',
+            iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListRepresentationKindsResponse.FromString,
             options,
             channel_credentials,
             insecure,

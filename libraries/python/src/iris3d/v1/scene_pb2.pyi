@@ -85,22 +85,219 @@ class ObjectHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ObjectInfo(_message.Message):
-    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "representations", "parent")
+    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "parent", "drawn_by")
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     BUFFERS_FIELD_NUMBER: _ClassVar[int]
     TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
     DATASET_KIND_FIELD_NUMBER: _ClassVar[int]
-    REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
+    DRAWN_BY_FIELD_NUMBER: _ClassVar[int]
     handle: ObjectHandle
     name: str
     buffers: _containers.RepeatedCompositeFieldContainer[BufferSpec]
     total_bytes: int
     dataset_kind: str
-    representations: _containers.RepeatedScalarFieldContainer[str]
     parent: ObjectHandle
-    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., representations: _Optional[_Iterable[str]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
+    drawn_by: _containers.RepeatedCompositeFieldContainer[RepresentationInfo]
+    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., drawn_by: _Optional[_Iterable[_Union[RepresentationInfo, _Mapping]]] = ...) -> None: ...
+
+class RepresentationHandle(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    def __init__(self, id: _Optional[int] = ...) -> None: ...
+
+class ParamValue(_message.Message):
+    __slots__ = ("number", "flag")
+    NUMBER_FIELD_NUMBER: _ClassVar[int]
+    FLAG_FIELD_NUMBER: _ClassVar[int]
+    number: float
+    flag: bool
+    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ...) -> None: ...
+
+class FloatParam(_message.Message):
+    __slots__ = ("default_value", "min", "max", "logarithmic")
+    DEFAULT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    MIN_FIELD_NUMBER: _ClassVar[int]
+    MAX_FIELD_NUMBER: _ClassVar[int]
+    LOGARITHMIC_FIELD_NUMBER: _ClassVar[int]
+    default_value: float
+    min: float
+    max: float
+    logarithmic: bool
+    def __init__(self, default_value: _Optional[float] = ..., min: _Optional[float] = ..., max: _Optional[float] = ..., logarithmic: _Optional[bool] = ...) -> None: ...
+
+class BoolParam(_message.Message):
+    __slots__ = ("default_value",)
+    DEFAULT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    default_value: bool
+    def __init__(self, default_value: _Optional[bool] = ...) -> None: ...
+
+class ParamSpec(_message.Message):
+    __slots__ = ("id", "label", "number", "flag")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    NUMBER_FIELD_NUMBER: _ClassVar[int]
+    FLAG_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    label: str
+    number: FloatParam
+    flag: BoolParam
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ...) -> None: ...
+
+class Color(_message.Message):
+    __slots__ = ("r", "g", "b")
+    R_FIELD_NUMBER: _ClassVar[int]
+    G_FIELD_NUMBER: _ClassVar[int]
+    B_FIELD_NUMBER: _ClassVar[int]
+    r: float
+    g: float
+    b: float
+    def __init__(self, r: _Optional[float] = ..., g: _Optional[float] = ..., b: _Optional[float] = ...) -> None: ...
+
+class ColorSpec(_message.Message):
+    __slots__ = ("field", "map", "range", "flat")
+    FIELD_FIELD_NUMBER: _ClassVar[int]
+    MAP_FIELD_NUMBER: _ClassVar[int]
+    RANGE_FIELD_NUMBER: _ClassVar[int]
+    FLAT_FIELD_NUMBER: _ClassVar[int]
+    field: str
+    map: str
+    range: Range
+    flat: Color
+    def __init__(self, field: _Optional[str] = ..., map: _Optional[str] = ..., range: _Optional[_Union[Range, _Mapping]] = ..., flat: _Optional[_Union[Color, _Mapping]] = ...) -> None: ...
+
+class Range(_message.Message):
+    __slots__ = ("low", "high")
+    LOW_FIELD_NUMBER: _ClassVar[int]
+    HIGH_FIELD_NUMBER: _ClassVar[int]
+    low: float
+    high: float
+    def __init__(self, low: _Optional[float] = ..., high: _Optional[float] = ...) -> None: ...
+
+class RepresentationInfo(_message.Message):
+    __slots__ = ("handle", "kind", "source", "parent", "params", "color", "visible")
+    class ParamsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ParamValue
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    PARENT_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    COLOR_FIELD_NUMBER: _ClassVar[int]
+    VISIBLE_FIELD_NUMBER: _ClassVar[int]
+    handle: RepresentationHandle
+    kind: str
+    source: ObjectHandle
+    parent: ObjectHandle
+    params: _containers.MessageMap[str, ParamValue]
+    color: ColorSpec
+    visible: bool
+    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., kind: _Optional[str] = ..., source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ...) -> None: ...
+
+class RepresentationKindInfo(_message.Message):
+    __slots__ = ("id", "label", "supports", "params")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    SUPPORTS_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    label: str
+    supports: _containers.RepeatedScalarFieldContainer[str]
+    params: _containers.RepeatedCompositeFieldContainer[ParamSpec]
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., supports: _Optional[_Iterable[str]] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
+
+class AddRepresentationRequest(_message.Message):
+    __slots__ = ("source", "kind", "parent", "params", "color")
+    class ParamsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ParamValue
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    PARENT_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    COLOR_FIELD_NUMBER: _ClassVar[int]
+    source: ObjectHandle
+    kind: str
+    parent: ObjectHandle
+    params: _containers.MessageMap[str, ParamValue]
+    color: ColorSpec
+    def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ...) -> None: ...
+
+class AddRepresentationResponse(_message.Message):
+    __slots__ = ("representation",)
+    REPRESENTATION_FIELD_NUMBER: _ClassVar[int]
+    representation: RepresentationInfo
+    def __init__(self, representation: _Optional[_Union[RepresentationInfo, _Mapping]] = ...) -> None: ...
+
+class SetRepresentationRequest(_message.Message):
+    __slots__ = ("handle", "params", "color", "visible")
+    class ParamsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ParamValue
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    COLOR_FIELD_NUMBER: _ClassVar[int]
+    VISIBLE_FIELD_NUMBER: _ClassVar[int]
+    handle: RepresentationHandle
+    params: _containers.MessageMap[str, ParamValue]
+    color: ColorSpec
+    visible: bool
+    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ...) -> None: ...
+
+class SetRepresentationResponse(_message.Message):
+    __slots__ = ("representation",)
+    REPRESENTATION_FIELD_NUMBER: _ClassVar[int]
+    representation: RepresentationInfo
+    def __init__(self, representation: _Optional[_Union[RepresentationInfo, _Mapping]] = ...) -> None: ...
+
+class RemoveRepresentationRequest(_message.Message):
+    __slots__ = ("handle",)
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    handle: RepresentationHandle
+    def __init__(self, handle: _Optional[_Union[RepresentationHandle, _Mapping]] = ...) -> None: ...
+
+class RemoveRepresentationResponse(_message.Message):
+    __slots__ = ("removed",)
+    REMOVED_FIELD_NUMBER: _ClassVar[int]
+    removed: bool
+    def __init__(self, removed: _Optional[bool] = ...) -> None: ...
+
+class ListRepresentationsRequest(_message.Message):
+    __slots__ = ("source",)
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    source: ObjectHandle
+    def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
+
+class ListRepresentationsResponse(_message.Message):
+    __slots__ = ("representations",)
+    REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
+    representations: _containers.RepeatedCompositeFieldContainer[RepresentationInfo]
+    def __init__(self, representations: _Optional[_Iterable[_Union[RepresentationInfo, _Mapping]]] = ...) -> None: ...
+
+class ListRepresentationKindsRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ListRepresentationKindsResponse(_message.Message):
+    __slots__ = ("kinds",)
+    KINDS_FIELD_NUMBER: _ClassVar[int]
+    kinds: _containers.RepeatedCompositeFieldContainer[RepresentationKindInfo]
+    def __init__(self, kinds: _Optional[_Iterable[_Union[RepresentationKindInfo, _Mapping]]] = ...) -> None: ...
 
 class ListObjectsRequest(_message.Message):
     __slots__ = ()
@@ -185,9 +382,11 @@ class DeleteObjectRequest(_message.Message):
     def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., recursive: _Optional[bool] = ...) -> None: ...
 
 class DeleteObjectResponse(_message.Message):
-    __slots__ = ("deleted", "removed")
+    __slots__ = ("deleted", "removed", "removed_representations")
     DELETED_FIELD_NUMBER: _ClassVar[int]
     REMOVED_FIELD_NUMBER: _ClassVar[int]
+    REMOVED_REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
     deleted: bool
     removed: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
-    def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
+    removed_representations: _containers.RepeatedCompositeFieldContainer[RepresentationHandle]
+    def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ..., removed_representations: _Optional[_Iterable[_Union[RepresentationHandle, _Mapping]]] = ...) -> None: ...

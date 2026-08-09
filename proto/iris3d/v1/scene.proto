@@ -40,6 +40,35 @@ service SceneService {
 
   // Removes an object from the scene, releasing its buffers.
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
+
+  // Draws an object an additional way.
+  //
+  // Adds; it does not replace. An object may carry any number of
+  // representations at once — a protein as cartoon and as licorice, a mesh as
+  // surface and as wireframe — and each is configured independently.
+  //
+  // The data drawn and the placement it is drawn at are separate: `source`
+  // says whose arrays to read, `parent` says whose transform to inherit. Give
+  // them different objects and one dataset appears in two places without being
+  // uploaded twice.
+  rpc AddRepresentation(AddRepresentationRequest) returns (AddRepresentationResponse);
+
+  // Changes an existing representation. Only what is named is altered.
+  rpc SetRepresentation(SetRepresentationRequest) returns (SetRepresentationResponse);
+
+  // Removes one representation, leaving the object and its data alone.
+  rpc RemoveRepresentation(RemoveRepresentationRequest) returns (RemoveRepresentationResponse);
+
+  // Lists representations, optionally only those drawing one object.
+  rpc ListRepresentations(ListRepresentationsRequest) returns (ListRepresentationsResponse);
+
+  // Lists the ways of drawing this build actually supports.
+  //
+  // Kinds are contributed by whichever rendering backends are compiled in
+  // rather than fixed by the schema, so a client that asks cannot offer a
+  // choice that silently does nothing — and needs no hardcoded table of its
+  // own.
+  rpc ListRepresentationKinds(ListRepresentationKindsRequest) returns (ListRepresentationKindsResponse);
 }
 
 // Dtype is the element type of a buffer's raw bytes. Encoding is always
@@ -143,6 +172,14 @@ message ObjectHandle {
 
 // ObjectInfo describes an object without transferring its contents.
 message ObjectInfo {
+  // Field 6 was `repeated string representations`, a list of kind names. It
+  // carried no handles, so there was no way to say *which* of an object's
+  // representations to change — and nothing to change them with. Replaced by
+  // `drawn_by` below rather than reused, so an old client fails to decode
+  // rather than silently reading a name where it expects a structure.
+  reserved 6;
+  reserved "representations";
+
   ObjectHandle handle = 1;
   string name = 2;
   repeated BufferSpec buffers = 3;
@@ -154,12 +191,200 @@ message ObjectInfo {
   // revision should let the client state this outright.
   string dataset_kind = 5;
 
-  // Ways the object is currently being drawn, e.g. "points", "surface",
-  // "ball-and-stick". Empty means nothing is drawing it.
-  repeated string representations = 6;
-
   // Parent in the scene tree, absent for a root object.
   optional ObjectHandle parent = 7;
+
+  // Everything currently drawing this object's data. Empty means nothing is.
+  //
+  // A representation listed here need not be placed here: check its `parent`.
+  repeated RepresentationInfo drawn_by = 8;
+}
+
+// RepresentationHandle identifies one way of drawing something.
+//
+// Drawn from the same sequence as ObjectHandle — no id ever names both — but a
+// distinct type, so the two cannot be passed in each other's place.
+message RepresentationHandle {
+  uint64 id = 1;
+}
+
+// ParamValue is one setting on a representation.
+//
+// Which variant is expected for a given parameter is declared by its
+// ParamSpec. A value of the wrong type, or one outside the declared range, is
+// not an error: it is clamped or replaced with the default, so a client can
+// never drive the renderer somewhere it cannot come back from.
+message ParamValue {
+  oneof value {
+    double number = 1;
+    bool flag = 2;
+  }
+}
+
+message FloatParam {
+  double default_value = 1;
+  double min = 2;
+  double max = 3;
+
+  // Hint that useful values span orders of magnitude, so a control should be
+  // laid out logarithmically.
+  bool logarithmic = 4;
+}
+
+message BoolParam {
+  bool default_value = 1;
+}
+
+// ParamSpec declares one setting of a representation kind: what it is called,
+// what type it takes and what values are allowed.
+message ParamSpec {
+  // Key used in the `params` maps below.
+  string id = 1;
+
+  // Human-readable name.
+  string label = 2;
+
+  oneof kind {
+    FloatParam number = 3;
+    BoolParam flag = 4;
+  }
+}
+
+// Color is sRGB, each channel 0..1.
+message Color {
+  float r = 1;
+  float g = 2;
+  float b = 3;
+}
+
+// ColorSpec says how a representation takes its colour.
+//
+// This is always a *complete* description, unlike the parameter maps: sending
+// one replaces the colouring outright, and anything left unset takes its
+// default rather than its current value. Parameters are per-key because a
+// client typically nudges one of them; colouring is four related settings that
+// are rarely meaningful apart.
+message ColorSpec {
+  // Field to map across the colour map. Absent paints a flat colour — or, for
+  // molecules, standard element colouring.
+  optional string field = 1;
+
+  // "viridis", "cool-warm", "grayscale", or "element". Empty means viridis.
+  string map = 2;
+
+  // Value range the colour map spans. Absent autoscales to the field's own
+  // range, recomputed whenever the data changes.
+  optional Range range = 3;
+
+  // Used when `field` is absent.
+  optional Color flat = 4;
+}
+
+message Range {
+  float low = 1;
+  float high = 2;
+}
+
+// RepresentationInfo describes one way something is being drawn.
+message RepresentationInfo {
+  RepresentationHandle handle = 1;
+
+  // Registered kind id, e.g. "points" or "ball-and-stick". See
+  // ListRepresentationKinds.
+  string kind = 2;
+
+  // The object whose data is drawn.
+  ObjectHandle source = 3;
+
+  // The object whose transform is inherited. Usually the same as `source`.
+  ObjectHandle parent = 4;
+
+  // Complete and in range, whatever was sent to produce it.
+  map<string, ParamValue> params = 5;
+
+  ColorSpec color = 6;
+
+  // False if this representation has been hidden individually. An object being
+  // hidden does not show up here.
+  bool visible = 7;
+}
+
+// RepresentationKindInfo describes a way of drawing that this build supports.
+message RepresentationKindInfo {
+  string id = 1;
+  string label = 2;
+
+  // Dataset kinds this can draw, using the same names as
+  // `ObjectInfo.dataset_kind`.
+  repeated string supports = 3;
+
+  repeated ParamSpec params = 4;
+}
+
+message AddRepresentationRequest {
+  // The object whose data to draw.
+  ObjectHandle source = 1;
+
+  // Registered kind id. Empty picks whatever the server draws this kind of
+  // dataset with by default, which is what an upload would have chosen.
+  string kind = 2;
+
+  // The object whose transform to inherit. Absent means `source`, drawing the
+  // data where it already is.
+  optional ObjectHandle parent = 3;
+
+  // Settings to override. Anything not named takes the kind's default — this
+  // is a new representation, so there is no previous value to keep.
+  map<string, ParamValue> params = 4;
+
+  // Absent colours by the first scalar field, matching what an upload does.
+  optional ColorSpec color = 5;
+}
+
+message AddRepresentationResponse {
+  RepresentationInfo representation = 1;
+}
+
+message SetRepresentationRequest {
+  RepresentationHandle handle = 1;
+
+  // Settings to change. Anything not named keeps its current value — unlike
+  // AddRepresentation, where it takes the default.
+  map<string, ParamValue> params = 2;
+
+  // Absent leaves colouring alone. Present replaces it entirely; see ColorSpec.
+  optional ColorSpec color = 3;
+
+  // Hide or show this representation alone, without touching its object.
+  optional bool visible = 4;
+}
+
+message SetRepresentationResponse {
+  RepresentationInfo representation = 1;
+}
+
+message RemoveRepresentationRequest {
+  RepresentationHandle handle = 1;
+}
+
+message RemoveRepresentationResponse {
+  // False if no representation with that handle was present.
+  bool removed = 1;
+}
+
+message ListRepresentationsRequest {
+  // Restrict to representations drawing this object. Absent lists all of them.
+  optional ObjectHandle source = 1;
+}
+
+message ListRepresentationsResponse {
+  repeated RepresentationInfo representations = 1;
+}
+
+message ListRepresentationKindsRequest {}
+
+message ListRepresentationKindsResponse {
+  repeated RepresentationKindInfo kinds = 1;
 }
 
 message ListObjectsRequest {}
@@ -232,4 +457,11 @@ message DeleteObjectResponse {
   // Handles removed, including the named object and — when `recursive` was
   // set — its descendants.
   repeated ObjectHandle removed = 2;
+
+  // Representations removed along with them.
+  //
+  // Deleting an object takes down everything drawing its data, including
+  // representations placed under some *other* object — those are not in
+  // `removed` and would otherwise disappear from the scene unannounced.
+  repeated RepresentationHandle removed_representations = 3;
 }

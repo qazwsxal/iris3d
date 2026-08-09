@@ -228,6 +228,17 @@ pub enum DatasetKind {
 }
 
 impl DatasetKind {
+    /// Every variant, so a backend's `supports` predicate can be turned back
+    /// into the list of kinds it answers yes to.
+    pub const ALL: [DatasetKind; 6] = [
+        DatasetKind::Points,
+        DatasetKind::Mesh,
+        DatasetKind::Grid,
+        DatasetKind::Molecule,
+        DatasetKind::Raw,
+        DatasetKind::Empty,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             DatasetKind::Points => "points",
