@@ -172,14 +172,6 @@ message ObjectHandle {
 
 // ObjectInfo describes an object without transferring its contents.
 message ObjectInfo {
-  // Field 6 was `repeated string representations`, a list of kind names. It
-  // carried no handles, so there was no way to say *which* of an object's
-  // representations to change — and nothing to change them with. Replaced by
-  // `drawn_by` below rather than reused, so an old client fails to decode
-  // rather than silently reading a name where it expects a structure.
-  reserved 6;
-  reserved "representations";
-
   ObjectHandle handle = 1;
   string name = 2;
   repeated BufferSpec buffers = 3;
@@ -191,13 +183,18 @@ message ObjectInfo {
   // revision should let the client state this outright.
   string dataset_kind = 5;
 
-  // Parent in the scene tree, absent for a root object.
-  optional ObjectHandle parent = 7;
-
   // Everything currently drawing this object's data. Empty means nothing is.
   //
-  // A representation listed here need not be placed here: check its `parent`.
-  repeated RepresentationInfo drawn_by = 8;
+  // This field previously carried a list of kind names. It had no handles, so
+  // there was no way to say *which* of an object's representations to change —
+  // and, until AddRepresentation, nothing to change them with.
+  //
+  // A representation listed here need not be placed here: it draws this
+  // object's data, but check its `parent` for where it appears.
+  repeated RepresentationInfo representations = 6;
+
+  // Parent in the scene tree, absent for a root object.
+  optional ObjectHandle parent = 7;
 }
 
 // RepresentationHandle identifies one way of drawing something.

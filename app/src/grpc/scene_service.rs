@@ -759,7 +759,11 @@ fn object_info(summary: &ObjectSummary) -> ObjectInfo {
         buffers: summary.buffers.iter().map(buffer_spec).collect(),
         total_bytes: summary.total_bytes,
         dataset_kind: summary.kind.as_str().to_string(),
-        drawn_by: summary.representations.iter().map(representation_info).collect(),
+        representations: summary
+            .representations
+            .iter()
+            .map(representation_info)
+            .collect(),
         parent: summary.parent.map(|id| ObjectHandle { id }),
     }
 }

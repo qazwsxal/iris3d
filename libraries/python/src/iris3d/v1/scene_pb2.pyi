@@ -85,22 +85,22 @@ class ObjectHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ObjectInfo(_message.Message):
-    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "parent", "drawn_by")
+    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "representations", "parent")
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     BUFFERS_FIELD_NUMBER: _ClassVar[int]
     TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
     DATASET_KIND_FIELD_NUMBER: _ClassVar[int]
+    REPRESENTATIONS_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
-    DRAWN_BY_FIELD_NUMBER: _ClassVar[int]
     handle: ObjectHandle
     name: str
     buffers: _containers.RepeatedCompositeFieldContainer[BufferSpec]
     total_bytes: int
     dataset_kind: str
+    representations: _containers.RepeatedCompositeFieldContainer[RepresentationInfo]
     parent: ObjectHandle
-    drawn_by: _containers.RepeatedCompositeFieldContainer[RepresentationInfo]
-    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., drawn_by: _Optional[_Iterable[_Union[RepresentationInfo, _Mapping]]] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., representations: _Optional[_Iterable[_Union[RepresentationInfo, _Mapping]]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
 class RepresentationHandle(_message.Message):
     __slots__ = ("id",)

@@ -349,7 +349,7 @@ def _summary(info: ObjectInfo) -> ObjectSummary:
         ),
         total_bytes=info.total_bytes,
         dataset_kind=info.dataset_kind,
-        representations=tuple(_representation(rep) for rep in info.drawn_by),
+        representations=tuple(_representation(rep) for rep in info.representations),
         parent=info.parent.id if info.HasField("parent") else None,
     )
 
