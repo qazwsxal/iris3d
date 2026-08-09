@@ -238,12 +238,14 @@ class ParamInfo:
 
     id: str
     label: str
-    #: "float" or "bool".
+    #: "float", "bool", "field" or "choice".
     type: str
-    default: float | bool
+    default: float | bool | str
     #: Allowed range, for float parameters only.
     range: tuple[float, float] | None = None
     logarithmic: bool = False
+    #: The permitted values, for choice parameters only.
+    options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -257,7 +259,7 @@ class RepresentationKindSummary:
     params: tuple[ParamInfo, ...]
 
 
-def _param_value(value: float | bool) -> ParamValue:
+def _param_value(value: float | bool | str) -> ParamValue:
     """Wraps a Python value for the wire.
 
     ``bool`` is checked first: it is a subclass of ``int``, so testing for a
@@ -268,10 +270,25 @@ def _param_value(value: float | bool) -> ParamValue:
         return ParamValue(flag=value)
     if isinstance(value, (int, float)):
         return ParamValue(number=float(value))
-    raise TypeError(f"parameter values must be a number or a bool, not {type(value).__name__}")
+    if isinstance(value, str):
+        return ParamValue(text=value)
+    raise TypeError(
+        f"parameter values must be a number, a bool or a string, not {type(value).__name__}"
+    )
 
 
-def _params(params: Mapping[str, float | bool] | None) -> dict[str, ParamValue]:
+def _read_param(value: ParamValue) -> float | bool | str:
+    """Unwraps a value from the wire, keeping its type."""
+    match value.WhichOneof("value"):
+        case "flag":
+            return value.flag
+        case "text":
+            return value.text
+        case _:
+            return value.number
+
+
+def _params(params: Mapping[str, float | bool | str] | None) -> dict[str, ParamValue]:
     return {key: _param_value(value) for key, value in (params or {}).items()}
 
 
@@ -344,10 +361,7 @@ def _representation(info: RepresentationInfo) -> RepresentationSummary:
         kind=info.kind,
         source=info.source.id,
         parent=info.parent.id if info.HasField("parent") else None,
-        params={
-            key: value.flag if value.WhichOneof("value") == "flag" else value.number
-            for key, value in info.params.items()
-        },
+        params={key: _read_param(value) for key, value in info.params.items()},
         coloring=_coloring(info.color),
         visible=info.visible,
         subset=(
@@ -365,13 +379,27 @@ def _representation(info: RepresentationInfo) -> RepresentationSummary:
 def _kind(info: RepresentationKindInfo) -> RepresentationKindSummary:
     params = []
     for spec in info.params:
-        if spec.WhichOneof("kind") == "flag":
+        kind = spec.WhichOneof("kind")
+        if kind == "flag":
             params.append(
                 ParamInfo(
                     id=spec.id,
                     label=spec.label,
                     type="bool",
                     default=spec.flag.default_value,
+                )
+            )
+        elif kind == "field":
+            # The empty default means "choose one for me".
+            params.append(ParamInfo(id=spec.id, label=spec.label, type="field", default=""))
+        elif kind == "choice":
+            params.append(
+                ParamInfo(
+                    id=spec.id,
+                    label=spec.label,
+                    type="choice",
+                    default=spec.choice.default_value,
+                    options=tuple(spec.choice.options),
                 )
             )
         else:
@@ -630,7 +658,7 @@ class Client:
         kind: str = "",
         *,
         parent: int | None = None,
-        params: Mapping[str, float | bool] | None = None,
+        params: Mapping[str, float | bool | str] | None = None,
         coloring: Coloring | None = None,
         subset: np.ndarray | None = None,
         per_cell: bool = False,
@@ -682,7 +710,7 @@ class Client:
     def set_representation(
         self,
         handle: int,
-        params: Mapping[str, float | bool] | None = None,
+        params: Mapping[str, float | bool | str] | None = None,
         *,
         coloring: Coloring | None = None,
         visible: bool | None = None,

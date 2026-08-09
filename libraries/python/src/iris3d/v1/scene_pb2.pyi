@@ -131,12 +131,14 @@ class RepresentationHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ParamValue(_message.Message):
-    __slots__ = ("number", "flag")
+    __slots__ = ("number", "flag", "text")
     NUMBER_FIELD_NUMBER: _ClassVar[int]
     FLAG_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
     number: float
     flag: bool
-    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ...) -> None: ...
+    text: str
+    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ...) -> None: ...
 
 class FloatParam(_message.Message):
     __slots__ = ("default_value", "min", "max", "logarithmic")
@@ -156,17 +158,33 @@ class BoolParam(_message.Message):
     default_value: bool
     def __init__(self, default_value: _Optional[bool] = ...) -> None: ...
 
+class FieldParam(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ChoiceParam(_message.Message):
+    __slots__ = ("options", "default_value")
+    OPTIONS_FIELD_NUMBER: _ClassVar[int]
+    DEFAULT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    options: _containers.RepeatedScalarFieldContainer[str]
+    default_value: str
+    def __init__(self, options: _Optional[_Iterable[str]] = ..., default_value: _Optional[str] = ...) -> None: ...
+
 class ParamSpec(_message.Message):
-    __slots__ = ("id", "label", "number", "flag")
+    __slots__ = ("id", "label", "number", "flag", "field", "choice")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     NUMBER_FIELD_NUMBER: _ClassVar[int]
     FLAG_FIELD_NUMBER: _ClassVar[int]
+    FIELD_FIELD_NUMBER: _ClassVar[int]
+    CHOICE_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
     number: FloatParam
     flag: BoolParam
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ...) -> None: ...
+    field: FieldParam
+    choice: ChoiceParam
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., field: _Optional[_Union[FieldParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ...) -> None: ...
 
 class Color(_message.Message):
     __slots__ = ("r", "g", "b")

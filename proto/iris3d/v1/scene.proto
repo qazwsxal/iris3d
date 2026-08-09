@@ -140,8 +140,12 @@ message BufferSpec {
 // geometry in nine numbers rather than 50 million coordinates, which is the
 // reason to have the type at all.
 //
-// Sample `(i, j, k)` sits at `origin + (i, j, k) * spacing`, with `i` varying
-// fastest, matching the C (row-major) order the buffers already use.
+// Sample `(i, j, k)` sits at `origin + (i, j, k) * spacing`.
+//
+// Values arrive with **k varying fastest**, then `j`, then `i`. That is what a
+// numpy array of shape `(x, y, z)` gives you from a plain `.ravel()`, because C
+// order runs the last axis fastest. It matches the ordering the other buffers
+// already use, where the last axis of an `[n, 3]` array is the contiguous one.
 message Grid {
   // Position of sample (0, 0, 0).
   Vector3 origin = 1;
@@ -264,6 +268,10 @@ message ParamValue {
   oneof value {
     double number = 1;
     bool flag = 2;
+
+    // A field name, or one option out of a fixed set. Which of the two is
+    // decided by the parameter's ParamSpec.
+    string text = 3;
   }
 }
 
@@ -281,6 +289,21 @@ message BoolParam {
   bool default_value = 1;
 }
 
+// FieldParam takes the name of a field on the source object.
+//
+// The empty string means "choose one", and what that resolves to is the
+// renderer's business. Nothing validates the name when it is set: the object it
+// must exist on is not known until draw time, and a field can appear or vanish
+// after the fact.
+message FieldParam {}
+
+// ChoiceParam takes one option out of a fixed set. A value outside the set is
+// rejected rather than corrected, because there is no nearest valid choice.
+message ChoiceParam {
+  repeated string options = 1;
+  string default_value = 2;
+}
+
 // ParamSpec declares one setting of a representation kind: what it is called,
 // what type it takes and what values are allowed.
 message ParamSpec {
@@ -293,6 +316,8 @@ message ParamSpec {
   oneof kind {
     FloatParam number = 3;
     BoolParam flag = 4;
+    FieldParam field = 5;
+    ChoiceParam choice = 6;
   }
 }
 

@@ -22,24 +22,36 @@ use bevy::prelude::*;
 use super::DatasetKind;
 
 /// A single tunable value on a representation.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Not `Copy`, because `Text` owns a `String`. Everything that reads a
+/// parameter borrows it.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ParamValue {
     Float(f32),
     Bool(bool),
+    /// A name: a field to read, or one option out of a fixed set.
+    Text(String),
 }
 
 impl ParamValue {
-    pub fn as_float(self) -> Option<f32> {
+    pub fn as_float(&self) -> Option<f32> {
         match self {
-            ParamValue::Float(value) => Some(value),
-            ParamValue::Bool(_) => None,
+            ParamValue::Float(value) => Some(*value),
+            _ => None,
         }
     }
 
-    pub fn as_bool(self) -> Option<bool> {
+    pub fn as_bool(&self) -> Option<bool> {
         match self {
-            ParamValue::Bool(value) => Some(value),
-            ParamValue::Float(_) => None,
+            ParamValue::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            ParamValue::Text(value) => Some(value),
+            _ => None,
         }
     }
 }
@@ -66,6 +78,14 @@ pub fn flag(params: &ParamMap, id: &str, fallback: bool) -> bool {
         .unwrap_or(fallback)
 }
 
+/// Reads a text parameter — a field name, or a chosen option. See [`float`].
+pub fn text<'a>(params: &'a ParamMap, id: &str, fallback: &'a str) -> &'a str {
+    params
+        .get(id)
+        .and_then(|value| value.as_text())
+        .unwrap_or(fallback)
+}
+
 /// What a parameter is, which decides both its control and its valid range.
 #[derive(Debug, Clone, Copy)]
 pub enum ParamKind {
@@ -80,6 +100,19 @@ pub enum ParamKind {
     Bool {
         default: bool,
     },
+    /// Names a field on the source object.
+    ///
+    /// The empty string means "choose one", and what that resolves to is the
+    /// backend's business — the same posture `ColorBy::field` takes. Nothing
+    /// here checks that the name exists, because the object it must exist on is
+    /// not known until draw time, and a field can appear or vanish after the
+    /// parameter is set.
+    Field,
+    /// One option out of a fixed set, such as a rendering mode.
+    Choice {
+        options: &'static [&'static str],
+        default: &'static str,
+    },
 }
 
 impl ParamKind {
@@ -87,6 +120,8 @@ impl ParamKind {
         match self {
             ParamKind::Float { default, .. } => ParamValue::Float(default),
             ParamKind::Bool { default } => ParamValue::Bool(default),
+            ParamKind::Field => ParamValue::Text(String::new()),
+            ParamKind::Choice { default, .. } => ParamValue::Text(default.to_string()),
         }
     }
 
@@ -99,6 +134,12 @@ impl ParamKind {
                 Some(ParamValue::Float(value.clamp(min, max)))
             }
             (ParamKind::Bool { .. }, ParamValue::Bool(value)) => Some(ParamValue::Bool(value)),
+            (ParamKind::Field, ParamValue::Text(value)) => Some(ParamValue::Text(value)),
+            // An option outside the declared set is rejected rather than
+            // clamped: there is no nearest valid choice to fall back to.
+            (ParamKind::Choice { options, .. }, ParamValue::Text(value)) => options
+                .contains(&value.as_str())
+                .then_some(ParamValue::Text(value)),
             _ => None,
         }
     }
@@ -156,7 +197,8 @@ impl RepresentationKind {
             .map(|spec| {
                 let value = given
                     .get(spec.id)
-                    .and_then(|value| spec.kind.sanitise(*value))
+                    .cloned()
+                    .and_then(|value| spec.kind.sanitise(value))
                     .unwrap_or_else(|| spec.kind.default_value());
                 (spec.id.to_string(), value)
             })

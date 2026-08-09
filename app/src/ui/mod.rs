@@ -18,7 +18,7 @@ use crate::scene::data::{FieldKind, Fields};
 use crate::scene::representation::ColorMap;
 use crate::scene::link::spawn_representation;
 use crate::scene::registry::{
-    flag, float, ParamKind, ParamMap, ParamSpec, ParamValue, RepresentationKindId,
+    flag, float, text, ParamKind, ParamMap, ParamSpec, ParamValue, RepresentationKindId,
     RepresentationParams, RepresentationRegistry,
 };
 use crate::scene::{
@@ -571,6 +571,53 @@ fn representation_controls(
                             ParamValue::Float(value),
                         ));
                     }
+                }
+                ParamKind::Field => {
+                    // The fields are the source object's, which the row already
+                    // gathered for the colour picker.
+                    let chosen = text(&current.params, spec.id, "");
+                    ui.horizontal(|ui| {
+                        ui.label(spec.label);
+                        egui::ComboBox::from_id_salt((current.entity, spec.id))
+                            .selected_text(if chosen.is_empty() { "auto" } else { chosen })
+                            .show_ui(ui, |ui| {
+                                // Empty means "pick one for me", which is what a
+                                // representation starts with.
+                                if ui.selectable_label(chosen.is_empty(), "auto").clicked() {
+                                    actions.0.push(UiAction::SetParam(
+                                        current.entity,
+                                        spec.id,
+                                        ParamValue::Text(String::new()),
+                                    ));
+                                }
+                                for field in &row.fields {
+                                    let picked = chosen == field.name;
+                                    if ui.selectable_label(picked, &field.name).clicked() && !picked
+                                    {
+                                        actions.0.push(UiAction::SetParam(
+                                            current.entity,
+                                            spec.id,
+                                            ParamValue::Text(field.name.clone()),
+                                        ));
+                                    }
+                                }
+                            });
+                    });
+                }
+                ParamKind::Choice { options, default } => {
+                    let chosen = text(&current.params, spec.id, default);
+                    ui.horizontal(|ui| {
+                        ui.label(spec.label);
+                        for option in options {
+                            if ui.selectable_label(chosen == *option, *option).clicked() {
+                                actions.0.push(UiAction::SetParam(
+                                    current.entity,
+                                    spec.id,
+                                    ParamValue::Text((*option).to_string()),
+                                ));
+                            }
+                        }
+                    });
                 }
                 ParamKind::Bool { default } => {
                     let mut value = flag(&current.params, spec.id, default);

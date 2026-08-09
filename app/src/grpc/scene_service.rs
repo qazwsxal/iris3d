@@ -20,9 +20,9 @@ use crate::scene::{
 
 use super::proto::{
     AddRepresentationRequest, AddRepresentationResponse, BoolParam, BufferSpec, Chunk, Color,
-    ColorSpec, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
-    DeleteObjectResponse, Dtype as ProtoDtype, FloatParam, Grid as ProtoGrid, ListObjectsRequest,
-    ListObjectsResponse,
+    ChoiceParam, ColorSpec, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
+    DeleteObjectResponse, Dtype as ProtoDtype, FieldParam, FloatParam, Grid as ProtoGrid,
+    ListObjectsRequest, ListObjectsResponse,
     ListRepresentationKindsRequest, ListRepresentationKindsResponse, ListRepresentationsRequest,
     ListRepresentationsResponse, ObjectHandle, ObjectHeader, ObjectInfo, ParamSpec as ProtoSpec,
     ParamValue as ProtoParam, Range, RemoveRepresentationRequest, RemoveRepresentationResponse,
@@ -395,6 +395,7 @@ fn params_from_proto(params: std::collections::HashMap<String, ProtoParam>) -> R
             let value = match value.value {
                 Some(Value::Number(number)) => ParamValue::Float(number as f32),
                 Some(Value::Flag(flag)) => ParamValue::Bool(flag),
+                Some(Value::Text(text)) => ParamValue::Text(text),
                 // An empty `oneof` says nothing at all, and guessing which
                 // parameter was meant is worse than saying so.
                 None => {
@@ -415,6 +416,7 @@ fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, Proto
             let value = match value {
                 ParamValue::Float(number) => Value::Number(*number as f64),
                 ParamValue::Bool(flag) => Value::Flag(*flag),
+                ParamValue::Text(text) => Value::Text(text.clone()),
             };
             (
                 key.clone(),
@@ -565,6 +567,13 @@ fn kind_info(summary: &KindSummary) -> RepresentationKindInfo {
                     ParamKind::Bool { default } => param_spec::Kind::Flag(BoolParam {
                         default_value: default,
                     }),
+                    ParamKind::Field => param_spec::Kind::Field(FieldParam {}),
+                    ParamKind::Choice { options, default } => {
+                        param_spec::Kind::Choice(ChoiceParam {
+                            options: options.iter().map(|option| option.to_string()).collect(),
+                            default_value: default.to_string(),
+                        })
+                    }
                 }),
             })
             .collect(),
