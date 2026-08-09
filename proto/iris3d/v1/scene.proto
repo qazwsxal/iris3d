@@ -2,14 +2,38 @@ syntax = "proto3";
 
 package iris3d.v1;
 
-// SceneService is the ingest and lifecycle surface for objects held in the
-// iris3d scene.
+// SceneService is the whole surface of the iris3d scene: what is in it, where
+// it sits, and how it is drawn.
+//
+// Three things are kept apart, and the split is the reason the API looks the
+// way it does.
+//
+// An **object** holds data and a place in a tree. A **representation** is one
+// way of drawing an object, and is a thing in its own right with its own
+// handle: an object may have several at once, each with its own settings, and
+// each says separately whose data it draws and whose transform it follows.
+// Point those at different objects and one dataset appears in two places
+// without being uploaded twice. A **subset** narrows a representation to part
+// of its data, which is what makes several of them worth having — one
+// structure drawn as cartoon over its protein and as sticks over its ligand.
 //
 // Data is described in the style of a numpy array — a raw little-endian byte
 // buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
 // This keeps large uploads compact on the wire, keeps decoding cheap in every
 // client language, and lets iris3d accept data in formats it will never
 // implement a parser for: a client parses locally and pushes the arrays.
+//
+// The same position is taken wherever a question could be answered on either
+// side. Selections arrive as index or mask arrays rather than as a query
+// language, because a client already holds the structure needed to express
+// "chain A" far better than a grammar invented here could. Structure is
+// inferred from buffer names, with grids the one exception — a grid's sample
+// positions are implicit, so nothing about the arrays reveals it and it must
+// be declared.
+//
+// What can be drawn is not fixed by this schema. Representation kinds come
+// from whichever rendering backends the server was built with, so ask
+// ListRepresentationKinds rather than carrying a table that will go stale.
 service SceneService {
   // Uploads a single object as a stream of chunks.
   //
