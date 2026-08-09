@@ -31,17 +31,30 @@
 //! - The field itself is right: an x ramp renders purple at low x and yellow at
 //!   high x, so the upload, the reordering and the colour maps all work.
 //!
-//! The noise appears only once the marching loop runs, and it is present even
-//! when the loop's result is thrown away and the shader returns a constant.
-//! That points at the loop itself rather than at anything it computes.
-//! Switching `textureSampleLevel` for `textureLoad` and hoisting the mode
-//! branch out of the loop — the two obvious causes, both to do with texture
-//! access under non-uniform control flow — changed nothing.
+//! The noise appears only once the shader reads the texture, and it is there
+//! even when the reading loop's result is thrown away and the shader returns a
+//! constant with no `discard` on the path. Fragments are therefore producing no
+//! output at all, rather than producing a wrong value.
 //!
-//! The next thing to check is the uniform: if `steps` arrives as a large
-//! garbage value the loop would run far too long, and a driver dropping such
-//! fragments would look exactly like this. Print `VolumeUniform` on the GPU
-//! side before anything else.
+//! Ruled out since:
+//!
+//! - `textureLoad` in place of `textureSampleLevel`, so no sampler and no rule
+//!   about texture access under non-uniform control flow.
+//! - The mode branch hoisted out of the loop, so the maximum path has no
+//!   conditional `break` before a texture read.
+//! - `AlphaMode::Opaque` in place of `Blend`. Identical noise, so the
+//!   transparent pass, the blend state and the depth test are all innocent.
+//!
+//! What remains is that the values which *do* arrive are correct — the ramp is
+//! purple at low x and yellow at high x — while neighbouring invocations
+//! produce nothing. Correct-or-absent, per invocation, is not a shape shader
+//! logic usually takes. Suspect the pipeline rather than the maths:
+//!
+//! 1. Run under a different backend, `WGPU_BACKEND=dx12` against `vulkan`. No
+//!    rebuild, and it separates a driver problem from ours.
+//! 2. Turn MSAA off.
+//! 3. Watch for validation output with
+//!    `RUST_LOG=wgpu_core=warn,wgpu_hal=warn`.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
