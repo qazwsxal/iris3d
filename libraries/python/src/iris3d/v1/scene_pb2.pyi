@@ -44,13 +44,35 @@ class BufferSpec(_message.Message):
     byte_length: int
     def __init__(self, name: _Optional[str] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ..., byte_length: _Optional[int] = ...) -> None: ...
 
+class Grid(_message.Message):
+    __slots__ = ("origin", "spacing", "dims")
+    ORIGIN_FIELD_NUMBER: _ClassVar[int]
+    SPACING_FIELD_NUMBER: _ClassVar[int]
+    DIMS_FIELD_NUMBER: _ClassVar[int]
+    origin: Vector3
+    spacing: Vector3
+    dims: Dimensions
+    def __init__(self, origin: _Optional[_Union[Vector3, _Mapping]] = ..., spacing: _Optional[_Union[Vector3, _Mapping]] = ..., dims: _Optional[_Union[Dimensions, _Mapping]] = ...) -> None: ...
+
+class Dimensions(_message.Message):
+    __slots__ = ("x", "y", "z")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    Z_FIELD_NUMBER: _ClassVar[int]
+    x: int
+    y: int
+    z: int
+    def __init__(self, x: _Optional[int] = ..., y: _Optional[int] = ..., z: _Optional[int] = ...) -> None: ...
+
 class ObjectHeader(_message.Message):
-    __slots__ = ("name", "buffers")
+    __slots__ = ("name", "buffers", "grid")
     NAME_FIELD_NUMBER: _ClassVar[int]
     BUFFERS_FIELD_NUMBER: _ClassVar[int]
+    GRID_FIELD_NUMBER: _ClassVar[int]
     name: str
     buffers: _containers.RepeatedCompositeFieldContainer[BufferSpec]
-    def __init__(self, name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ...) -> None: ...
+    grid: Grid
+    def __init__(self, name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., grid: _Optional[_Union[Grid, _Mapping]] = ...) -> None: ...
 
 class Chunk(_message.Message):
     __slots__ = ("buffer_index", "offset", "data")

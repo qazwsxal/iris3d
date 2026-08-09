@@ -60,20 +60,31 @@ impl CellKind {
 /// A regular axis-aligned grid. Positions are implicit in `origin` and
 /// `spacing`, so no coordinate array is stored.
 ///
-/// Not yet constructible from ingest — the wire format has no way to carry
-/// origin, spacing and dimensions. See the note in `scene::ingest`.
-#[allow(dead_code)]
-#[derive(Component, Debug)]
+/// This is the whole reason the type exists: a 256³ volume describes its
+/// geometry in nine numbers rather than 50 million coordinates. It is also the
+/// one dataset kind a client must declare, since there is no array whose
+/// presence reveals it — see `ObjectHeader.grid` in the wire format.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct GridData {
     pub origin: Vec3,
     pub spacing: Vec3,
     pub dims: UVec3,
 }
 
-#[allow(dead_code)]
 impl GridData {
+    /// Samples in the grid.
     pub fn point_count(&self) -> u64 {
         self.dims.x as u64 * self.dims.y as u64 * self.dims.z as u64
+    }
+
+    /// Cells between the samples.
+    ///
+    /// An axis of one sample spans no cells at all, which is what a
+    /// two-dimensional slice uploaded as a grid looks like — so this is a
+    /// saturating subtraction, not one that can wrap to `u32::MAX`.
+    pub fn cell_count(&self) -> u64 {
+        let cells = self.dims.saturating_sub(UVec3::ONE);
+        cells.x as u64 * cells.y as u64 * cells.z as u64
     }
 }
 
@@ -214,9 +225,6 @@ pub enum SecondaryStructure {
 pub enum DatasetKind {
     Points,
     Mesh,
-    /// Unreachable until the wire format can carry origin, spacing and
-    /// dimensions — see [`GridData`].
-    #[allow(dead_code)]
     Grid,
     Molecule,
     /// Arrays with no recognised structure. Still a valid object — this is the

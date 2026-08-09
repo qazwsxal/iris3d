@@ -220,21 +220,17 @@ pub enum TensorLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Association {
     PerPoint,
-    /// Never constructed yet: `ingest` hardcodes `PerPoint` because the wire
-    /// format cannot say otherwise. Kept because subsets reuse this enum to say
-    /// which domain a selection indexes into.
-    #[allow(dead_code)]
     PerCell,
 }
 
 /// A named quantity defined over a dataset.
 #[derive(Debug, Clone)]
 pub struct Field {
-    pub kind: FieldKind,
     /// Unread until a backend distinguishes per-cell from per-point values;
     /// `vertex_colours` currently assumes per-point for everything.
     #[allow(dead_code)]
     pub association: Association,
+    pub kind: FieldKind,
     pub array: Handle<DataArray>,
     pub meta: BufferMeta,
 }

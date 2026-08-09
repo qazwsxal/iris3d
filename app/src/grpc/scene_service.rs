@@ -9,6 +9,7 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::scene::data::Association;
+use crate::scene::dataset::GridData;
 use crate::scene::registry::{ParamKind, ParamMap, ParamValue};
 use crate::scene::representation::ColorMap;
 use crate::scene::subset::SubsetRequest;
@@ -20,18 +21,19 @@ use crate::scene::{
 use super::proto::{
     AddRepresentationRequest, AddRepresentationResponse, BoolParam, BufferSpec, Chunk, Color,
     ColorSpec, CreateObjectRequest, CreateObjectResponse, DeleteObjectRequest,
-    DeleteObjectResponse, Dtype as ProtoDtype, FloatParam, ListObjectsRequest, ListObjectsResponse,
+    DeleteObjectResponse, Dtype as ProtoDtype, FloatParam, Grid as ProtoGrid, ListObjectsRequest,
+    ListObjectsResponse,
     ListRepresentationKindsRequest, ListRepresentationKindsResponse, ListRepresentationsRequest,
     ListRepresentationsResponse, ObjectHandle, ObjectHeader, ObjectInfo, ParamSpec as ProtoSpec,
     ParamValue as ProtoParam, Range, RemoveRepresentationRequest, RemoveRepresentationResponse,
     RepresentationHandle, RepresentationInfo, RepresentationKindInfo, SetParentRequest,
     SetParentResponse, SetRepresentationRequest, SetRepresentationResponse, SetTransformRequest,
     SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadObjectRequest,
-    UploadObjectResponse, param_spec, param_value::Value, scene_service_server::SceneService,
-    subset as subset_proto, upload_object_request::Payload,
+    UploadObjectResponse, Vector3, param_spec, param_value::Value,
+    scene_service_server::SceneService, subset as subset_proto, upload_object_request::Payload,
 };
 use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
-use bevy::math::{Quat, Vec3};
+use bevy::math::{Quat, UVec3, Vec3};
 
 /// Ceiling on the total declared size of a single object. Generous enough for
 /// a large point cloud, small enough that a malformed or malicious header
@@ -104,13 +106,14 @@ impl SceneService for SceneBridgeService {
 
         let upload =
             upload.ok_or_else(|| Status::invalid_argument("stream closed before the header"))?;
-        let (name, buffers) = upload.finish()?;
+        let (name, buffers, grid) = upload.finish()?;
         let total_bytes = buffers.iter().map(|b| b.data.len() as u64).sum();
 
         let summary = self
             .submit(|reply| SceneCommand::InsertObject {
                 name,
                 buffers,
+                grid,
                 reply,
             })
             .await?;
@@ -575,6 +578,8 @@ struct Upload {
     /// Byte length each buffer must reach before the upload is complete.
     declared: Vec<u64>,
     data: Vec<Vec<u8>>,
+    /// The declared grid, validated at the header.
+    grid: Option<GridData>,
 }
 
 impl Upload {
@@ -629,11 +634,46 @@ impl Upload {
             data.push(Vec::with_capacity(expected.min(MAX_EAGER_RESERVE) as usize));
         }
 
+        let grid = header.grid.map(grid_data).transpose()?;
+        if let Some(grid) = grid {
+            // A grid's geometry is entirely in the header, so a buffer claiming
+            // to be geometry is a contradiction, not a harmless extra. Saying so
+            // beats drawing a grid that silently ignores the positions the
+            // caller went to the trouble of computing.
+            if let Some(meta) = metas
+                .iter()
+                .find(|meta| ["positions", "indices"].contains(&meta.name.as_str()))
+            {
+                return Err(Status::invalid_argument(format!(
+                    "a grid upload carries only fields, but buffer \"{}\" was sent; \
+                     a grid's positions follow from its origin, spacing and dims",
+                    meta.name
+                )));
+            }
+            if !metas
+                .iter()
+                .any(|meta| meta.count() == grid.point_count() || meta.count() == grid.cell_count())
+            {
+                return Err(Status::invalid_argument(format!(
+                    "no buffer matches the declared grid: it has {} samples and {} cells, \
+                     and the buffers hold {} values",
+                    grid.point_count(),
+                    grid.cell_count(),
+                    metas
+                        .iter()
+                        .map(|meta| meta.count().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )));
+            }
+        }
+
         Ok(Self {
             name: header.name,
             metas,
             declared,
             data,
+            grid,
         })
     }
 
@@ -674,7 +714,7 @@ impl Upload {
     }
 
     /// Confirms every buffer is complete and yields the finished object.
-    fn finish(self) -> Result<(String, Vec<NamedBuffer>), Status> {
+    fn finish(self) -> Result<(String, Vec<NamedBuffer>, Option<GridData>), Status> {
         for (index, (buffer, declared)) in self.data.iter().zip(&self.declared).enumerate() {
             if buffer.len() as u64 != *declared {
                 return Err(Status::data_loss(format!(
@@ -692,7 +732,7 @@ impl Upload {
             .map(|(meta, data)| NamedBuffer { meta, data })
             .collect();
 
-        Ok((self.name, buffers))
+        Ok((self.name, buffers, self.grid))
     }
 }
 
@@ -729,6 +769,63 @@ fn buffer_meta(index: usize, spec: &BufferSpec) -> Result<BufferMeta, Status> {
         dtype,
         shape: spec.shape.clone(),
     })
+}
+
+/// Validates a declared grid.
+///
+/// Every check here is one the renderer would otherwise have to repeat forever:
+/// a zero dimension means no samples, and a zero spacing collapses the grid onto
+/// a plane where every cell has no volume.
+fn grid_data(grid: ProtoGrid) -> Result<GridData, Status> {
+    let dims = grid
+        .dims
+        .ok_or_else(|| Status::invalid_argument("grid dims are required"))?;
+    if dims.x == 0 || dims.y == 0 || dims.z == 0 {
+        return Err(Status::invalid_argument(format!(
+            "grid dims must be at least one on every axis, got ({}, {}, {})",
+            dims.x, dims.y, dims.z
+        )));
+    }
+
+    let spacing = grid
+        .spacing
+        .ok_or_else(|| Status::invalid_argument("grid spacing is required"))?;
+    if !(spacing.x > 0.0 && spacing.y > 0.0 && spacing.z > 0.0) {
+        return Err(Status::invalid_argument(format!(
+            "grid spacing must be greater than zero on every axis, got ({}, {}, {})",
+            spacing.x, spacing.y, spacing.z
+        )));
+    }
+
+    let origin = grid.origin.unwrap_or(Vector3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    });
+    if ![origin.x, origin.y, origin.z, spacing.x, spacing.y, spacing.z]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        return Err(Status::invalid_argument(
+            "grid origin and spacing must be finite",
+        ));
+    }
+
+    let grid = GridData {
+        origin: Vec3::new(origin.x, origin.y, origin.z),
+        spacing: Vec3::new(spacing.x, spacing.y, spacing.z),
+        dims: UVec3::new(dims.x, dims.y, dims.z),
+    };
+    // The sample count is what every field is measured against, so it has to be
+    // a number before anything downstream can use it.
+    if (dims.x as u64)
+        .checked_mul(dims.y as u64)
+        .and_then(|xy| xy.checked_mul(dims.z as u64))
+        .is_none()
+    {
+        return Err(Status::invalid_argument("grid sample count overflows a u64"));
+    }
+    Ok(grid)
 }
 
 /// Wire dtype to its domain equivalent, `None` for unset or unrecognised.

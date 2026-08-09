@@ -197,6 +197,9 @@ pub enum SceneCommand {
     InsertObject {
         name: String,
         buffers: Vec<NamedBuffer>,
+        /// The client's declaration that the buffers are fields over a regular
+        /// grid. `None` leaves the structure to be inferred from their names.
+        grid: Option<dataset::GridData>,
         reply: oneshot::Sender<ObjectSummary>,
     },
     /// Creates an object holding no data, for use as a grouping node.
@@ -385,9 +388,10 @@ pub fn apply_scene_commands(
             SceneCommand::InsertObject {
                 name,
                 buffers,
+                grid,
                 reply,
             } => {
-                let ingested = ingest::ingest(buffers, &mut arrays);
+                let ingested = ingest::ingest(buffers, grid, &mut arrays);
                 let object = SceneObject {
                     name,
                     arrays: ingested.arrays,
@@ -407,6 +411,9 @@ pub fn apply_scene_commands(
                     }
                     ingest::Dataset::Mesh(mesh) => {
                         commands.entity(index[&id]).insert(mesh);
+                    }
+                    ingest::Dataset::Grid(grid) => {
+                        commands.entity(index[&id]).insert(grid);
                     }
                     ingest::Dataset::Molecule(molecule) => {
                         commands.entity(index[&id]).insert(molecule);

@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from .client import Grid
+
 __all__ = [
     "benzene",
     "cantilever_beam",
     "examples",
+    "hydrogen_orbital",
     "random_cloud",
     "torus_mesh",
     "torus_points",
@@ -193,8 +196,53 @@ def random_cloud(count: int = 250_000, seed: int = 0) -> dict[str, np.ndarray]:
     }
 
 
+def hydrogen_orbital(
+    n: int = 48,
+    extent: float = 12.0,
+) -> tuple[dict[str, np.ndarray], "Grid"]:
+    """A scalar field on a regular grid: the hydrogen 3d_z2 orbital.
+
+    Returns ``(arrays, grid)``, because a grid is declared rather than inferred
+    and carries no positions. Hand both to
+    :meth:`iris3d.Client.upload_object`.
+
+    Chosen because the shape is unmistakable: two lobes along z, a ring around
+    the waist, and a sign change between them. An axis order read the wrong way
+    round turns the lobes sideways, and a lost sign turns the ring into part of
+    the lobes — both obvious without measuring anything.
+
+    Also carries ``cell_density``, one value per *cell* rather than per sample,
+    so the association rule has something to bite on.
+    """
+    axis = np.linspace(-extent, extent, n)
+    # "ij" keeps x varying fastest once ravelled, which is the order the wire
+    # format promises.
+    xx, yy, zz = np.meshgrid(axis, axis, axis, indexing="ij")
+
+    r = np.sqrt(xx**2 + yy**2 + zz**2)
+    # Real 3d_z2: (3cos^2(theta) - 1) * r^2 * exp(-r/3), with r^2 cos^2 = z^2.
+    safe = np.where(r == 0.0, 1.0, r)
+    angular = 3.0 * (zz / safe) ** 2 - 1.0
+    amplitude = angular * r**2 * np.exp(-r / 3.0)
+
+    # Cell values sit between the samples, so there is one fewer on each axis.
+    cell = amplitude[:-1, :-1, :-1]
+
+    arrays = {
+        "amplitude": amplitude.ravel().astype(np.float32),
+        "probability": (amplitude.ravel() ** 2).astype(np.float32),
+        "cell_density": cell.ravel().astype(np.float32),
+    }
+    return arrays, Grid(dims=(n, n, n), origin=(-extent,) * 3, spacing=(2.0 * extent / (n - 1),) * 3)
+
+
 def examples() -> dict[str, dict[str, np.ndarray]]:
-    """Every generator except the throughput one, keyed by a display name."""
+    """Every generator except the throughput one, keyed by a display name.
+
+    Grids are absent: they need a `Grid` alongside their arrays, so they do not
+    fit a plain ``{name: arrays}`` mapping. Use :func:`hydrogen_orbital`
+    directly.
+    """
     return {
         "torus (points)": torus_points(),
         "torus (mesh)": torus_mesh(),

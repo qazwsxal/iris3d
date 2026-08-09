@@ -109,6 +109,9 @@ enum Dtype {
 //
 // Any other name is treated as a field over the object, with its kind inferred
 // from the component count.
+//
+// None of these names apply to a grid upload, which declares its geometry in
+// `ObjectHeader.grid` and carries nothing but fields. See [Grid].
 message BufferSpec {
   // Identifier for this buffer, unique within the object.
   string name = 1;
@@ -125,6 +128,40 @@ message BufferSpec {
   uint64 byte_length = 4;
 }
 
+// Grid declares a regular, axis-aligned grid.
+//
+// The one structure that cannot be inferred from the buffers, which is why it
+// is declared rather than guessed. Every other dataset kind is recognisable
+// from its arrays — "positions" and "indices" make a mesh, "elements" makes a
+// molecule — but a grid's sample points are *implicit*, so there is no array
+// whose presence gives it away and no array whose contents carry the spacing.
+//
+// Nothing here is uploaded per point. A grid of 256^3 samples describes its
+// geometry in nine numbers rather than 50 million coordinates, which is the
+// reason to have the type at all.
+//
+// Sample `(i, j, k)` sits at `origin + (i, j, k) * spacing`, with `i` varying
+// fastest, matching the C (row-major) order the buffers already use.
+message Grid {
+  // Position of sample (0, 0, 0).
+  Vector3 origin = 1;
+
+  // Distance between adjacent samples on each axis. Every component must be
+  // greater than zero.
+  Vector3 spacing = 2;
+
+  // Number of samples along each axis. Every component must be at least one.
+  Dimensions dims = 3;
+}
+
+// Dimensions is a count along each axis, as distinct from Vector3, which is a
+// measurement in world units.
+message Dimensions {
+  uint32 x = 1;
+  uint32 y = 2;
+  uint32 z = 3;
+}
+
 // ObjectHeader opens an upload and declares everything that will follow.
 message ObjectHeader {
   // Human-readable label. Need not be unique.
@@ -133,6 +170,18 @@ message ObjectHeader {
   // The buffers that make up this object, in the order they are indexed by
   // `Chunk.buffer_index`. Must contain at least one entry.
   repeated BufferSpec buffers = 2;
+
+  // Declares the buffers to be fields sampled over a regular grid.
+  //
+  // Present, the buffers carry no geometry and every one of them is a field:
+  // send no "positions" and no "indices". Absent, the server infers the
+  // structure from the buffer names as before.
+  //
+  // A field's association follows its length. One value per sample is
+  // per-point; one value per cell — `(x-1) * (y-1) * (z-1)` of them — is
+  // per-cell. This is the only upload where the server can tell the two apart,
+  // because it is the only one that knows both counts.
+  optional Grid grid = 3;
 }
 
 // Chunk carries a contiguous slice of one buffer's bytes.

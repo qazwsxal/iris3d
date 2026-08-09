@@ -22,7 +22,9 @@ from .v1.scene_pb2 import (
     ColorSpec,
     CreateObjectRequest,
     DeleteObjectRequest,
+    Dimensions,
     Dtype,
+    Grid as ProtoGrid,
     ListObjectsRequest,
     ListRepresentationKindsRequest,
     ListRepresentationsRequest,
@@ -125,6 +127,63 @@ class ObjectSummary:
     representations: tuple["RepresentationSummary", ...]
     #: Parent handle in the scene tree, or None for a root object.
     parent: int | None
+
+
+@dataclass(frozen=True)
+class Grid:
+    """A regular, axis-aligned grid.
+
+    Sample ``(i, j, k)`` sits at ``origin + (i, j, k) * spacing``, with ``i``
+    varying fastest — the same C order numpy uses, so a ``(nx, ny, nz)`` array
+    ravels straight onto it.
+
+    Pass one to :meth:`Client.upload_object` and the buffers become fields over
+    the grid. Send no positions: a 256³ volume states its geometry in these nine
+    numbers instead of 50 million coordinates, which is the point of the type.
+    """
+
+    dims: tuple[int, int, int]
+    origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+    def __post_init__(self) -> None:
+        """Rejects a grid that cannot describe anything.
+
+        Checked here rather than at upload because ``upload_messages`` is a
+        generator: an exception raised inside it surfaces from grpc as
+        ``UNKNOWN: Exception iterating requests!``, which says nothing about
+        what was wrong. Failing at construction points at the line that built
+        the grid.
+        """
+        if len(self.dims) != 3 or any(n < 1 for n in self.dims):
+            raise ValueError(
+                f"grid dims must be three counts of at least one, got {self.dims}"
+            )
+        if len(self.spacing) != 3 or any(s <= 0.0 for s in self.spacing):
+            raise ValueError(
+                "grid spacing must be three values greater than zero, "
+                f"got {self.spacing}"
+            )
+        if len(self.origin) != 3:
+            raise ValueError(f"grid origin must be three values, got {self.origin}")
+
+    @property
+    def point_count(self) -> int:
+        """Samples in the grid."""
+        return self.dims[0] * self.dims[1] * self.dims[2]
+
+    @property
+    def cell_count(self) -> int:
+        """Cells between the samples. An axis of one sample spans none."""
+        x, y, z = (max(0, n - 1) for n in self.dims)
+        return x * y * z
+
+    def to_proto(self) -> ProtoGrid:
+        return ProtoGrid(
+            origin=_vector3(self.origin),
+            spacing=_vector3(self.spacing),
+            dims=Dimensions(x=self.dims[0], y=self.dims[1], z=self.dims[2]),
+        )
 
 
 @dataclass(frozen=True)
@@ -358,12 +417,17 @@ def upload_messages(
     name: str,
     arrays: Mapping[str, np.ndarray],
     chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    grid: "Grid | None" = None,
 ) -> Iterator[UploadObjectRequest]:
     """Builds the request stream for one object.
 
     Yields a header declaring every buffer, then the buffers' bytes in order.
     Exposed separately from :meth:`Client.upload_object` so callers can wrap or
     inspect the stream — for progress reporting, say.
+
+    ``grid`` declares the buffers to be fields sampled over a regular grid. It
+    is the one structure the server cannot infer, because a grid's sample
+    positions are implicit and no array gives it away.
     """
     if not arrays:
         raise ValueError("an object needs at least one buffer")
@@ -386,7 +450,10 @@ def upload_messages(
             )
         )
 
-    yield UploadObjectRequest(header=ObjectHeader(name=name, buffers=specs))
+    header = ObjectHeader(name=name, buffers=specs)
+    if grid is not None:
+        header.grid.CopyFrom(grid.to_proto())
+    yield UploadObjectRequest(header=header)
 
     for index, array in enumerate(prepared):
         payload = memoryview(array).cast("B")
@@ -449,15 +516,34 @@ class Client:
         name: str,
         arrays: Mapping[str, np.ndarray],
         chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+        *,
+        grid: Grid | None = None,
     ) -> int:
         """Uploads one object and returns its handle.
 
         ``arrays`` maps buffer names to arrays. Conventional names are
         ``positions`` (float32, ``[n, 3]``), ``colors`` (uint8, ``[n, 3]`` or
         ``[n, 4]``), ``indices`` (uint32, ``[m, 3]``) and ``normals``
-        (float32, ``[n, 3]``).
+        (float32, ``[n, 3]``). The server infers the structure from them.
+
+        Pass ``grid`` for a regular grid, which is the one structure the names
+        cannot express. Then send no positions and no indices — every buffer is
+        a field over the samples::
+
+            nx, ny, nz = 64, 64, 64
+            client.upload_object(
+                "density",
+                {"density": values.ravel()},
+                grid=iris3d.Grid(dims=(nx, ny, nz), spacing=(0.1, 0.1, 0.1)),
+            )
+
+        A field of one value per sample is per-point. A field of one value per
+        cell — ``(nx-1) * (ny-1) * (nz-1)`` of them — is per-cell. This is the
+        only upload where the server can tell the two apart.
         """
-        response = self._scene.UploadObject(upload_messages(name, arrays, chunk_bytes))
+        response = self._scene.UploadObject(
+            upload_messages(name, arrays, chunk_bytes, grid=grid)
+        )
         return response.handle.id
 
     def create_object(self, name: str) -> int:
