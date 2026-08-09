@@ -7,6 +7,7 @@ use bevy::camera::primitives::Aabb;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::window::PrimaryWindow;
 use std::time::Duration;
 
 use crate::redraw::KeepAwake;
@@ -102,9 +103,13 @@ fn setup(mut commands: Commands) {
     ));
 }
 
-/// Set when an overlay wants the mouse, so dragging a panel does not also
+/// Set when an overlay is using the mouse, so dragging a slider does not also
 /// orbit the camera underneath it. Kept as a plain flag rather than an egui
 /// dependency, so the viewport stays independent of whichever UI is on top.
+///
+/// This only covers an overlay that is *interacting*. Merely resting the
+/// pointer on a panel leaves it clear, which is what the viewport rect below is
+/// for.
 #[derive(Resource, Default)]
 pub struct PointerCaptured(pub bool);
 
@@ -114,24 +119,55 @@ fn orbit_controls(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     captured: Res<PointerCaptured>,
-    mut camera: Query<(&mut OrbitCamera, &mut Transform)>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut camera: Query<(&mut OrbitCamera, &mut Transform, &Camera)>,
+    mut started_in_view: Local<bool>,
 ) {
     if captured.0 {
         return;
     }
-    let Ok((mut orbit, mut transform)) = camera.single_mut() else {
+    let Ok((mut orbit, mut transform, view)) = camera.single_mut() else {
         return;
     };
 
+    // Is the pointer over the 3D view, or over a panel?
+    //
+    // [`PointerCaptured`] alone is not enough: a panel only claims the pointer
+    // while a widget is being used, so a wheel turn over blank panel space
+    // reached the camera and zoomed the scene behind it. The UI insets this
+    // camera to whatever the panels leave free, so its own viewport already
+    // describes exactly the region the mouse may drive it from — no second
+    // account of where the panels are, and any future overlay gets the same
+    // treatment for free.
+    //
+    // A rect the camera cannot report yet — before the first frame has told it
+    // how big its target is — counts as in view. Guessing wrong that way costs
+    // one stray wheel turn; guessing the other way leaves the mouse dead.
+    let in_view = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position())
+        .zip(view.logical_viewport_rect())
+        .is_none_or(|(pointer, rect)| rect.contains(pointer));
+
+    // A drag belongs to wherever it began. Press in the view and the camera
+    // keeps turning when the pointer crosses a panel — a fast orbit leaves the
+    // viewport constantly. Press on a panel and it never starts.
+    let held = buttons.any_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle]);
+    if !held {
+        *started_in_view = in_view;
+    }
+
     let mut changed = false;
 
-    if buttons.pressed(MouseButton::Left) && motion.delta != Vec2::ZERO {
+    if *started_in_view && buttons.pressed(MouseButton::Left) && motion.delta != Vec2::ZERO {
         orbit.yaw -= motion.delta.x * 0.005;
         orbit.pitch = (orbit.pitch + motion.delta.y * 0.005).clamp(-1.54, 1.54);
         changed = true;
     }
 
-    if (buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle))
+    if *started_in_view
+        && (buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle))
         && motion.delta != Vec2::ZERO
     {
         // Pan in the camera's own plane, scaled by distance so the drag feels
@@ -143,7 +179,9 @@ fn orbit_controls(
         changed = true;
     }
 
-    if scroll.delta.y != 0.0 {
+    // The wheel takes the pointer's position now, not where a drag began: there
+    // is no gesture to stay inside.
+    if in_view && scroll.delta.y != 0.0 {
         let step = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y * 0.1,
             MouseScrollUnit::Pixel => scroll.delta.y * 0.005,
