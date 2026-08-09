@@ -15,7 +15,7 @@ use bevy::prelude::*;
 
 use crate::counter::{GlobalIDCounter, UniqueID};
 
-use super::Representation;
+use super::RepresentationKindId;
 
 /// The object whose data this representation draws.
 ///
@@ -78,7 +78,7 @@ pub fn spawn_representation(
 /// safety net for every other way a source can disappear.
 pub fn reap_orphaned_representations(
     mut commands: Commands,
-    orphans: Query<Entity, (With<Representation>, Without<RepresentationOf>)>,
+    orphans: Query<Entity, (With<RepresentationKindId>, Without<RepresentationOf>)>,
 ) {
     for entity in &orphans {
         commands.entity(entity).despawn();
@@ -99,7 +99,7 @@ mod tests {
     fn representation(app: &mut App, source: Entity, parent: Entity) -> Entity {
         app.world_mut()
             .spawn((
-                Representation::Surface,
+                RepresentationKindId("surface"),
                 RepresentationOf(source),
                 ChildOf(parent),
             ))

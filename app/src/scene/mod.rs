@@ -31,6 +31,7 @@ pub mod data;
 pub mod dataset;
 pub mod ingest;
 pub mod link;
+pub mod registry;
 pub mod representation;
 
 // Only what other modules reach for. The rest stays available under its own
@@ -38,7 +39,8 @@ pub mod representation;
 pub use data::{BufferMeta, DataArray, Dtype, NamedArray, NamedBuffer};
 pub use dataset::{DatasetKind, MeshData, MoleculeData, PointCloud};
 pub use link::{RepresentationOf, Representations};
-pub use representation::{ColorBy, Representation};
+pub use registry::{RepresentationKindId, RepresentationParams, RepresentationRegistry};
+pub use representation::ColorBy;
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
 /// against a pre-existing malformed hierarchy sending validation into a loop.
@@ -50,12 +52,16 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DataArray>().add_systems(
             Update,
-            // The reaper runs after the drain so a representation orphaned by a
-            // deletion in this tick is gone before any backend looks at it.
+            // Order matters throughout: the drain creates representations, the
+            // reaper removes any a deletion orphaned before a backend can look
+            // at them, and only then are style components derived from the
+            // parameters the drain wrote.
             (
                 apply_scene_commands,
-                link::reap_orphaned_representations.after(apply_scene_commands),
-            ),
+                link::reap_orphaned_representations,
+                registry::apply_representation_params,
+            )
+                .chain(),
         );
     }
 }
@@ -198,6 +204,7 @@ pub fn apply_scene_commands(
     mut commands: Commands,
     bridge: Res<GrpcBridge>,
     mut counter: ResMut<GlobalIDCounter>,
+    registry: Res<RepresentationRegistry>,
     mut arrays: ResMut<Assets<DataArray>>,
     mut transforms: Query<&mut Transform>,
     objects: Objects,
@@ -205,7 +212,7 @@ pub fn apply_scene_commands(
     children: Query<&Children>,
     child_of: Query<&ChildOf>,
     globals: Query<&GlobalTransform>,
-    representations: Query<&Representation>,
+    representations: Query<&RepresentationKindId>,
 ) {
     let batch: Vec<SceneCommand> = std::iter::from_fn(|| bridge.try_recv().ok()).collect();
     if batch.is_empty() {
@@ -230,6 +237,7 @@ pub fn apply_scene_commands(
                 let (id, summary) = spawn_object(
                     &mut commands,
                     &mut counter,
+                    &registry,
                     &mut index,
                     object,
                     ingested.kind,
@@ -258,6 +266,7 @@ pub fn apply_scene_commands(
                 let (_, summary) = spawn_object(
                     &mut commands,
                     &mut counter,
+                    &registry,
                     &mut index,
                     object,
                     DatasetKind::Empty,
@@ -323,7 +332,7 @@ pub fn apply_scene_commands(
                             .into_iter()
                             .flat_map(|list| list.iter())
                             .filter_map(|entity| representations.get(entity).ok())
-                            .map(|representation| representation.as_str().to_string())
+                            .map(|kind| kind.0.to_string())
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
                             .and_then(|p| ids.get(p).ok())
@@ -357,25 +366,27 @@ pub fn apply_scene_commands(
 
 /// Spawns an object entity, its default representation, and registers its
 /// handle. Returns the handle and a summary of the new object.
+#[allow(clippy::too_many_arguments)]
 fn spawn_object(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
+    registry: &RepresentationRegistry,
     index: &mut HashMap<u64, Entity>,
     object: SceneObject,
     kind: DatasetKind,
     fields: Option<data::Fields>,
 ) -> (u64, ObjectSummary) {
     let id = counter.next();
-    let default_representation = Representation::default_for(kind);
+    // Which kind this is depends entirely on what the backends registered, so
+    // an upload of a dataset nothing can draw simply gets no representation
+    // rather than one that silently does nothing.
+    let default_kind = registry.default_for(kind);
     let colour_field = default_colour_field(fields.as_ref());
     let summary = summarise(
         id,
         &object,
         kind,
-        default_representation
-            .iter()
-            .map(|r| r.as_str().to_string())
-            .collect(),
+        default_kind.map(|kind| kind.id.to_string()).into_iter().collect(),
         None,
     );
 
@@ -395,14 +406,15 @@ fn spawn_object(
     // follow-up call. Source and placement are the same object here; they only
     // differ once a client asks for a representation of one object under
     // another.
-    if let Some(representation) = default_representation.clone() {
+    if let Some(default_kind) = default_kind {
         link::spawn_representation(
             commands,
             counter,
             spawned,
             spawned,
             (
-                representation,
+                RepresentationKindId(default_kind.id),
+                RepresentationParams(default_kind.defaults()),
                 ColorBy {
                     field: colour_field,
                     ..default()
@@ -418,10 +430,7 @@ fn spawn_object(
         summary.name,
         summary.buffers.len(),
         summary.total_bytes,
-        default_representation
-            .as_ref()
-            .map(|r| r.as_str())
-            .unwrap_or("no representation"),
+        default_kind.map(|kind| kind.id).unwrap_or("no representation"),
     );
 
     (id, summary)

@@ -15,10 +15,10 @@ use bevy::asset::embedded_asset;
 use bevy::prelude::*;
 
 use crate::scene::data::{Field, Fields};
+use crate::scene::registry::{RepresentationKindId, RepresentationParams, RepresentationRegistry};
 use crate::scene::representation::ColorMap;
 use crate::scene::{
-    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, Representation, Representations,
-    SceneObject,
+    ColorBy, DataArray, MeshData, MoleculeData, PointCloud, Representations, SceneObject,
 };
 
 mod molecule;
@@ -45,6 +45,20 @@ pub struct DrawPlugin;
 impl Plugin for DrawPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "point_quad.wgsl");
+
+        // Declaring the kinds is what makes them exist at all — `scene` holds
+        // no list of its own. `init_resource` rather than `insert_resource` so
+        // a second backend plugin can register alongside this one whichever
+        // order they are added in. Registration order decides which kind an
+        // upload of each dataset shape is drawn with.
+        app.init_resource::<RepresentationRegistry>();
+        {
+            let mut registry = app.world_mut().resource_mut::<RepresentationRegistry>();
+            points::register(&mut registry);
+            surface::register(&mut registry);
+            molecule::register(&mut registry);
+        }
+
         app.add_plugins(MaterialPlugin::<PointQuadMaterial>::default())
             .add_systems(
                 Update,
@@ -62,7 +76,9 @@ impl Plugin for DrawPlugin {
                     clear_dirty,
                 )
                     .chain()
-                    .after(crate::scene::apply_scene_commands),
+                    // Style components are derived from the parameters, so a
+                    // representation has no style at all until that has run.
+                    .after(crate::scene::registry::apply_representation_params),
             );
     }
 }
@@ -73,8 +89,8 @@ fn mark_dirty(
     changed_representations: Query<
         Entity,
         (
-            With<Representation>,
-            Or<(Changed<Representation>, Changed<ColorBy>)>,
+            With<RepresentationKindId>,
+            Or<(Changed<RepresentationParams>, Changed<ColorBy>)>,
         ),
     >,
     changed_datasets: Query<
@@ -247,6 +263,7 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
 mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype, NamedArray};
+    use crate::scene::registry::ParamValue;
     use crate::scene::RepresentationOf;
 
     fn array() -> DataArray {
@@ -291,9 +308,12 @@ mod tests {
 
     /// Spawns a representation drawing `source`, placed under `parent`.
     fn spawn_representation(app: &mut App, source: Entity, parent: Entity) -> Entity {
+        let mut params = crate::scene::registry::ParamMap::default();
+        params.insert("size".into(), ParamValue::Float(1.0));
         app.world_mut()
             .spawn((
-                Representation::Points { size: 1.0 },
+                RepresentationKindId("points"),
+                RepresentationParams(params),
                 ColorBy::default(),
                 RepresentationOf(source),
                 ChildOf(parent),
@@ -328,13 +348,15 @@ mod tests {
     }
 
     #[test]
-    fn redraws_when_the_representation_changes() {
+    fn redraws_when_a_parameter_changes() {
         let (mut app, _, representation) = scene();
         settle(&mut app, representation);
 
-        *app.world_mut()
-            .get_mut::<Representation>(representation)
-            .unwrap() = Representation::Points { size: 5.0 };
+        app.world_mut()
+            .get_mut::<RepresentationParams>(representation)
+            .unwrap()
+            .0
+            .insert("size".into(), ParamValue::Float(5.0));
         app.update();
         assert!(dirty(&app, representation));
     }

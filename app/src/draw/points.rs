@@ -3,8 +3,8 @@
 //! Each point expands to four vertices sharing a centre, with the corner offset
 //! in UV; the vertex shader displaces them in view space so they always face
 //! the camera. That costs four vertices and two triangles per point, but unlike
-//! `PointList` it honours `Representation::Points { size }` and gives round
-//! points instead of single pixels.
+//! `PointList` it honours [`PointsStyle::size`] and gives round points instead
+//! of single pixels.
 //!
 //! At 250k points that is 1M vertices in one mesh — fine, but the point at
 //! which real GPU instancing (one vertex buffer, one instance per point) starts
@@ -17,9 +17,47 @@ use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
 use crate::scene::data::Fields;
-use crate::scene::{ColorBy, DataArray, PointCloud, Representation, RepresentationOf};
+use crate::scene::registry::{
+    float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
+};
+use crate::scene::{ColorBy, DataArray, DatasetKind, PointCloud, RepresentationOf};
 
 use super::NeedsRedraw;
+
+/// Points drawn as camera-facing discs. `size` is a diameter in world units, so
+/// a sensible value depends on the data's own scale — there is no universally
+/// right default.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct PointsStyle {
+    pub size: f32,
+}
+
+const PARAMS: &[ParamSpec] = &[ParamSpec {
+    id: "size",
+    label: "size",
+    kind: ParamKind::Float {
+        default: 0.05,
+        min: 0.001,
+        max: 1.0,
+        // Useful sizes span three orders of magnitude, so a linear slider
+        // spends most of its travel on values nobody wants.
+        logarithmic: true,
+    },
+}];
+
+pub fn register(registry: &mut RepresentationRegistry) {
+    registry.register(RepresentationKind {
+        id: "points",
+        label: "points",
+        supports: |dataset| dataset == DatasetKind::Points,
+        params: PARAMS,
+        apply: |entity, params| {
+            entity.insert(PointsStyle {
+                size: float(params, "size", 0.05),
+            });
+        },
+    });
+}
 
 /// The shader is compiled into the binary rather than loaded from an `assets`
 /// directory.
@@ -60,13 +98,11 @@ pub fn draw_points(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PointQuadMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &Representation, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
+    dirty: Query<(Entity, &PointsStyle, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
     clouds: Query<(&PointCloud, Option<&Fields>)>,
 ) {
-    for (entity, representation, colour, source) in &dirty {
-        let Representation::Points { size } = representation else {
-            continue;
-        };
+    for (entity, style, colour, source) in &dirty {
+        let size = &style.size;
         let Ok((cloud, fields)) = clouds.get(source.0) else {
             continue;
         };

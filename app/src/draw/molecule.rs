@@ -15,9 +15,59 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 
 use crate::scene::data::Fields;
-use crate::scene::{ColorBy, DataArray, MoleculeData, Representation, RepresentationOf};
+use crate::scene::registry::{
+    float, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
+};
+use crate::scene::{ColorBy, DataArray, DatasetKind, MoleculeData, RepresentationOf};
 
 use super::NeedsRedraw;
+
+/// Spheres at atoms, cylinders along bonds.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct BallAndStickStyle {
+    /// Multiplies each element's covalent radius.
+    pub atom_scale: f32,
+    /// Cylinder radius in ångströms, independent of the atoms.
+    pub bond_radius: f32,
+}
+
+const PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        id: "atom_scale",
+        label: "atom scale",
+        kind: ParamKind::Float {
+            default: 0.25,
+            min: 0.05,
+            max: 1.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "bond_radius",
+        label: "bond radius",
+        kind: ParamKind::Float {
+            default: 0.1,
+            min: 0.01,
+            max: 0.5,
+            logarithmic: false,
+        },
+    },
+];
+
+pub fn register(registry: &mut RepresentationRegistry) {
+    registry.register(RepresentationKind {
+        id: "ball-and-stick",
+        label: "ball and stick",
+        supports: |dataset| dataset == DatasetKind::Molecule,
+        params: PARAMS,
+        apply: |entity, params| {
+            entity.insert(BallAndStickStyle {
+                atom_scale: float(params, "atom_scale", 0.25),
+                bond_radius: float(params, "bond_radius", 0.1),
+            });
+        },
+    });
+}
 
 /// Covalent radii by atomic number, in ångströms, for the common elements.
 /// Anything unlisted falls back to carbon.
@@ -131,17 +181,14 @@ pub fn draw_molecules(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &Representation, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
+    dirty: Query<(Entity, &BallAndStickStyle, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
     molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
-    for (entity, representation, colour, source) in &dirty {
-        let Representation::BallAndStick {
+    for (entity, style, colour, source) in &dirty {
+        let BallAndStickStyle {
             atom_scale,
             bond_radius,
-        } = representation
-        else {
-            continue;
-        };
+        } = style;
         let Ok((molecule, fields)) = molecules.get(source.0) else {
             continue;
         };

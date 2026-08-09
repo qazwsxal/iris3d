@@ -13,22 +13,53 @@ use bevy::prelude::*;
 
 use crate::scene::data::Fields;
 use crate::scene::dataset::CellKind;
-use crate::scene::{ColorBy, DataArray, MeshData, Representation, RepresentationOf};
+use crate::scene::registry::{
+    flag, ParamKind, ParamSpec, RepresentationKind, RepresentationRegistry,
+};
+use crate::scene::{ColorBy, DataArray, DatasetKind, MeshData, RepresentationOf};
 
 use super::NeedsRedraw;
+
+/// Cell surfaces, shaded.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceStyle {
+    /// Light and draw back faces as well as front ones.
+    ///
+    /// On by default because scientific meshes are routinely open or have
+    /// inconsistent winding, and a one-sided material renders those as holes.
+    /// Turning it off is how you see through to the inside of a closed mesh.
+    pub double_sided: bool,
+}
+
+const PARAMS: &[ParamSpec] = &[ParamSpec {
+    id: "double_sided",
+    label: "double sided",
+    kind: ParamKind::Bool { default: true },
+}];
+
+pub fn register(registry: &mut RepresentationRegistry) {
+    registry.register(RepresentationKind {
+        id: "surface",
+        label: "surface",
+        supports: |dataset| dataset == DatasetKind::Mesh,
+        params: PARAMS,
+        apply: |entity, params| {
+            entity.insert(SurfaceStyle {
+                double_sided: flag(params, "double_sided", true),
+            });
+        },
+    });
+}
 
 pub fn draw_surfaces(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
-    dirty: Query<(Entity, &Representation, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
+    dirty: Query<(Entity, &SurfaceStyle, &ColorBy, &RepresentationOf), With<NeedsRedraw>>,
     surfaces: Query<(&MeshData, Option<&Fields>)>,
 ) {
-    for (entity, representation, colour, source) in &dirty {
-        if !matches!(representation, Representation::Surface) {
-            continue;
-        }
+    for (entity, style, colour, source) in &dirty {
         let Ok((data, fields)) = surfaces.get(source.0) else {
             continue;
         };
@@ -105,8 +136,14 @@ pub fn draw_surfaces(
                 // them to come through unaltered.
                 base_color: if tinted { Color::WHITE } else { colour.flat },
                 perceptual_roughness: 0.55,
-                double_sided: true,
-                cull_mode: None,
+                double_sided: style.double_sided,
+                // `double_sided` only lights the back faces; they still have to
+                // survive culling to be lit at all.
+                cull_mode: if style.double_sided {
+                    None
+                } else {
+                    Some(bevy::render::render_resource::Face::Back)
+                },
                 ..default()
             })),
         ));

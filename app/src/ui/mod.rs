@@ -16,8 +16,13 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiCon
 use crate::counter::UniqueID;
 use crate::scene::data::{FieldKind, Fields};
 use crate::scene::representation::ColorMap;
+use crate::scene::link::spawn_representation;
+use crate::scene::registry::{
+    flag, float, ParamKind, ParamMap, ParamSpec, ParamValue, RepresentationKindId,
+    RepresentationParams, RepresentationRegistry,
+};
 use crate::scene::{
-    ColorBy, DataArray, DatasetKind, Representation, Representations, SceneCommand, SceneObject,
+    ColorBy, DataArray, DatasetKind, RepresentationOf, Representations, SceneCommand, SceneObject,
 };
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
@@ -98,9 +103,13 @@ enum UiAction {
     Delete(u64),
     Frame(Entity),
     FrameAll,
-    /// Replace a representation entity's `Representation`.
-    SetRepresentation(Entity, Representation),
-    /// `None` paints flat; otherwise names a field in the parent's `Fields`.
+    /// Draw an object an additional way. The object keeps the representations
+    /// it already has — this adds, it does not replace.
+    AddRepresentation(Entity, &'static str),
+    RemoveRepresentation(Entity),
+    /// Change one parameter of a representation, leaving the rest alone.
+    SetParam(Entity, &'static str, ParamValue),
+    /// `None` paints flat; otherwise names a field in the source's `Fields`.
     SetColourField(Entity, Option<String>),
     SetColourMap(Entity, ColorMap),
 }
@@ -121,6 +130,9 @@ struct Row {
     /// Field name and how many components it has, for the colour-by picker.
     fields: Vec<FieldRow>,
     representations: Vec<RepresentationRow>,
+    /// Kinds that could be added to this object, as `(id, label)`. Resolved
+    /// while gathering so the drawing closures never borrow the registry.
+    available: Vec<(&'static str, &'static str)>,
     children: Vec<Entity>,
 }
 
@@ -131,7 +143,11 @@ struct FieldRow {
 
 struct RepresentationRow {
     entity: Entity,
-    representation: Representation,
+    label: &'static str,
+    /// The controls to show, taken straight from the backend's declaration —
+    /// `&'static` so nothing here has to be cloned or borrowed from the world.
+    specs: &'static [ParamSpec],
+    params: ParamMap,
     colour: ColorBy,
 }
 
@@ -151,7 +167,8 @@ fn draw_ui(
         Option<&Representations>,
         Option<&ChildOf>,
     )>,
-    representations: Query<(&Representation, &ColorBy)>,
+    representations: Query<(&RepresentationKindId, &RepresentationParams, &ColorBy)>,
+    registry: Res<RepresentationRegistry>,
     arrays: Res<Assets<DataArray>>,
     mut captured: ResMut<PointerCaptured>,
     mut overlays: ResMut<crate::viewport::OverlaySettings>,
@@ -197,15 +214,22 @@ fn draw_ui(
             .into_iter()
             .flat_map(|list| list.iter())
             .filter_map(|entity| {
-                representations
-                    .get(entity)
-                    .ok()
-                    .map(|(representation, colour)| RepresentationRow {
-                        entity,
-                        representation: representation.clone(),
-                        colour: colour.clone(),
-                    })
+                let (id, params, colour) = representations.get(entity).ok()?;
+                // A kind with no registration cannot be drawn or configured, so
+                // there is nothing useful to show for it.
+                let registered = registry.get(id.0)?;
+                Some(RepresentationRow {
+                    entity,
+                    label: registered.label,
+                    specs: registered.params,
+                    params: params.0.clone(),
+                    colour: colour.clone(),
+                })
             })
+            .collect();
+        let available: Vec<(&'static str, &'static str)> = registry
+            .for_dataset(*kind)
+            .map(|kind| (kind.id, kind.label))
             .collect();
 
         for array in &object.arrays {
@@ -248,6 +272,7 @@ fn draw_ui(
                 bytes: object.total_bytes(),
                 fields: field_names,
                 representations: drawn,
+                available,
                 children: child_objects,
             },
         );
@@ -433,6 +458,24 @@ fn object_node(
             ui.label(egui::RichText::new("not drawn").weak());
         }
 
+        // Adding rather than replacing: an object may be drawn several ways at
+        // once, and each way is its own entity with its own settings.
+        if !row.available.is_empty() {
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt((entity, "add"))
+                    .selected_text("add representation")
+                    .show_ui(ui, |ui| {
+                        for (id, label) in &row.available {
+                            if ui.selectable_label(false, *label).clicked() {
+                                actions
+                                    .0
+                                    .push(UiAction::AddRepresentation(row.entity, id));
+                            }
+                        }
+                    });
+            });
+        }
+
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(selected, if selected { "selected" } else { "select" })
@@ -460,7 +503,13 @@ fn object_node(
     });
 }
 
-/// Representation picker, its parameters, and the colour-by controls.
+/// One representation: what it is, its parameters, and its colouring.
+///
+/// The controls are generated from the backend's own [`ParamSpec`]
+/// declarations, so adding a representation kind — or a parameter to an
+/// existing one — needs no edit here. A slider's range is the declared range,
+/// which is also the range values are clamped to on the way in, so the UI
+/// cannot ask for something a client could not.
 fn representation_controls(
     ui: &mut egui::Ui,
     row: &Row,
@@ -468,62 +517,50 @@ fn representation_controls(
     actions: &mut PendingActions,
 ) {
     ui.group(|ui| {
-        let options = Representation::available_for(row.kind);
-
         ui.horizontal(|ui| {
-            ui.label("drawn as");
-            egui::ComboBox::from_id_salt((current.entity, "rep"))
-                .selected_text(current.representation.as_str())
-                .show_ui(ui, |ui| {
-                    for option in &options {
-                        let picked = option.as_str() == current.representation.as_str();
-                        if ui.selectable_label(picked, option.as_str()).clicked() && !picked {
-                            actions
-                                .0
-                                .push(UiAction::SetRepresentation(current.entity, option.clone()));
-                        }
-                    }
-                    // Shown but disabled: these variants exist in the model and
-                    // have no backend, so offering them as choices would be a
-                    // lie.
-                    for pending in Representation::unimplemented_for(row.kind) {
-                        ui.add_enabled(false, egui::Label::new(format!("{pending} (no backend)")));
-                    }
-                });
+            ui.label(egui::RichText::new(current.label).strong());
+            if ui.small_button("remove").clicked() {
+                actions
+                    .0
+                    .push(UiAction::RemoveRepresentation(current.entity));
+            }
         });
 
-        // Parameters for the current representation.
-        match &current.representation {
-            Representation::Points { size } => {
-                let mut value = *size;
-                if ui
-                    .add(egui::Slider::new(&mut value, 0.001..=1.0).logarithmic(true).text("size"))
-                    .changed()
-                {
-                    actions.0.push(UiAction::SetRepresentation(
-                        current.entity,
-                        Representation::Points { size: value },
-                    ));
+        for spec in current.specs {
+            match spec.kind {
+                ParamKind::Float {
+                    default,
+                    min,
+                    max,
+                    logarithmic,
+                } => {
+                    let mut value = float(&current.params, spec.id, default);
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut value, min..=max)
+                                .logarithmic(logarithmic)
+                                .text(spec.label),
+                        )
+                        .changed()
+                    {
+                        actions.0.push(UiAction::SetParam(
+                            current.entity,
+                            spec.id,
+                            ParamValue::Float(value),
+                        ));
+                    }
+                }
+                ParamKind::Bool { default } => {
+                    let mut value = flag(&current.params, spec.id, default);
+                    if ui.checkbox(&mut value, spec.label).changed() {
+                        actions.0.push(UiAction::SetParam(
+                            current.entity,
+                            spec.id,
+                            ParamValue::Bool(value),
+                        ));
+                    }
                 }
             }
-            Representation::BallAndStick {
-                atom_scale,
-                bond_radius,
-            } => {
-                let (mut atom, mut bond) = (*atom_scale, *bond_radius);
-                let a = ui.add(egui::Slider::new(&mut atom, 0.05..=1.0).text("atom scale"));
-                let b = ui.add(egui::Slider::new(&mut bond, 0.01..=0.5).text("bond radius"));
-                if a.changed() || b.changed() {
-                    actions.0.push(UiAction::SetRepresentation(
-                        current.entity,
-                        Representation::BallAndStick {
-                            atom_scale: atom,
-                            bond_radius: bond,
-                        },
-                    ));
-                }
-            }
-            _ => {}
         }
 
         // Colour by. For a molecule, no field means CPK element colouring
@@ -570,14 +607,8 @@ fn representation_controls(
             ui.horizontal(|ui| {
                 ui.label("map");
                 for map in [ColorMap::Viridis, ColorMap::CoolWarm, ColorMap::Grayscale] {
-                    let name = match map {
-                        ColorMap::Viridis => "viridis",
-                        ColorMap::CoolWarm => "cool-warm",
-                        ColorMap::Grayscale => "grey",
-                        ColorMap::ByElement => "element",
-                    };
                     if ui
-                        .selectable_label(current.colour.map == map, name)
+                        .selectable_label(current.colour.map == map, map.as_str())
                         .clicked()
                     {
                         actions.0.push(UiAction::SetColourMap(current.entity, map));
@@ -597,13 +628,18 @@ fn representation_controls(
 /// Deletion goes through [`SceneCommand`] rather than despawning directly, so
 /// the UI takes exactly the same path a scripted client does — including the
 /// non-recursive default that detaches children rather than destroying them.
+#[allow(clippy::too_many_arguments)]
 fn apply_actions(
+    mut commands: Commands,
     mut actions: ResMut<PendingActions>,
     mut state: ResMut<UiState>,
     mut frame: ResMut<FrameRequest>,
+    mut counter: ResMut<crate::counter::GlobalIDCounter>,
+    registry: Res<RepresentationRegistry>,
     mut visibility: Query<&mut Visibility>,
-    mut representations: Query<&mut Representation>,
+    mut params: Query<(&RepresentationKindId, &mut RepresentationParams)>,
     mut colours: Query<&mut ColorBy>,
+    sources: Query<&RepresentationOf>,
     bridge: Res<crate::grpc::GrpcBridge>,
 ) {
     for action in actions.0.drain(..) {
@@ -634,13 +670,50 @@ fn apply_actions(
             UiAction::Frame(entity) => frame.0 = Some(FrameTarget::Subtree(entity)),
             UiAction::FrameAll => frame.0 = Some(FrameTarget::All),
 
+            // Drawn in place, which is the only thing the tree can express.
+            // Sourcing an object's data under a *different* node is a scripted
+            // operation — there is nowhere sensible to click for it.
+            UiAction::AddRepresentation(object, kind) => {
+                let Some(registered) = registry.get(kind) else {
+                    continue;
+                };
+                spawn_representation(
+                    &mut commands,
+                    &mut counter,
+                    object,
+                    object,
+                    (
+                        RepresentationKindId(registered.id),
+                        RepresentationParams(registered.defaults()),
+                        ColorBy::default(),
+                    ),
+                );
+            }
+            UiAction::RemoveRepresentation(entity) => {
+                // Only ever a representation, and representations own nothing,
+                // so there is no subtree to consider.
+                if sources.contains(entity) {
+                    commands.entity(entity).despawn();
+                }
+            }
+
             // Each of these mutates a component the draw backends watch, so
             // `mark_dirty` picks them up and the geometry rebuilds. Nothing
             // here touches meshes directly.
-            UiAction::SetRepresentation(entity, representation) => {
-                if let Ok(mut current) = representations.get_mut(entity) {
-                    *current = representation;
-                }
+            UiAction::SetParam(entity, id, value) => {
+                let Ok((kind, mut current)) = params.get_mut(entity) else {
+                    continue;
+                };
+                // Through the same sanitiser a client's value goes through, so
+                // there is one definition of what a parameter may be.
+                let Some(value) = registry
+                    .get(kind.0)
+                    .and_then(|kind| kind.spec(id))
+                    .and_then(|spec| spec.kind.sanitise(value))
+                else {
+                    continue;
+                };
+                current.0.insert(id.to_string(), value);
             }
             UiAction::SetColourField(entity, field) => {
                 if let Ok(mut colour) = colours.get_mut(entity) {
