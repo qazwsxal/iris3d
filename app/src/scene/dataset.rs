@@ -95,9 +95,72 @@ pub struct MoleculeData {
 pub struct Bonds {
     /// Atom index pairs, `[m, 2]` uint32.
     pub pairs: Handle<DataArray>,
-    /// Bond orders, `[m]` uint8. 1/2/3 for single/double/triple; 4 conventionally
-    /// for aromatic.
+    /// Bond types, `[m]` uint8 — see [`BondType`].
     pub orders: Option<Handle<DataArray>>,
+}
+
+/// How two atoms are bonded.
+///
+/// The values match biotite's `BondType` enum, which iris3d adopts as its wire
+/// convention rather than inventing one. Collapsing these into
+/// single/double/triple/aromatic would lose the distinction between an
+/// aromatic single and an aromatic double, and leave coordination bonds with
+/// nowhere to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BondType {
+    /// Bonded, order unspecified.
+    Any = 0,
+    Single = 1,
+    Double = 2,
+    Triple = 3,
+    Quadruple = 4,
+    AromaticSingle = 5,
+    AromaticDouble = 6,
+    AromaticTriple = 7,
+    /// A metal coordination bond.
+    Coordination = 8,
+    /// Aromatic, with no Kekulé assignment.
+    Aromatic = 9,
+}
+
+impl BondType {
+    pub fn from_raw(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => BondType::Any,
+            1 => BondType::Single,
+            2 => BondType::Double,
+            3 => BondType::Triple,
+            4 => BondType::Quadruple,
+            5 => BondType::AromaticSingle,
+            6 => BondType::AromaticDouble,
+            7 => BondType::AromaticTriple,
+            8 => BondType::Coordination,
+            9 => BondType::Aromatic,
+            _ => return None,
+        })
+    }
+
+    /// Whether the bond is part of an aromatic system, however it was assigned.
+    pub fn is_aromatic(self) -> bool {
+        matches!(
+            self,
+            BondType::AromaticSingle
+                | BondType::AromaticDouble
+                | BondType::AromaticTriple
+                | BondType::Aromatic
+        )
+    }
+
+    /// Number of lines a bond of this type is conventionally drawn with.
+    pub fn multiplicity(self) -> u8 {
+        match self {
+            BondType::Double | BondType::AromaticDouble => 2,
+            BondType::Triple | BondType::AromaticTriple => 3,
+            BondType::Quadruple => 4,
+            _ => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

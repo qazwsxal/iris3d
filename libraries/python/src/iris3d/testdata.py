@@ -179,8 +179,8 @@ def benzene() -> dict[str, np.ndarray]:
         # Atomic numbers: six carbons then six hydrogens.
         "elements": np.array([6] * 6 + [1] * 6, dtype=np.uint8),
         "bonds": np.concatenate([ring, c_h]).astype(np.uint32),
-        # 4 is the usual convention for aromatic; C-H bonds are single.
-        "bond_orders": np.array([4] * 6 + [1] * 6, dtype=np.uint8),
+        # biotite BondType: 9 is aromatic (no Kekule assignment), 1 is single.
+        "bond_orders": np.array([9] * 6 + [1] * 6, dtype=np.uint8),
     }
 
 

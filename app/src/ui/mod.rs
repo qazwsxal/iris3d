@@ -514,15 +514,21 @@ fn representation_controls(
             _ => {}
         }
 
-        // Colour by.
+        // Colour by. For a molecule, no field means CPK element colouring
+        // rather than a flat wash, so name it accordingly.
+        let unset = if row.kind == DatasetKind::Molecule {
+            "element (CPK)"
+        } else {
+            "flat"
+        };
         ui.horizontal(|ui| {
             ui.label("colour by");
-            let selected = current.colour.field.clone().unwrap_or_else(|| "flat".into());
+            let selected = current.colour.field.clone().unwrap_or_else(|| unset.into());
             egui::ComboBox::from_id_salt((current.entity, "colour"))
                 .selected_text(selected.clone())
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(current.colour.field.is_none(), "flat")
+                        .selectable_label(current.colour.field.is_none(), unset)
                         .clicked()
                     {
                         actions

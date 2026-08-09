@@ -61,9 +61,25 @@ enum Dtype {
 // BufferSpec declares one named array belonging to an object.
 //
 // Names are conventional rather than enforced, so that new attributes do not
-// require a schema change. Recognised names today: "positions" (float32,
-// [n, 3]), "colors" (uint8, [n, 3] or [n, 4]), "indices" (uint32, [m, 3]),
-// "normals" (float32, [n, 3]).
+// require a schema change. Recognised names today:
+//
+//   "positions"   float32 [n, 3]              point, vertex or atom centres
+//   "colors"      uint8   [n, 3] or [n, 4]
+//   "indices"     uint32  [m, k]              mesh cells; k = 2/3/4 for
+//                                             lines/triangles/tetrahedra
+//   "normals"     float32 [n, 3]
+//   "elements"    uint8   [n]                 atomic numbers; marks a molecule
+//   "bonds"       uint32  [m, 2]              atom index pairs
+//   "bond_orders" uint8   [m]                 see below
+//
+// Bond types follow biotite's BondType enum, adopted rather than reinvented:
+//
+//   0 any            1 single            2 double             3 triple
+//   4 quadruple      5 aromatic single   6 aromatic double    7 aromatic triple
+//   8 coordination   9 aromatic
+//
+// Any other name is treated as a field over the object, with its kind inferred
+// from the component count.
 message BufferSpec {
   // Identifier for this buffer, unique within the object.
   string name = 1;

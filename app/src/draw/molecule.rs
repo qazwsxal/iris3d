@@ -14,6 +14,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 
+use crate::scene::data::Fields;
 use crate::scene::{ColorBy, DataArray, MoleculeData, Representation};
 
 use super::NeedsRedraw;
@@ -131,7 +132,7 @@ pub fn draw_molecules(
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
     dirty: Query<(Entity, &Representation, &ColorBy, &ChildOf), With<NeedsRedraw>>,
-    molecules: Query<&MoleculeData>,
+    molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
     for (entity, representation, colour, parent) in &dirty {
         let Representation::BallAndStick {
@@ -141,7 +142,7 @@ pub fn draw_molecules(
         else {
             continue;
         };
-        let Ok(molecule) = molecules.get(parent.parent()) else {
+        let Ok((molecule, fields)) = molecules.get(parent.parent()) else {
             continue;
         };
         let Some(position_array) = arrays.get(&molecule.positions) else {
@@ -168,15 +169,24 @@ pub fn draw_molecules(
             continue;
         };
 
+        // A selected field wins over CPK. Without this the tree can claim an
+        // object is coloured by b_factor while the render shows element
+        // colours — the field is listed, so it has to actually apply.
+        let tint = super::colour_field(colour, fields)
+            .and_then(|field| super::vertex_colours(field, colour, &arrays, positions.len()));
+
         let mut merged = Merged::default();
 
         for (index, position) in positions.iter().enumerate() {
             let atomic_number = elements.get(index).copied().unwrap_or(6);
             let radius = element_radius(atomic_number) * atom_scale.max(0.01);
+            let atom_colour = tint
+                .as_ref()
+                .map_or_else(|| element_colour(atomic_number), |colours| colours[index]);
             merged.stamp(
                 &sphere,
                 &Transform::from_translation(*position).with_scale(Vec3::splat(radius)),
-                element_colour(atomic_number),
+                atom_colour,
             );
         }
 
@@ -199,13 +209,26 @@ pub fn draw_molecules(
                 if length < f32::EPSILON {
                     continue;
                 }
+                // When atoms are field-coloured, a bond takes the mean of its
+                // endpoints so the mapping stays continuous along the chain.
+                let bond_colour = match &tint {
+                    Some(colours) => {
+                        let (i, j) = (pair[0] as usize, pair[1] as usize);
+                        let mut mean = [0.0; 4];
+                        for channel in 0..4 {
+                            mean[channel] = (colours[i][channel] + colours[j][channel]) * 0.5;
+                        }
+                        mean
+                    }
+                    None => stick,
+                };
                 merged.stamp(
                     &cylinder,
                     // Bevy's cylinder runs along +Y, so rotate that onto the bond.
                     &Transform::from_translation((*a + *b) * 0.5)
                         .with_rotation(Quat::from_rotation_arc(Vec3::Y, along / length))
                         .with_scale(Vec3::new(*bond_radius, length, *bond_radius)),
-                    stick,
+                    bond_colour,
                 );
                 sticks += 1;
             }

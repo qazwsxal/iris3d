@@ -1,6 +1,6 @@
 """Root."""
 
-from . import testdata
+from . import molecules, testdata
 from .client import (
     DEFAULT_ADDRESS,
     DEFAULT_CHUNK_BYTES,
@@ -29,6 +29,7 @@ __all__ = [
     "ObjectSummary",
     "SceneServiceStub",
     "from_proto_dtype",
+    "molecules",
     "testdata",
     "to_proto_dtype",
     "upload_messages",

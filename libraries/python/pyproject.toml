@@ -17,5 +17,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "biotite>=1.7.1",
     "grpcio-tools>=1.78.1",
 ]
