@@ -67,6 +67,18 @@
 //! (step 6), in-scattering (step 7), and trigonometric moments (step 8). Nor
 //! MSAA, per-view culling, or batching through a real phase item.
 //!
+//! # Status
+//!
+//! Paused deliberately, waiting on the actor refactor. The render-world half is
+//! finished and validated and is independent of that work; the main-world half
+//! — registering actor kinds, and selecting this pathway at startup — is not
+//! written, because it would be written against a registry that is being
+//! reshaped. See [`MomentTransparency`] for the shape it should take.
+//!
+//! Nothing outside this directory is touched except two lines in
+//! [`crate::draw`] that declare the module, so the refactor cannot collide with
+//! any of it.
+//!
 //! See `ref/mboit-bevy-reference.md`. Two of its notes do not survive contact
 //! with Bevy 0.19 and are corrected here — see [`pass`] for the depth handling
 //! and [`pipeline`] for the depth comparison.
@@ -90,14 +102,27 @@ use pass::{moment_pass, moment_resolve};
 use pipeline::{init_moment_pipelines, queue_moment_pipelines};
 use prepare::{prepare_moment_bind_groups, prepare_moment_instances, prepare_moment_textures};
 
-/// Switches the moment passes on for one camera.
+/// Marks a view as belonging to the moment pathway.
 ///
-/// Per-camera rather than global because the passes cost an extra draw of every
-/// volume, and a thumbnail or a picking view should not pay for them.
+/// **This is scaffolding, not the intended shape.** A per-camera opt-in implies
+/// that some views in a running app use moments and others do not, and that is
+/// not the plan: the moment backend is a whole rendering pathway, selected once
+/// at startup, and if it is selected then every 3D view is drawn by it. The
+/// component survives for now only because something has to tell the render
+/// world which views to allocate targets for.
 ///
-/// Carries no depth bound yet. At `k = 0` the accumulated quantity is an
-/// ordinary optical depth in world units and needs no warping; the bound
-/// arrives with the higher moments, which do — see the reference document's §4.
+/// What that decision implies, for whoever wires it up properly:
+///
+/// - Selection belongs at app launch — choose the pathway, then add only its
+///   plugins. The [`WgpuFeatures::FLOAT32_BLENDABLE`] probe in
+///   [`MomentPlugin::finish`] becomes a gate on whether the pathway can be
+///   *chosen* at all, rather than a mid-frame skip, and the same goes for the
+///   MSAA check in [`prepare`].
+/// - The pathway owns all transparency in its mode, so it does not have to
+///   interoperate with `Transparent3d`. Alpha-blended actors deposit Dirac
+///   spikes into the moment buffer instead of blending — §3.1 of the reference
+///   document, which exists for exactly that.
+/// - Actors are re-implemented per pathway. That duplication is accepted.
 #[derive(Component, Debug, Clone, Copy, Default, ExtractComponent)]
 pub struct MomentTransparency;
 
