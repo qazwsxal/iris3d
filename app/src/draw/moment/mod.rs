@@ -29,30 +29,43 @@
 //! face it pairs with, and must not need to.
 //!
 //! With uniform extinction `sigma` the absorbance has a density rather than a
-//! spike, so it has an antiderivative:
+//! spike, so every moment of it has an antiderivative:
 //!
 //! ```text
-//! dA/dz = sigma inside the mesh, 0 outside
-//! F(z)  = sigma * z
+//! dA/dw   = sigma * span   inside the mesh, 0 outside
+//! F_k(w)  = sigma * span * w^(k+1) / (k+1)
 //! ```
 //!
-//! An interior interval contributes `F(z_out) - F(z_in)`. Front faces therefore
-//! add `-F(z)` and back faces add `+F(z)`, and the additive blend performs the
-//! pairing on its own. Non-convex and nested meshes need no special handling,
-//! which is the whole point.
+//! where `w` is depth warped into `[0, 1]` across the bound in
+//! [`prepare::MomentBounds`]. An interior interval contributes
+//! `F_k(w_out) - F_k(w_in)`. Front faces therefore add `-F_k(w)` and back faces
+//! add `+F_k(w)`, and the additive blend performs the pairing on its own.
+//! Non-convex and nested meshes need no special handling, which is the whole
+//! point — and is tested rather than assumed, in [`validate`].
 //!
 //! One draw does both signs: `cull_mode: None` and a branch on
 //! `@builtin(front_facing)`.
 //!
+//! # What the moments buy
+//!
+//! `k = 0` alone gives the total absorbance along the ray, which is already
+//! exact for any arrangement of pure absorbers in front of opaque geometry —
+//! however tangled, because the opaque depth clamp truncates each interval in
+//! the right place. Four moments describe *where along the ray* the absorbance
+//! sits, so the resolve can ask for the absorbance in front of any depth
+//! instead of only the total. That is what transparent geometry at an
+//! intermediate depth needs, and what emission and in-scattering will need.
+//!
 //! # Where this is in the build order
 //!
-//! This is `k = 0` only — a signed thickness pass, milestones 1 and 2 of the
-//! reference document's build order. For a single convex volume `exp(-A)` is
-//! not an approximation but the exact answer, which makes this both a working
-//! renderer and the reference image that later moment counts are checked
-//! against. Higher moments come next, and until they land a *concave* volume
-//! renders its total thickness correctly but cannot be occluded partway through
-//! by other transparent geometry.
+//! Steps 1 to 4 of the reference document's §11: signed thickness, an analytic
+//! reference, four power moments, and nested meshes. Each is checked against
+//! the closed form for a sphere rather than by eye.
+//!
+//! Not yet done: a non-linear warp (step 5 — the warp here is linear, which is
+//! the cheapest polynomial that keeps `F_k` closed form), light-space moments
+//! (step 6), in-scattering (step 7), and trigonometric moments (step 8). Nor
+//! MSAA, per-view culling, or batching through a real phase item.
 //!
 //! See `ref/mboit-bevy-reference.md`. Two of its notes do not survive contact
 //! with Bevy 0.19 and are corrected here — see [`pass`] for the depth handling
