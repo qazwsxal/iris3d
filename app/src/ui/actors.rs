@@ -46,21 +46,20 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
                 heading.weak()
             });
             for actor in &row.actors {
-                ui.horizontal(|ui| {
-                    let picked = state.selected_actor == Some(actor.entity);
-                    if ui
-                        .selectable_label(picked, format!("[{}] {}", actor.id, actor.label))
-                        .clicked()
-                    {
-                        actions.0.push(UiAction::SelectActor(actor.entity));
-                    }
-                    // Worth saying outright: two identical-looking rows over one
-                    // object are otherwise indistinguishable when what differs
-                    // is which part of the data each draws.
-                    if matches!(actor.subset, Subset::Selected { .. }) {
-                        ui.label(egui::RichText::new("subset").weak());
-                    }
-                });
+                entry(ui, actor, state, actions);
+            }
+        });
+    }
+
+    // Actors whose object was deleted. Grouped on their own because they belong
+    // to nothing — they keep drawing, so leaving them out of the list would
+    // make them unselectable and unremovable while still on screen.
+    if !scene.detached.is_empty() {
+        drew_anything = true;
+        egui::Frame::new().inner_margin(4.0).show(ui, |ui| {
+            ui.label(egui::RichText::new("Detached").weak().italics());
+            for actor in &scene.detached {
+                entry(ui, actor, state, actions);
             }
         });
     }
@@ -68,6 +67,25 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
     if !drew_anything {
         ui.weak("Nothing is drawn.");
     }
+}
+
+/// One clickable row in the list.
+fn entry(ui: &mut egui::Ui, actor: &ActorRow, state: &UiState, actions: &mut PendingActions) {
+    ui.horizontal(|ui| {
+        let picked = state.selected_actor == Some(actor.entity);
+        if ui
+            .selectable_label(picked, format!("[{}] {}", actor.id, actor.label))
+            .clicked()
+        {
+            actions.0.push(UiAction::SelectActor(actor.entity));
+        }
+        // Worth saying outright: two identical-looking rows over one object are
+        // otherwise indistinguishable when what differs is which part of the
+        // data each draws.
+        if matches!(actor.subset, Subset::Selected { .. }) {
+            ui.label(egui::RichText::new("subset").weak());
+        }
+    });
 }
 
 pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
@@ -121,13 +139,18 @@ fn add(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut Pendi
 fn controls(
     ui: &mut egui::Ui,
     scene: &Gathered,
-    row: &Row,
+    row: Option<&Row>,
     current: &ActorRow,
     actions: &mut PendingActions,
 ) {
     ui.horizontal(|ui| {
         ui.heading(current.label);
-        ui.weak(format!("of [{}] {}", row.id, row.name));
+        match row {
+            Some(row) => ui.weak(format!("of [{}] {}", row.id, row.name)),
+            // It draws at its own transform until something adopts it, which
+            // is worth saying rather than leaving the heading bare.
+            None => ui.weak("detached — under no object"),
+        };
     });
     ui.horizontal(|ui| {
         if matches!(current.subset, Subset::Selected { .. }) {

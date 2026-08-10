@@ -313,7 +313,10 @@ fn apply_actions(
     mut visibility: Query<&mut Visibility>,
     mut params: Query<(&ActorKindId, &mut ActorParams)>,
     mut colours: Query<&mut ColorBy>,
-    placements: Query<&ChildOf, With<ActorKindId>>,
+    // Where each actor sits, `None` for a detached one. Optional rather than
+    // filtered, so a match still means "this entity is an actor" — and a
+    // detached actor is precisely the one that still needs removing.
+    placements: Query<Option<&ChildOf>, With<ActorKindId>>,
     bridge: Res<crate::grpc::GrpcBridge>,
 ) {
     for action in actions.0.drain(..) {
@@ -334,10 +337,14 @@ fn apply_actions(
                 // Select the object it is drawn under too: the outline, the
                 // tree highlight and the tint in the actor list all key off the
                 // object selection, and three of them disagreeing is worse than
-                // the outline moving.
-                if let Ok(link) = placements.get(entity) {
-                    state.selected = Some(link.parent());
-                }
+                // the outline moving. A detached actor is under nothing, so the
+                // object selection has to clear rather than stay behind on
+                // whatever was picked before.
+                state.selected = placements
+                    .get(entity)
+                    .ok()
+                    .flatten()
+                    .map(|link| link.parent());
             }
             UiAction::SelectArray(id) => state.selected_array = Some(id),
             UiAction::ToggleVisibility(entity) => {

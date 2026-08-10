@@ -74,11 +74,13 @@ pub type ActorData<'w, 's> = Query<
     'w,
     's,
     (
+        Entity,
         &'static UniqueID,
         &'static ActorKindId,
         &'static ActorParams,
         &'static ColorBy,
         &'static Subset,
+        Option<&'static ChildOf>,
     ),
 >;
 
@@ -90,6 +92,13 @@ pub struct Gathered {
     /// Every object in handle order, which is how the Data and Actors tabs
     /// group their listings.
     pub ordered: Vec<Entity>,
+    /// Actors under no object, in handle order.
+    ///
+    /// Deleting an object detaches its actors rather than destroying them, and
+    /// they carry on drawing. Without a list of their own they would appear in
+    /// no panel at all — visible on screen and impossible to select, re-home or
+    /// remove.
+    pub detached: Vec<ActorRow>,
     pub owners: HashMap<AssetId<DataArray>, Owner>,
     /// Arrays uploaded on their own, as the handle a client knows them by and
     /// the label it sent. No object holds these, so `owners` says nothing about
@@ -105,15 +114,40 @@ impl Gathered {
     /// The actor with this entity, together with the object it is drawn under.
     ///
     /// The object comes back too, because the controls head their panel with
-    /// which object the actor is drawn under.
-    pub fn actor(&self, entity: Entity) -> Option<(&Row, &ActorRow)> {
-        self.rows.values().find_map(|row| {
+    /// which object the actor is drawn under — and it is optional because a
+    /// detached actor has none to name.
+    pub fn actor(&self, entity: Entity) -> Option<(Option<&Row>, &ActorRow)> {
+        let attached = self.rows.values().find_map(|row| {
             row.actors
                 .iter()
                 .find(|actor| actor.entity == entity)
-                .map(|actor| (row, actor))
+                .map(|actor| (Some(row), actor))
+        });
+        attached.or_else(|| {
+            self.detached
+                .iter()
+                .find(|actor| actor.entity == entity)
+                .map(|actor| (None, actor))
         })
     }
+}
+
+/// One actor as a row, or `None` if the entity is not an actor.
+///
+/// A kind with no registration cannot be drawn or configured, so there is
+/// nothing useful to show for it either.
+fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Option<ActorRow> {
+    let (entity, id, kind, params, colour, subset, _) = actors.get(entity).ok()?;
+    let registered = registry.get(kind.0)?;
+    Some(ActorRow {
+        entity,
+        id: id.0,
+        label: registered.label,
+        specs: registered.params,
+        params: params.0.clone(),
+        colour: colour.clone(),
+        subset: subset.clone(),
+    })
 }
 
 pub fn gather(
@@ -151,21 +185,7 @@ pub fn gather(
             .into_iter()
             .flatten()
             .copied()
-            .filter_map(|entity| {
-                let (actor_id, kind, params, colour, subset) = actors.get(entity).ok()?;
-                // A kind with no registration cannot be drawn or configured, so
-                // there is nothing useful to show for it.
-                let registered = registry.get(kind.0)?;
-                Some(ActorRow {
-                    entity,
-                    id: actor_id.0,
-                    label: registered.label,
-                    specs: registered.params,
-                    params: params.0.clone(),
-                    colour: colour.clone(),
-                    subset: subset.clone(),
-                })
-            })
+            .filter_map(|entity| actor_row(actors, registry, entity))
             .collect();
 
         // Every kind, for every object. What an actor draws is what it binds, so
@@ -208,6 +228,16 @@ pub fn gather(
         );
     }
 
+    // Actors under no object. Same test the object rows use, so an actor under
+    // something that is not an object counts as detached rather than vanishing
+    // from both lists.
+    let mut detached: Vec<ActorRow> = actors
+        .iter()
+        .filter(|(.., parent)| !parent.is_some_and(|link| objects.contains(link.parent())))
+        .filter_map(|(entity, ..)| actor_row(actors, registry, entity))
+        .collect();
+    detached.sort_by_key(|row| row.id);
+
     let handle = |entity: &Entity| rows.get(entity).map(|row| row.id).unwrap_or(u64::MAX);
     roots.sort_by_key(handle);
     let mut ordered: Vec<Entity> = rows.keys().copied().collect();
@@ -224,6 +254,7 @@ pub fn gather(
         rows,
         roots,
         ordered,
+        detached,
         owners,
         held,
         bindable,

@@ -88,9 +88,11 @@ service SceneService {
 
   // Removes one object from the scene.
   //
-  // Deletes exactly what is named. Child objects are detached and become roots;
-  // the actors drawn under it go with it. No arrays are freed — ReleaseData is
-  // what does that.
+  // Deletes exactly what is named, and nothing else. Every child is detached
+  // and becomes a root, actors as much as objects — an actor is defined by the
+  // arrays it binds, which outlive any node, so it can be attached elsewhere
+  // with SetActor. No arrays are freed either; ReleaseData is what does that,
+  // and RemoveActor is what destroys an actor.
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
 
   // Draws something under an object.
@@ -499,7 +501,9 @@ message ActorInfo {
   // Field 3 was `source`, the object whose data was drawn.
   reserved 3;
 
-  // The object it is drawn under.
+  // The object it is drawn under. Absent if it is detached — an actor whose
+  // object was deleted, drawing at its own transform until SetActor gives it
+  // somewhere to be.
   ObjectHandle parent = 4;
 
   // Complete and in range, whatever was sent to produce it.
@@ -594,6 +598,14 @@ message SetActorRequest {
   // absent `subset` already means "leave it alone", so there is otherwise no
   // way to say "clear it".
   bool clear_subset = 6;
+
+  // Move this actor under another object. Absent leaves it where it is.
+  //
+  // Here rather than on SetParent, which moves objects and takes an
+  // ObjectHandle. An actor outlives the object it was drawn under, so this is
+  // how a detached one is placed again — and how one is moved between objects
+  // without rebuilding it.
+  optional ObjectHandle parent = 7;
 }
 
 message SetActorResponse {
@@ -689,10 +701,10 @@ message DeleteObjectRequest {
 
   // Field 2 was `recursive`, asking for the whole subtree. It guarded against
   // destroying uploaded data the caller had not named, back when an object held
-  // its arrays. An object holds none now — a deletion costs nodes and the actors
-  // drawn under them, never data — so the flag was a choice with no consequence
-  // attached. Deleting names one node: its child objects are detached and become
-  // roots, and ReleaseData is what frees arrays.
+  // its arrays. An object holds none now — a deletion costs one node and never
+  // any data — so the flag was a choice with no consequence attached. Deleting
+  // names one node: every child is detached and becomes a root, and ReleaseData
+  // is what frees arrays.
   reserved 2;
 }
 
@@ -700,14 +712,14 @@ message DeleteObjectResponse {
   // False if no object with that handle was present.
   bool deleted = 1;
 
-  // Handles removed, including the named object and — when `recursive` was
-  // set — its descendants.
+  // The object removed. One handle, or none if there was nothing to delete.
   repeated ObjectHandle removed = 2;
 
-  // Actors removed along with them.
-  //
-  // Deleting an object takes down everything drawing its data, including
-  // actors placed under some *other* object — those are not in `removed` and
-  // would otherwise disappear from the scene unannounced.
-  repeated ActorHandle removed_actors = 3;
+  // Field 3 was `removed_actors`. Deleting an object used to destroy the actors
+  // drawn under it, which made deletion inconsistent — child objects survived
+  // and child actors did not. An actor binds arrays that outlive every node, so
+  // one whose parent is gone is still completely defined and is detached
+  // instead. Nothing is removed but the object named, so the list was always
+  // empty. RemoveActor is what destroys an actor.
+  reserved 3;
 }

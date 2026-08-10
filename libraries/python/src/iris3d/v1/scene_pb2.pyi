@@ -353,7 +353,7 @@ class AddActorResponse(_message.Message):
     def __init__(self, actor: _Optional[_Union[ActorInfo, _Mapping]] = ...) -> None: ...
 
 class SetActorRequest(_message.Message):
-    __slots__ = ("handle", "params", "color", "visible", "subset", "clear_subset")
+    __slots__ = ("handle", "params", "color", "visible", "subset", "clear_subset", "parent")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -367,13 +367,15 @@ class SetActorRequest(_message.Message):
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
     CLEAR_SUBSET_FIELD_NUMBER: _ClassVar[int]
+    PARENT_FIELD_NUMBER: _ClassVar[int]
     handle: ActorHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
     subset: Subset
     clear_subset: bool
-    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ...) -> None: ...
+    parent: ObjectHandle
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
 class SetActorResponse(_message.Message):
     __slots__ = ("actor",)
@@ -503,11 +505,9 @@ class DeleteObjectRequest(_message.Message):
     def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
 class DeleteObjectResponse(_message.Message):
-    __slots__ = ("deleted", "removed", "removed_actors")
+    __slots__ = ("deleted", "removed")
     DELETED_FIELD_NUMBER: _ClassVar[int]
     REMOVED_FIELD_NUMBER: _ClassVar[int]
-    REMOVED_ACTORS_FIELD_NUMBER: _ClassVar[int]
     deleted: bool
     removed: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
-    removed_actors: _containers.RepeatedCompositeFieldContainer[ActorHandle]
-    def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ..., removed_actors: _Optional[_Iterable[_Union[ActorHandle, _Mapping]]] = ...) -> None: ...
+    def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...

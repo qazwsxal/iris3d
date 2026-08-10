@@ -12,8 +12,11 @@
 //! could not express at all. What was left of `ActorOf` was a lifetime and
 //! grouping edge wearing a name that said data.
 //!
-//! So an actor is now simply a child of the object it is drawn under, and
-//! Bevy's own hierarchy owns its lifetime.
+//! So an actor is now simply a child of the object it is drawn under. That is
+//! placement and grouping only — not lifetime. Deleting an object detaches its
+//! actors rather than destroying them, because an actor is defined by the
+//! arrays it binds and those outlive every node in the tree. `RemoveActor` is
+//! what ends an actor, and `SetActor`'s `parent` is what places one again.
 
 use bevy::prelude::*;
 
@@ -57,14 +60,12 @@ mod tests {
     use super::*;
     use crate::scene::registry::ActorKindId;
 
-    /// Despawning an object takes the actors drawn under it. This is what
-    /// replaced `reap_orphaned_actors`: an actor used to be linked to a source
-    /// object it need not be a child of, so the hierarchy could not be trusted
-    /// to clean up and a system swept for actors whose source had vanished.
-    /// An actor is a plain child now, and Bevy's recursive despawn is the whole
-    /// of its lifetime.
+    /// An actor spawns as a child, so it inherits the object's placement and
+    /// visibility. That is all the link is for — `delete_object` detaches
+    /// rather than cascading, so the hierarchy does not own an actor's
+    /// lifetime; see `an_actor_outlives_the_object_it_was_drawn_under`.
     #[test]
-    fn an_actor_dies_with_the_object_it_is_drawn_under() {
+    fn an_actor_is_spawned_as_a_child_of_its_object() {
         let mut app = App::new();
         let mut counter = GlobalIDCounter::default();
 
@@ -78,12 +79,15 @@ mod tests {
             ActorKindId("surface"),
         );
         app.world_mut().flush();
-        assert!(app.world().get_entity(actor).is_ok());
 
-        app.world_mut().entity_mut(object).despawn();
+        assert_eq!(
+            app.world().get::<ChildOf>(actor).map(|link| link.parent()),
+            Some(object),
+            "an actor has to be a child, or it inherits no transform"
+        );
         assert!(
-            app.world().get_entity(actor).is_err(),
-            "an actor must not outlive the node it is drawn under"
+            app.world().get::<Visibility>(actor).is_some(),
+            "without Visibility the visibility systems never collect it"
         );
     }
 }

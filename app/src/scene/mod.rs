@@ -103,7 +103,9 @@ pub struct ActorSummary {
     pub id: u64,
     /// Registered kind id — see [`ActorRegistry`].
     pub kind: String,
-    /// The object it is drawn under. `None` when it has somehow been detached.
+    /// The object it is drawn under, or `None` if it is detached — which is
+    /// where deleting that object leaves it, drawing at its own transform
+    /// until something attaches it again.
     pub parent: Option<u64>,
     pub params: registry::ParamMap,
     pub colour: ColorBy,
@@ -247,8 +249,8 @@ pub enum SceneCommand {
     },
     DeleteObject {
         id: u64,
-        /// Deletes exactly this node. Child objects are detached and become
-        /// roots; the actors drawn under it go with it.
+        /// Deletes exactly this node. Every child is detached and becomes a
+        /// root, actors as much as objects.
         reply: oneshot::Sender<Deleted>,
     },
 
@@ -281,6 +283,9 @@ pub enum SceneCommand {
         /// drawing everything. Absent and cleared have to be distinguishable,
         /// which is what the nesting buys.
         subset: Option<Option<subset::SubsetRequest>>,
+        /// Move it under another object. `None` leaves it where it is —
+        /// including detached, which is where a deleted parent leaves it.
+        parent: Option<u64>,
         reply: oneshot::Sender<Result<ActorSummary, SceneError>>,
     },
     RemoveActor {
@@ -298,11 +303,13 @@ pub enum SceneCommand {
 }
 
 /// What a deletion took with it.
+///
+/// Only ever the object named. Actors used to be listed here too, because a
+/// deletion destroyed the ones drawn under it; they are detached now, so
+/// nothing else goes.
 #[derive(Debug, Default, Clone)]
 pub struct Deleted {
     pub objects: Vec<u64>,
-    /// Actors that were drawn under the deleted objects.
-    pub actors: Vec<u64>,
 }
 
 /// Read-only view of the objects in the scene.
@@ -510,7 +517,12 @@ pub fn apply_scene_commands(
                             .into_iter()
                             .flat_map(|list| list.iter())
                             .filter_map(|child| {
-                                summarise_actor(actors.get(child).ok()?, &ids, &arrays)
+                                summarise_actor(
+                                    actors.get(child).ok()?,
+                                    &pending_parent,
+                                    &ids,
+                                    &arrays,
+                                )
                             })
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -527,8 +539,7 @@ pub fn apply_scene_commands(
                 let removed = delete_object(
                     &mut commands,
                     &mut index,
-                    &mut drawn,
-                    &objects,
+                    &mut pending_parent,
                     &children,
                     &ids,
                     id,
@@ -567,11 +578,15 @@ pub fn apply_scene_commands(
                 colour,
                 visible,
                 subset,
+                parent,
                 reply,
             } => {
                 let result = set_actor(
+                    &mut commands,
                     &registry,
                     &drawn,
+                    &index,
+                    &mut pending_parent,
                     &mut actors,
                     &ids,
                     &mut arrays,
@@ -580,6 +595,7 @@ pub fn apply_scene_commands(
                     colour,
                     visible,
                     subset,
+                    parent,
                 );
                 let _ = reply.send(result);
             }
@@ -618,7 +634,7 @@ pub fn apply_scene_commands(
                         filter
                             .is_none_or(|object| item.7.is_some_and(|link| link.parent() == object))
                     })
-                    .filter_map(|item| summarise_actor(item, &ids, &arrays))
+                    .filter_map(|item| summarise_actor(item, &pending_parent, &ids, &arrays))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
                 let _ = reply.send(Ok(listing));
@@ -764,8 +780,11 @@ fn add_actor(
 /// Changes an existing actor, leaving anything unnamed alone.
 #[allow(clippy::too_many_arguments)]
 fn set_actor(
+    commands: &mut Commands,
     registry: &ActorRegistry,
     drawn: &HashMap<u64, Entity>,
+    index: &HashMap<u64, Entity>,
+    pending_parent: &mut HashMap<Entity, Option<Entity>>,
     actors: &mut ActorQuery,
     ids: &Query<&UniqueID>,
     arrays: &mut Assets<DataArray>,
@@ -774,8 +793,15 @@ fn set_actor(
     colour: Option<ColorBy>,
     visible: Option<bool>,
     subset: Option<Option<subset::SubsetRequest>>,
+    parent: Option<u64>,
 ) -> Result<ActorSummary, SceneError> {
     let entity = *drawn.get(&id).ok_or(SceneError::NoSuchActor(id))?;
+
+    // Resolved before anything is written, so a bad handle changes nothing.
+    let moving_to = parent
+        .map(|id| index.get(&id).copied().ok_or(SceneError::NoSuchObject(id)))
+        .transpose()?;
+
     let Ok(mut item) = actors.get_mut(entity) else {
         // In `drawn` but not yet in the world: added earlier in this same
         // drain, so the query has not seen it. Nothing is lost by asking again
@@ -814,8 +840,22 @@ fn set_actor(
         *item.6 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
     }
 
+    if let Some(parent) = moving_to {
+        // No cycle check, unlike `set_parent`. An actor is a leaf — nothing is
+        // ever parented under one — so no placement of it can close a loop.
+        //
+        // Its local transform is kept as it stands, which means it moves on
+        // screen if the new parent sits somewhere else. Following the actor
+        // instead would need the world-transform arithmetic `set_parent` does,
+        // and an actor's transform is an offset from whatever it is drawn
+        // under rather than a place of its own.
+        commands.entity(entity).insert(ChildOf(parent));
+        pending_parent.insert(entity, Some(parent));
+    }
+
     summarise_actor(
         actors.get(entity).expect("the entity was just written"),
+        pending_parent,
         ids,
         arrays,
     )
@@ -975,20 +1015,27 @@ fn effective_parent(
 
 /// Removes one object, returning the handles actually removed.
 ///
-/// Deletes exactly what was named, never a subtree. Child *objects* are
-/// detached first and become roots; child *actors* are left attached so Bevy's
-/// recursive despawn takes them with the node they were drawn under.
+/// Deletes exactly what was named, and nothing else. Every child is detached
+/// and becomes a root — objects *and* actors alike, with no attempt to tell one
+/// from the other.
 ///
-/// There used to be a `recursive` flag. It guarded against destroying uploaded
-/// data the caller had not named, back when an object held its arrays — and an
-/// object holds none now, so a deletion costs nodes and actors and never any
-/// data. What was left was a choice with no consequence attached, and this is
-/// the half that keeps a deletion to what was asked for.
+/// Actors used to die here. That made sense while an actor drew a source
+/// object's data, because losing the object left it drawing nothing; the
+/// `reap_orphaned_actors` sweep existed for exactly that. An actor binds arrays
+/// that outlive every node now, so one whose parent is deleted is still
+/// perfectly well-defined — it has its arrays, its settings and its own
+/// transform, and only wants somewhere to be. Which is precisely the state a
+/// detached object is in, so treating the two differently was a trap: deleting
+/// a grouping node kept some children and silently destroyed the rest.
+///
+/// The cost is that a detached actor draws at its own transform, which is now
+/// a world transform — the same jump a detached object makes, for the same
+/// reason. `SetActor`'s `parent` puts it somewhere again, and `RemoveActor` is
+/// what destroys one.
 fn delete_object(
     commands: &mut Commands,
     index: &mut HashMap<u64, Entity>,
-    drawn: &mut HashMap<u64, Entity>,
-    objects: &Objects,
+    pending_parent: &mut HashMap<Entity, Option<Entity>>,
     children: &Query<&Children>,
     ids: &Query<&UniqueID>,
     id: u64,
@@ -997,42 +1044,28 @@ fn delete_object(
         return Deleted::default();
     };
 
-    let mut deleted = Deleted {
+    if let Ok(list) = children.get(entity) {
+        for child in list.iter() {
+            commands.entity(child).remove::<ChildOf>();
+            // The removal is queued, so anything listing the scene later in
+            // this same drain would otherwise report a parent that is about to
+            // be despawned.
+            pending_parent.insert(child, None);
+        }
+    }
+
+    let deleted = Deleted {
         objects: ids
             .get(entity)
             .map(|unique| vec![unique.0])
             .unwrap_or_default(),
-        actors: Vec::new(),
     };
-
-    if let Ok(list) = children.get(entity) {
-        for child in list.iter() {
-            if objects.contains(child) {
-                // Detached rather than destroyed: this deletion names one node.
-                commands.entity(child).remove::<ChildOf>();
-            } else if let Ok(unique) = ids.get(child) {
-                // An actor drawn here. The despawn below takes it; this only
-                // has to report it.
-                deleted.actors.push(unique.0);
-            }
-        }
-    }
-
     for handle in &deleted.objects {
         index.remove(handle);
     }
-    for handle in &deleted.actors {
-        drawn.remove(handle);
-    }
     commands.entity(entity).despawn();
 
-    info!(
-        "scene: deleted object {id}{}",
-        match deleted.actors.len() {
-            0 => String::new(),
-            n => format!(" and the {n} actor(s) drawn under it"),
-        }
-    );
+    info!("scene: deleted object {id}; its children are roots now");
 
     deleted
 }
@@ -1041,15 +1074,24 @@ fn delete_object(
 ///
 /// `Option` only so callers can filter with `?`; an actor always describes.
 fn summarise_actor(
-    (_, id, kind, params, colour, visibility, subset, parent): ActorItem<'_>,
+    (entity, id, kind, params, colour, visibility, subset, parent): ActorItem<'_>,
+    pending_parent: &HashMap<Entity, Option<Entity>>,
     ids: &Query<&UniqueID>,
     arrays: &Assets<DataArray>,
 ) -> Option<ActorSummary> {
+    // Detachments and moves made earlier this drain are still queued, so the
+    // link on the entity is the one from before the batch. Reporting that would
+    // have `SetActor` answer with the parent it was just asked to replace.
+    let parent = match pending_parent.get(&entity) {
+        Some(pending) => *pending,
+        None => parent.map(|link| link.parent()),
+    };
+
     Some(ActorSummary {
         id: id.0,
         kind: kind.0.to_string(),
         parent: parent
-            .and_then(|link| ids.get(link.parent()).ok())
+            .and_then(|parent| ids.get(parent).ok())
             .map(|unique| unique.0),
         params: params.0.clone(),
         colour: colour.clone(),
@@ -1274,6 +1316,84 @@ mod tests {
             moved.try_recv().expect("a reply"),
             Err(SceneError::NoSuchObject(parent + 1)),
             "a silent misplacement is worse than a refusal"
+        );
+    }
+
+    /// Deleting an object detaches the actors drawn under it, and one of them
+    /// can then be drawn under some other object.
+    ///
+    /// They used to be destroyed, which made deletion inconsistent with itself:
+    /// a child object survived and a child actor did not, so deleting a
+    /// grouping node quietly took work with it. An actor binds arrays that
+    /// outlive every node, so one whose parent is gone still knows everything
+    /// it needs to draw and is only missing somewhere to be.
+    #[test]
+    fn an_actor_outlives_the_object_it_was_drawn_under() {
+        let mut app = app();
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(registry::ActorKind {
+                id: "marker",
+                label: "Marker",
+                params: &[],
+                apply: |_, _| {},
+            });
+
+        let mut first = create(&app, "first");
+        let mut second = create(&app, "second");
+        app.update();
+        let first = first.try_recv().expect("a reply").id;
+        let second = second.try_recv().expect("a reply").id;
+
+        let mut added = send(&app, |reply| SceneCommand::AddActor {
+            parent: first,
+            kind: "marker".into(),
+            params: registry::ParamMap::default(),
+            colour: None,
+            subset: None,
+            reply,
+        });
+        app.update();
+        let actor = added.try_recv().expect("a reply").expect("an actor").id;
+
+        let mut deleted = send(&app, |reply| SceneCommand::DeleteObject {
+            id: first,
+            reply,
+        });
+        app.update();
+        assert_eq!(
+            deleted.try_recv().expect("a reply").objects,
+            vec![first],
+            "a deletion takes the object named and nothing else"
+        );
+
+        let mut listed = send(&app, |reply| SceneCommand::ListActors {
+            parent: None,
+            reply,
+        });
+        app.update();
+        let listing = listed.try_recv().expect("a reply").expect("a listing");
+        assert_eq!(
+            listing.iter().map(|a| (a.id, a.parent)).collect::<Vec<_>>(),
+            vec![(actor, None)],
+            "the actor has to survive its object, detached"
+        );
+
+        // And it goes back into the scene without being rebuilt.
+        let mut moved = send(&app, |reply| SceneCommand::SetActor {
+            id: actor,
+            params: registry::ParamMap::default(),
+            colour: None,
+            visible: None,
+            subset: None,
+            parent: Some(second),
+            reply,
+        });
+        app.update();
+        assert_eq!(
+            moved.try_recv().expect("a reply").expect("an actor").parent,
+            Some(second),
+            "a detached actor has to be attachable to another object"
         );
     }
 }

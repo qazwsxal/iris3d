@@ -199,7 +199,9 @@ class ActorSummary:
     handle: int
     #: Registered kind id, e.g. "points" or "ball-and-stick".
     kind: str
-    #: Handle of the object it is drawn under.
+    #: Handle of the object it is drawn under, or None if it is detached —
+    #: where deleting that object leaves it. It carries on drawing at its own
+    #: transform until ``set_actor(handle, parent=...)`` places it again.
     parent: int | None
     #: Complete and in range, whatever was sent to produce it.
     params: dict[str, float | bool]
@@ -698,9 +700,12 @@ class Client:
     def delete_object(self, handle: int) -> tuple[int, ...]:
         """Removes one object, returning the handles actually removed.
 
-        Deletes exactly what you name. Child objects are detached and become
-        roots; the actors drawn under it go with it. No arrays are freed —
-        :meth:`release_data` is what does that.
+        Deletes exactly what you name, and nothing else. Every child is
+        detached and becomes a root, actors as much as objects — an actor is
+        defined by the arrays it binds, which outlive any node, so give it a
+        new home with ``set_actor(handle, parent=...)``. No arrays are freed
+        either; :meth:`release_data` does that, and :meth:`remove_actor`
+        destroys an actor.
 
         Returns an empty tuple if the handle was already gone.
         """
@@ -776,6 +781,7 @@ class Client:
         subset: np.ndarray | None = None,
         per_cell: bool = False,
         clear_subset: bool = False,
+        parent: int | None = None,
     ) -> ActorSummary:
         """Changes an actor, leaving anything unnamed alone.
 
@@ -790,6 +796,9 @@ class Client:
         Omitting ``subset`` leaves the selection alone; ``clear_subset=True``
         goes back to drawing the whole dataset. The two are separate because
         "unchanged" and "cleared" both have to be expressible.
+
+        ``parent`` moves the actor under another object, and is how a detached
+        one — an actor whose object was deleted — is placed again.
         """
         if subset is not None and clear_subset:
             raise ValueError("pass a subset or clear_subset, not both")
@@ -805,6 +814,8 @@ class Client:
             request.visible = visible
         if subset is not None:
             request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
+        if parent is not None:
+            request.parent.CopyFrom(ObjectHandle(id=parent))
         return _actor(self._scene.SetActor(request).actor)
 
     def remove_actor(self, handle: int) -> bool:

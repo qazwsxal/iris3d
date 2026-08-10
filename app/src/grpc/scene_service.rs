@@ -270,11 +270,6 @@ impl SceneService for SceneBridgeService {
                 .into_iter()
                 .map(|id| ObjectHandle { id })
                 .collect(),
-            removed_actors: removed
-                .actors
-                .into_iter()
-                .map(|id| ActorHandle { id })
-                .collect(),
         }))
     }
 
@@ -341,6 +336,7 @@ impl SceneService for SceneBridgeService {
             (None, true) => Some(None),
             (None, false) => None,
         };
+        let parent = request.parent.map(|handle| handle.id);
 
         let summary = self
             .submit(|reply| SceneCommand::SetActor {
@@ -349,6 +345,7 @@ impl SceneService for SceneBridgeService {
                 colour,
                 visible,
                 subset,
+                parent,
                 reply,
             })
             .await?
