@@ -17,8 +17,53 @@
 // so volumes read too bright rather than too dark, but it is much larger than
 // the reference document's §3.3 suggests when it calls uniform interior
 // absorbance "easier to reconstruct than surfaces". It is easier to
-// *accumulate*; the reconstruction is what suffers, because the bound is exact
-// only for measures living on two points and a slab is the opposite of that.
+// *accumulate*; the reconstruction is what suffers.
+//
+// # Would trigonometric moments do better? No.
+//
+// §1 of the reference document says to prefer the trigonometric basis for
+// volumetric content, so this was measured rather than assumed. For each basis,
+// a linear program over every non-negative measure matching the moments gives
+// the tightest achievable bounds on the absorbed fraction — which is basis- and
+// algorithm-independent, and so settles the question rather than comparing two
+// implementations. At equal cost (a complex moment is two floats, so two
+// trigonometric moments against four power moments), on a uniform slab spanning
+// most of the domain:
+//
+//   4 floats:  power 0.400 mean uncertainty, trigonometric 0.382
+//   6 floats:  power 0.287,                  trigonometric 0.275
+//   8 floats:  power 0.223,                  trigonometric 0.220
+//
+// One to five per cent. Not a fix. The control explains why: for a measure made
+// of two Dirac spikes, *both* bases are exact to floating point. The extremal
+// measures of a truncated moment problem are atomic whatever the basis, so four
+// numbers pin down two surfaces perfectly and a continuous slab hardly at all.
+// The looseness belongs to the number of moments, not to the basis.
+//
+// Trigonometric moments do win on conditioning, which is the defensible reading
+// of §1: at eight floats the power basis went numerically degenerate on a
+// narrow slab where the trigonometric one held up. That matters if the moment
+// count ever grows.
+//
+// # What would actually fix it
+//
+// Capping the density. The reconstruction is free to answer with Dirac spikes,
+// and this content never produces one: absorbance comes in slabs of bounded
+// height, because sigma is finite. Adding that single constraint to the same
+// four moments collapses the worst error from 0.277 to under 0.006 — better
+// than doubling the moment count, by a wide margin, and free in storage. Even a
+// cap that is twice too loose halves the error.
+//
+// The cap is knowable: the density cannot exceed the summed sigma of the
+// volumes on screen, and for a single volume that bound is exact. What is not
+// cheap is the reconstruction. Under an L-infinity constraint the extremal
+// measures stop being atomic and become bang-bang — unions of intervals at
+// either zero or the cap — which is Markov-Krein territory rather than a
+// Cholesky and a quadratic. That is a research task, not a substitution.
+//
+// So: do not switch basis expecting an improvement. If the intermediate-depth
+// consumer needs better than this, the order of promise is the density cap
+// first, more moments second, and the basis a distant third.
 
 #define_import_path iris3d::moment_reconstruct
 
