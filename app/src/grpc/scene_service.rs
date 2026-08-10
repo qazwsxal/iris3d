@@ -19,17 +19,17 @@ use crate::scene::{
 
 use super::SceneSender;
 use super::proto::{
-    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, ArrayParam, BoolParam,
-    BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest, CreateObjectResponse,
-    DataHandle, DataInfo, DeleteObjectRequest, DeleteObjectResponse, Dtype as ProtoDtype,
-    FieldParam, FloatParam, Grid as ProtoGrid, ListActorKindsRequest, ListActorKindsResponse,
-    ListActorsRequest, ListActorsResponse, ListDataRequest, ListDataResponse, ListObjectsRequest,
-    ListObjectsResponse, ObjectHandle, ObjectHeader, ObjectInfo, ParamSpec as ProtoSpec,
-    ParamValue as ProtoParam, Range, ReleaseDataRequest, ReleaseDataResponse, RemoveActorRequest,
-    RemoveActorResponse, SetActorRequest, SetActorResponse, SetParentRequest, SetParentResponse,
-    SetTransformRequest, SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadDataRequest,
-    VectorParam, VectorValue,
-    UploadDataResponse, UploadObjectRequest, UploadObjectResponse, Vector3, param_spec,
+    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, ArrayParam,
+    BoolParam, BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest,
+    CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest, DeleteObjectResponse,
+    Dtype as ProtoDtype, FieldParam, FloatParam, Grid as ProtoGrid, ListActorKindsRequest,
+    ListActorKindsResponse, ListActorsRequest, ListActorsResponse, ListDataRequest,
+    ListDataResponse, ListObjectsRequest, ListObjectsResponse, ObjectHandle, ObjectHeader,
+    ObjectInfo, ParamSpec as ProtoSpec, ParamValue as ProtoParam, Range, ReleaseDataRequest,
+    ReleaseDataResponse, RemoveActorRequest, RemoveActorResponse, SetActorRequest,
+    SetActorResponse, SetParentRequest, SetParentResponse, SetTransformRequest,
+    SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadDataRequest, UploadDataResponse,
+    UploadObjectRequest, UploadObjectResponse, Vector3, VectorParam, VectorValue, param_spec,
     param_value::Value, scene_service_server::SceneService, subset as subset_proto,
     upload_data_request::Payload as DataPayload, upload_object_request::Payload,
 };
@@ -132,7 +132,9 @@ impl SceneService for SceneBridgeService {
         &self,
         _request: Request<ListDataRequest>,
     ) -> Result<Response<ListDataResponse>, Status> {
-        let held = self.submit(|reply| SceneCommand::ListData { reply }).await?;
+        let held = self
+            .submit(|reply| SceneCommand::ListData { reply })
+            .await?;
         Ok(Response::new(ListDataResponse {
             arrays: held.iter().map(data_info).collect(),
         }))
@@ -152,10 +154,7 @@ impl SceneService for SceneBridgeService {
             .submit(|reply| SceneCommand::ReleaseData { ids, reply })
             .await?;
         Ok(Response::new(ReleaseDataResponse {
-            released: released
-                .into_iter()
-                .map(|id| DataHandle { id })
-                .collect(),
+            released: released.into_iter().map(|id| DataHandle { id }).collect(),
         }))
     }
 

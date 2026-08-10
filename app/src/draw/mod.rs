@@ -18,8 +18,8 @@ use crate::scene::actor::ColorMap;
 use crate::scene::data::{Field, Fields};
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{
-    ActorOf, Actors, ColorBy, DataArray, MeshData, MoleculeData, PointCloud, SceneObject,
-    Subset,
+    ActorOf, Actors, ColorBy, DataArray, DataStore, MeshData, MoleculeData, PointCloud,
+    SceneObject, Subset,
 };
 
 mod molecule;
@@ -113,6 +113,21 @@ pub(crate) type Drawable<'a, Style, Material> = (
     Option<&'a Mesh3d>,
     Option<&'a MeshMaterial3d<Material>>,
 );
+
+/// Resolves one of an actor's bound inputs to the array behind it.
+///
+/// Two hops, because a handle is what a client names and an `AssetId` is what
+/// the renderer needs: the store maps the first to the second. `None` covers
+/// both an input nobody bound — normal for an optional one — and a handle whose
+/// array has since been released.
+pub(crate) fn bound<'a>(
+    bindings: &Bindings,
+    input: &str,
+    store: &DataStore,
+    arrays: &'a Assets<DataArray>,
+) -> Option<&'a DataArray> {
+    arrays.get(&store.get(bindings.get(input)?)?.handle)
+}
 
 /// Ordering label for the systems that decide what is out of date, so every one
 /// of them has marked before any backend reads the result.

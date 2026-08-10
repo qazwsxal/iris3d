@@ -1,20 +1,18 @@
 //! Triangle meshes, handed to Bevy's standard PBR pipeline.
 //!
-//! Only `CellKind::Triangles` is drawn. Tetrahedra are skipped deliberately:
-//! drawing a volumetric mesh as a surface means extracting its boundary faces
-//! first (collect every face, drop the ones shared by two cells), which is a
-//! separate piece of work rather than something to bodge in here. Lines are
-//! skipped for the same reason — they want a line actor, not a surface.
+//! Triangles only: the `indices` input declares `[n, 3]`, so a tetrahedral or
+//! line connectivity array cannot be bound to it at all, and the caller is told
+//! why. Drawing a volumetric mesh as a surface means extracting its boundary
+//! faces first, which is a separate piece of work rather than something to bodge
+//! in here; lines want a line actor.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::scene::data::Fields;
-use crate::scene::dataset::CellKind;
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag};
 use crate::scene::subset::Remap;
-use crate::scene::{DataArray, DatasetKind, MeshData};
+use crate::scene::{DataArray, DataStore, DatasetKind, Dtype};
 
 use super::{Dirty, Drawable, mark};
 
@@ -29,11 +27,55 @@ pub struct SurfaceStyle {
     pub double_sided: bool,
 }
 
-const PARAMS: &[ParamSpec] = &[ParamSpec {
-    id: "double_sided",
-    label: "double sided",
-    kind: ParamKind::Bool { default: true },
-}];
+const PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        id: "positions",
+        label: "positions",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
+            required: true,
+        },
+    },
+    // Triangles only, and the shape says so. Tetrahedra used to arrive and be
+    // refused at draw time with a log line nobody reads; an `[n, 4]` array now
+    // simply cannot be bound here, and the reason comes back from the call that
+    // tried.
+    ParamSpec {
+        id: "indices",
+        label: "triangles",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint32],
+            shape: &[0, 3],
+            required: true,
+        },
+    },
+    // Unbound means "work them out from the triangles", which is what happened
+    // when an upload carried none.
+    ParamSpec {
+        id: "normals",
+        label: "normals",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
+            required: false,
+        },
+    },
+    ParamSpec {
+        id: "colour",
+        label: "colour by",
+        kind: ParamKind::Array {
+            dtypes: &[],
+            shape: &[0],
+            required: false,
+        },
+    },
+    ParamSpec {
+        id: "double_sided",
+        label: "double sided",
+        kind: ParamKind::Bool { default: true },
+    },
+];
 
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
@@ -61,29 +103,19 @@ pub fn draw_surfaces(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
+    store: Res<DataStore>,
     dirty: Query<Drawable<SurfaceStyle, StandardMaterial>>,
-    surfaces: Query<(&MeshData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, subset, _bound, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, bound, _source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
-        let Ok((data, fields)) = surfaces.get(source.0) else {
-            continue;
-        };
-        if data.cells.kind != CellKind::Triangles {
-            info!(
-                "draw: nothing drawn for {:?} cells — a surface needs boundary \
-                 extraction first",
-                data.cells.kind
-            );
-            continue;
-        }
-
         let (Some(position_array), Some(index_array)) = (
-            arrays.get(&data.positions),
-            arrays.get(&data.cells.connectivity),
+            super::bound(bound, "positions", &store, &arrays),
+            super::bound(bound, "indices", &store, &arrays),
         ) else {
+            // Both are required, so `check_bindings` refused an actor without
+            // them; reaching here means an array was released underneath one.
             continue;
         };
         let all = position_array.to_vec3();
@@ -124,9 +156,9 @@ pub fn draw_surfaces(
             None => (all, all_indices),
         };
 
-        let tint = super::colour_field(colour, fields)
-            .and_then(|field| {
-                super::vertex_colours(field, colour, &arrays, position_array.count() as usize)
+        let tint = super::bound(bound, "colour", &store, &arrays)
+            .and_then(|values| {
+                super::bound_colours(values, colour, position_array.count() as usize)
             })
             .map(|colours| match &kept {
                 Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
@@ -147,12 +179,9 @@ pub fn draw_surfaces(
             );
             mesh.insert_indices(Indices::U32(indices));
 
-            // "normals" has no structural role in ingest, so it arrives as an
-            // ordinary three-component field. Use it when it is there, otherwise
-            // derive flat normals so the surface is at least shaded.
-            let supplied = fields
-                .and_then(|fields| fields.0.get("normals"))
-                .and_then(|field| arrays.get(&field.array))
+            // Use the bound normals when there are some, otherwise derive flat
+            // ones so the surface is at least shaded.
+            let supplied = super::bound(bound, "normals", &store, &arrays)
                 .map(|array| array.to_vec3())
                 .filter(|normals| normals.len() == position_array.count() as usize)
                 .map(|normals| match &kept {

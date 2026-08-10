@@ -102,6 +102,40 @@ def hydrogen(client, root, cursor, gap=3.0):
     return handle
 
 
+def bind(client, kind, arrays):
+    """Uploads what a kind needs and returns the bindings for it.
+
+    The mapping from an array's name to the input it feeds is *this script's*,
+    not the server's. Nothing infers a role from a name any more: these samples
+    happen to call their coordinates "positions", and a sample that called them
+    "xyz" would bind exactly the same way with one line changed here.
+    """
+    # Input id -> the name this script's data happens to use for it.
+    roles = {
+        "points": {"positions": "positions"},
+        "surface": {"positions": "positions", "indices": "indices", "normals": "normals"},
+    }[kind]
+    wanted = {name: arrays[name] for name in roles.values() if name in arrays}
+
+    # Whichever scalar the sample carries, if any, to colour by.
+    scalar = next(
+        (name for name in ("von_mises", "height") if name in arrays),
+        None,
+    )
+    if scalar is not None:
+        wanted[scalar] = arrays[scalar]
+
+    held = client.upload_data(wanted)
+    params = {
+        input_id: iris3d.Bind(held[name])
+        for input_id, name in roles.items()
+        if name in held
+    }
+    if scalar is not None:
+        params["colour"] = iris3d.Bind(held[scalar])
+    return params
+
+
 def main():
     # Waits for the app to come up, so this can be launched alongside it.
     with iris3d.Client(wait_timeout=iris3d.DEFAULT_CONNECT_TIMEOUT) as client:
@@ -135,28 +169,14 @@ def main():
             # is an empty grouping node that nothing can draw.
             if wanted is None or summary.actors:
                 continue
-            # `points` reads bound arrays rather than the object's dataset, so its
-            # data goes in through `upload_data` and is named at the actor. The
-            # other kinds still take theirs from the object they draw.
-            if wanted == "points":
-                original = everything[summary.name]
-                held = client.upload_data(
-                    {
-                        name: values
-                        for name, values in original.items()
-                        if name in ("positions", "von_mises", "height")
-                    }
+            # `points` and `surface` read bound arrays rather than the object's
+            # dataset, so their data goes in through `upload_data` and is named
+            # at the actor. `ball-and-stick` and `volume` still take theirs from
+            # the object they draw.
+            if wanted in ("points", "surface"):
+                client.add_actor(
+                    summary.handle, wanted, params=bind(client, wanted, everything[summary.name])
                 )
-                params: dict[str, object] = {
-                    "positions": iris3d.Bind(held["positions"])
-                }
-                # Whichever scalar the sample happens to carry. Nothing infers
-                # this from the name any more — the script picks.
-                for scalar in ("von_mises", "height"):
-                    if scalar in held:
-                        params["colour"] = iris3d.Bind(held[scalar])
-                        break
-                client.add_actor(summary.handle, wanted, params=params)
             else:
                 client.add_actor(summary.handle, wanted)
 

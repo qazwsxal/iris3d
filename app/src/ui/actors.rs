@@ -219,7 +219,11 @@ fn controls(
                     .and_then(|id| scene.bindable.iter().find(|(held, _)| *held == id))
                     .map(|(id, meta)| format!("d{id} {}", meta.name))
                     .unwrap_or_else(|| {
-                        if required { "REQUIRED".into() } else { "none".into() }
+                        if required {
+                            "REQUIRED".into()
+                        } else {
+                            "none".into()
+                        }
                     });
                 ui.horizontal(|ui| {
                     ui.label(spec.label);
@@ -233,10 +237,8 @@ fn controls(
                                 }
                                 any = true;
                                 let picked = bound == Some(*id);
-                                let text = format!(
-                                    "d{id} {} · {}{:?}",
-                                    meta.name, meta.dtype, meta.shape
-                                );
+                                let text =
+                                    format!("d{id} {} · {}{:?}", meta.name, meta.dtype, meta.shape);
                                 if ui.selectable_label(picked, text).clicked() && !picked {
                                     actions.0.push(UiAction::SetParam(
                                         current.entity,

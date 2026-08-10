@@ -409,9 +409,7 @@ impl ActorKind {
     pub fn defaults(&self) -> ParamMap {
         self.params
             .iter()
-            .filter_map(|spec| {
-                Some((spec.id.to_string(), spec.kind.default_value()?))
-            })
+            .filter_map(|spec| Some((spec.id.to_string(), spec.kind.default_value()?)))
             .collect()
     }
 

@@ -56,17 +56,17 @@ impl Plugin for ScenePlugin {
         app.init_asset::<DataArray>()
             .init_resource::<DataStore>()
             .add_systems(
-            Update,
-            // Order matters throughout: the drain creates actors, the reaper
-            // removes any a deletion orphaned before a backend can look at
-            // them, and only then are style components derived from the
-            // parameters the drain wrote.
-            (
-                apply_scene_commands,
-                link::reap_orphaned_actors,
-                registry::apply_actor_params,
-            )
-                .chain(),
+                Update,
+                // Order matters throughout: the drain creates actors, the reaper
+                // removes any a deletion orphaned before a backend can look at
+                // them, and only then are style components derived from the
+                // parameters the drain wrote.
+                (
+                    apply_scene_commands,
+                    link::reap_orphaned_actors,
+                    registry::apply_actor_params,
+                )
+                    .chain(),
             );
     }
 }
@@ -533,10 +533,7 @@ pub fn apply_scene_commands(
             }
 
             SceneCommand::ReleaseData { ids, reply } => {
-                let released: Vec<u64> = ids
-                    .into_iter()
-                    .filter(|id| store.remove(*id))
-                    .collect();
+                let released: Vec<u64> = ids.into_iter().filter(|id| store.remove(*id)).collect();
                 let _ = reply.send(released);
             }
 
@@ -1395,7 +1392,10 @@ mod tests {
         let handles: Vec<u64> = summaries.iter().map(|array| array.id).collect();
         assert_eq!(summaries.len(), 2);
         assert_eq!(
-            summaries.iter().map(|a| a.meta.name.as_str()).collect::<Vec<_>>(),
+            summaries
+                .iter()
+                .map(|a| a.meta.name.as_str())
+                .collect::<Vec<_>>(),
             ["xyz", "t"],
             "handles come back in declaration order"
         );

@@ -176,9 +176,7 @@ pub fn draw_points(
                 .get("colour")
                 .and_then(|id| store.get(id))
                 .and_then(|held| arrays.get(&held.handle))
-                .and_then(|values| {
-                    super::bound_colours(values, colour, array.count() as usize)
-                })
+                .and_then(|values| super::bound_colours(values, colour, array.count() as usize))
                 // Colours are computed over the whole field, then narrowed to
                 // the drawn points, so a subset does not shift the mapping.
                 .map(|colours| match &kept {

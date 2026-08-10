@@ -11,8 +11,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // compiles it into the app automatically. `buf` already discovers the whole
     // tree; a hand-maintained list here would silently drift out of step with
     // the generated client libraries.
-    let protos: Vec<PathBuf> = glob::glob(&format!("{PROTO_ROOT}/**/*.proto"))?
-        .collect::<Result<_, _>>()?;
+    let protos: Vec<PathBuf> =
+        glob::glob(&format!("{PROTO_ROOT}/**/*.proto"))?.collect::<Result<_, _>>()?;
 
     if protos.is_empty() {
         return Err(format!("no .proto files found under {PROTO_ROOT}").into());

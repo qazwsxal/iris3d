@@ -16,9 +16,9 @@ use bevy::prelude::*;
 
 use crate::counter::UniqueID;
 use crate::scene::data::{FieldKind, Fields};
-use crate::scene::{BufferMeta, DataStore};
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
 use crate::scene::{Actors, ColorBy, DataArray, DatasetKind, SceneObject, Subset};
+use crate::scene::{BufferMeta, DataStore};
 
 /// A flattened view of one object.
 pub struct Row {
