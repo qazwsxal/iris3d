@@ -114,12 +114,18 @@ def bind(client, kind, arrays):
     roles = {
         "points": {"positions": "positions"},
         "surface": {"positions": "positions", "indices": "indices", "normals": "normals"},
+        "ball-and-stick": {
+            "positions": "positions",
+            "elements": "elements",
+            "bonds": "bonds",
+        },
     }[kind]
     wanted = {name: arrays[name] for name in roles.values() if name in arrays}
 
-    # Whichever scalar the sample carries, if any, to colour by.
+    # Whichever scalar the sample carries, if any, to colour by. B-factors for a
+    # fetched structure; the analytic samples carry their own.
     scalar = next(
-        (name for name in ("von_mises", "height") if name in arrays),
+        (name for name in ("b_factor", "von_mises", "height") if name in arrays),
         None,
     )
     if scalar is not None:
@@ -169,11 +175,10 @@ def main():
             # is an empty grouping node that nothing can draw.
             if wanted is None or summary.actors:
                 continue
-            # `points` and `surface` read bound arrays rather than the object's
-            # dataset, so their data goes in through `upload_data` and is named
-            # at the actor. `ball-and-stick` and `volume` still take theirs from
-            # the object they draw.
-            if wanted in ("points", "surface"):
+            # These read bound arrays rather than the object's dataset, so their
+            # data goes in through `upload_data` and is named at the actor. Only
+            # `volume` still takes its own from the object it draws.
+            if wanted in ("points", "surface", "ball-and-stick"):
                 client.add_actor(
                     summary.handle, wanted, params=bind(client, wanted, everything[summary.name])
                 )

@@ -14,10 +14,9 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 
-use crate::scene::data::Fields;
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float};
 use crate::scene::subset::Remap;
-use crate::scene::{DataArray, DatasetKind, MoleculeData};
+use crate::scene::{DataArray, DataStore, DatasetKind, Dtype};
 
 use super::{Dirty, Drawable, mark};
 
@@ -93,6 +92,47 @@ pub struct BallAndStickStyle {
 }
 
 const PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        id: "positions",
+        label: "atom centres",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
+            required: true,
+        },
+    },
+    // Atomic numbers, which drive radii and CPK colouring. An "elements" buffer
+    // is what made an upload a molecule under inference; here it is simply what
+    // this kind needs in order to know an atom from another.
+    ParamSpec {
+        id: "elements",
+        label: "elements",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint8],
+            shape: &[0],
+            required: false,
+        },
+    },
+    // No bonds means balls and no sticks, which is the honest way to draw a
+    // structure whose connectivity nobody computed.
+    ParamSpec {
+        id: "bonds",
+        label: "bonds",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint32],
+            shape: &[0, 2],
+            required: false,
+        },
+    },
+    ParamSpec {
+        id: "colour",
+        label: "colour by",
+        kind: ParamKind::Array {
+            dtypes: &[],
+            shape: &[0],
+            required: false,
+        },
+    },
     ParamSpec {
         id: "atom_scale",
         label: "atom scale",
@@ -246,11 +286,11 @@ pub fn draw_molecules(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     arrays: Res<Assets<DataArray>>,
+    store: Res<DataStore>,
     dirty: Query<Drawable<BallAndStickStyle, StandardMaterial>>,
     layouts: Query<&MoleculeLayout>,
-    molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, subset, _bound, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, bound, _source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -259,10 +299,7 @@ pub fn draw_molecules(
             atom_scale,
             bond_radius,
         } = style;
-        let Ok((molecule, fields)) = molecules.get(source.0) else {
-            continue;
-        };
-        let Some(position_array) = arrays.get(&molecule.positions) else {
+        let Some(position_array) = super::bound(bound, "positions", &store, &arrays) else {
             continue;
         };
 
@@ -271,10 +308,10 @@ pub fn draw_molecules(
             continue;
         }
 
-        let all_elements: Vec<u32> = molecule
-            .elements
-            .as_ref()
-            .and_then(|handle| arrays.get(handle))
+        // Carbon for everything when no elements are bound: radii and colours
+        // still need a number each, and a structure with no element data is
+        // better drawn uniformly than not drawn.
+        let all_elements: Vec<u32> = super::bound(bound, "elements", &store, &arrays)
             .and_then(|array| array.to_u32())
             .unwrap_or_else(|| vec![6; all.len()]);
 
@@ -297,9 +334,12 @@ pub fn draw_molecules(
         // A selected field wins over CPK. Without this the tree can claim an
         // object is coloured by b_factor while the render shows element
         // colours — the field is listed, so it has to actually apply.
-        let tint = super::colour_field(colour, fields)
-            .and_then(|field| {
-                super::vertex_colours(field, colour, &arrays, position_array.count() as usize)
+        // A bound colour array wins over CPK. Without this the tree could claim
+        // an object is coloured by b_factor while the render showed element
+        // colours — an input that is bound has to actually apply.
+        let tint = super::bound(bound, "colour", &store, &arrays)
+            .and_then(|values| {
+                super::bound_colours(values, colour, position_array.count() as usize)
             })
             .map(|colours| match &kept {
                 Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
@@ -351,11 +391,8 @@ pub fn draw_molecules(
         }
 
         let mut drawn_bonds: Vec<[u32; 2]> = Vec::new();
-        if let Some(bonds) = &molecule.bonds {
-            let pairs = arrays
-                .get(&bonds.pairs)
-                .and_then(|array| array.to_u32())
-                .unwrap_or_default();
+        if let Some(bond_array) = super::bound(bound, "bonds", &store, &arrays) {
+            let pairs = bond_array.to_u32().unwrap_or_default();
             for original in pairs.chunks_exact(2) {
                 // A bond is drawn only when both its atoms are: half a bond
                 // sticking out into space reads as broken geometry, not as a
