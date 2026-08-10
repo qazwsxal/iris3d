@@ -95,9 +95,9 @@ pub struct Gathered {
     /// Actors under no object, in handle order.
     ///
     /// Deleting an object detaches its actors rather than destroying them, and
-    /// they carry on drawing. Without a list of their own they would appear in
-    /// no panel at all — visible on screen and impossible to select, re-home or
-    /// remove.
+    /// they stop drawing until something adopts them. Without a list of their
+    /// own they would appear in no panel at all — no way to re-home one, and no
+    /// way to tell it still exists.
     pub detached: Vec<ActorRow>,
     pub owners: HashMap<AssetId<DataArray>, Owner>,
     /// Arrays uploaded on their own, as the handle a client knows them by and
@@ -228,9 +228,9 @@ pub fn gather(
         );
     }
 
-    // Actors under no object. Same test the object rows use, so an actor under
-    // something that is not an object counts as detached rather than vanishing
-    // from both lists.
+    // Actors under no object. Same test the object rows use — a detached actor
+    // is parented to the `Unplaced` node rather than left a root, so "has a
+    // parent" is not the question; "is that parent an object" is.
     let mut detached: Vec<ActorRow> = actors
         .iter()
         .filter(|(.., parent)| !parent.is_some_and(|link| objects.contains(link.parent())))

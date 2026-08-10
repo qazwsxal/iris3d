@@ -52,12 +52,12 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
     }
 
     // Actors whose object was deleted. Grouped on their own because they belong
-    // to nothing — they keep drawing, so leaving them out of the list would
-    // make them unselectable and unremovable while still on screen.
+    // to nothing and are not drawn — leaving them out would make them
+    // unreachable, with nothing on screen to say they still exist.
     if !scene.detached.is_empty() {
         drew_anything = true;
         egui::Frame::new().inner_margin(4.0).show(ui, |ui| {
-            ui.label(egui::RichText::new("Detached").weak().italics());
+            ui.label(egui::RichText::new("Detached — not drawn").weak().italics());
             for actor in &scene.detached {
                 entry(ui, actor, state, actions);
             }
@@ -147,9 +147,9 @@ fn controls(
         ui.heading(current.label);
         match row {
             Some(row) => ui.weak(format!("of [{}] {}", row.id, row.name)),
-            // It draws at its own transform until something adopts it, which
-            // is worth saying rather than leaving the heading bare.
-            None => ui.weak("detached — under no object"),
+            // It has nowhere to be, so it is not drawn until something adopts
+            // it. Worth saying outright — otherwise its controls look broken.
+            None => ui.weak("detached — under no object, not drawn"),
         };
     });
     ui.horizontal(|ui| {

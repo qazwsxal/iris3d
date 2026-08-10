@@ -210,10 +210,15 @@ pub enum FrameTarget {
 ///
 /// Driven off `Aabb`, which Bevy computes for any mesh, so this works for any
 /// rendering backend that produces meshes without knowing anything about it.
+///
+/// Only what is actually drawn counts. A mesh that exists but is not on screen
+/// would otherwise pull the camera towards nothing the user can see — most
+/// obviously with a detached actor, which keeps its mesh and is deliberately
+/// hidden, but the same is true of anything hidden by hand.
 fn frame_content(
     time: Res<Time>,
     changed: Query<(), (With<Aabb>, Or<(Added<Aabb>, Changed<GlobalTransform>)>)>,
-    bounds: Query<(&Aabb, &GlobalTransform)>,
+    bounds: Query<(&Aabb, &GlobalTransform, &InheritedVisibility)>,
     children: Query<&Children>,
     mut request: ResMut<FrameRequest>,
     mut camera: Query<(&mut OrbitCamera, &mut Transform, &Projection, &Camera)>,
@@ -250,7 +255,9 @@ fn frame_content(
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
     let include = |entity: Entity, min: &mut Vec3, max: &mut Vec3| {
-        if let Ok((aabb, global)) = bounds.get(entity) {
+        if let Ok((aabb, global, visible)) = bounds.get(entity)
+            && visible.get()
+        {
             let centre = global.transform_point(Vec3::from(aabb.center));
             let extent = (global.affine().matrix3 * Vec3::from(aabb.half_extents)).abs();
             *min = min.min(centre - extent);
@@ -274,7 +281,7 @@ fn frame_content(
             }
         }
         _ => {
-            for (aabb, global) in &bounds {
+            for (aabb, global, _) in bounds.iter().filter(|(.., visible)| visible.get()) {
                 let centre = global.transform_point(Vec3::from(aabb.center));
                 let extent = (global.affine().matrix3 * Vec3::from(aabb.half_extents)).abs();
                 min = min.min(centre - extent);

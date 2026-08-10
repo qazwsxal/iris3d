@@ -200,12 +200,17 @@ class ActorSummary:
     #: Registered kind id, e.g. "points" or "ball-and-stick".
     kind: str
     #: Handle of the object it is drawn under, or None if it is detached —
-    #: where deleting that object leaves it. It carries on drawing at its own
-    #: transform until ``set_actor(handle, parent=...)`` places it again.
+    #: where deleting that object leaves it. An actor's transform is an offset
+    #: from whatever it is drawn under, so with no object there is nowhere for
+    #: it to be and it is not drawn at all. It keeps its arrays and settings
+    #: until ``set_actor(handle, parent=...)`` places it again.
     parent: int | None
     #: Complete and in range, whatever was sent to produce it.
     params: dict[str, float | bool]
     coloring: Coloring
+    #: The setting, not whether anything reaches the screen. A hidden object
+    #: above it does not show here, and neither does being detached — a
+    #: detached actor is not drawn whatever this says.
     visible: bool
     #: How much of the bound data is drawn, or None for all of it.
     subset: SubsetSummary | None = None
@@ -700,12 +705,15 @@ class Client:
     def delete_object(self, handle: int) -> tuple[int, ...]:
         """Removes one object, returning the handles actually removed.
 
-        Deletes exactly what you name, and nothing else. Every child is
-        detached and becomes a root, actors as much as objects — an actor is
-        defined by the arrays it binds, which outlive any node, so give it a
-        new home with ``set_actor(handle, parent=...)``. No arrays are freed
-        either; :meth:`release_data` does that, and :meth:`remove_actor`
-        destroys an actor.
+        Deletes exactly what you name, and nothing else. Every child survives
+        it, in the way that suits what it is: a child object becomes a root,
+        since its transform is a place it still occupies; a child actor is
+        detached and stops being drawn, since its transform is only an offset
+        from the object it was under. Give a detached actor a new home with
+        ``set_actor(handle, parent=...)``.
+
+        No arrays are freed either; :meth:`release_data` does that, and
+        :meth:`remove_actor` destroys an actor.
 
         Returns an empty tuple if the handle was already gone.
         """
@@ -798,7 +806,9 @@ class Client:
         "unchanged" and "cleared" both have to be expressible.
 
         ``parent`` moves the actor under another object, and is how a detached
-        one — an actor whose object was deleted — is placed again.
+        one — an actor whose object was deleted — starts being drawn again. The
+        actor's transform is left alone, so it appears wherever that offset
+        puts it under its new object.
         """
         if subset is not None and clear_subset:
             raise ValueError("pass a subset or clear_subset, not both")

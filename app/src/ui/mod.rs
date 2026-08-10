@@ -317,6 +317,7 @@ fn apply_actions(
     // filtered, so a match still means "this entity is an actor" — and a
     // detached actor is precisely the one that still needs removing.
     placements: Query<Option<&ChildOf>, With<ActorKindId>>,
+    scene_objects: Query<(), With<crate::scene::SceneObject>>,
     bridge: Res<crate::grpc::GrpcBridge>,
 ) {
     for action in actions.0.drain(..) {
@@ -339,12 +340,15 @@ fn apply_actions(
                 // object selection, and three of them disagreeing is worse than
                 // the outline moving. A detached actor is under nothing, so the
                 // object selection has to clear rather than stay behind on
-                // whatever was picked before.
+                // whatever was picked before — and it is parented to the
+                // `Unplaced` node, which is not an object, so the parent has to
+                // be checked rather than taken.
                 state.selected = placements
                     .get(entity)
                     .ok()
                     .flatten()
-                    .map(|link| link.parent());
+                    .map(|link| link.parent())
+                    .filter(|parent| scene_objects.contains(*parent));
             }
             UiAction::SelectArray(id) => state.selected_array = Some(id),
             UiAction::ToggleVisibility(entity) => {

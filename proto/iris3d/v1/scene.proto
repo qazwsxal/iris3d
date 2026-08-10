@@ -88,11 +88,15 @@ service SceneService {
 
   // Removes one object from the scene.
   //
-  // Deletes exactly what is named, and nothing else. Every child is detached
-  // and becomes a root, actors as much as objects — an actor is defined by the
-  // arrays it binds, which outlive any node, so it can be attached elsewhere
-  // with SetActor. No arrays are freed either; ReleaseData is what does that,
-  // and RemoveActor is what destroys an actor.
+  // Deletes exactly what is named, and nothing else. Every child survives it,
+  // in the way that suits what it is: a child object becomes a root, since its
+  // transform is a place it still occupies; a child actor is detached and
+  // stops being drawn, since its transform is only an offset from the object
+  // it was under. A detached actor keeps its arrays and settings and can be
+  // placed again with SetActor.
+  //
+  // No arrays are freed either; ReleaseData is what does that, and RemoveActor
+  // is what destroys an actor.
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
 
   // Draws something under an object.
@@ -501,9 +505,12 @@ message ActorInfo {
   // Field 3 was `source`, the object whose data was drawn.
   reserved 3;
 
-  // The object it is drawn under. Absent if it is detached — an actor whose
-  // object was deleted, drawing at its own transform until SetActor gives it
-  // somewhere to be.
+  // The object it is drawn under.
+  //
+  // Absent if it is detached — an actor whose object was deleted. An actor's
+  // transform is an offset from whatever it is drawn under, so with no object
+  // there is nowhere for it to be and it is not drawn at all. It keeps its
+  // arrays and settings until SetActor's `parent` places it.
   ObjectHandle parent = 4;
 
   // Complete and in range, whatever was sent to produce it.
@@ -511,8 +518,12 @@ message ActorInfo {
 
   ColorSpec color = 6;
 
-  // False if this actor has been hidden individually. An object being hidden
-  // does not show up here.
+  // False if this actor has been hidden individually.
+  //
+  // This is the setting, not whether anything reaches the screen. An object
+  // hidden above it does not show up here, and neither does being detached —
+  // a detached actor is not drawn whatever this says, and this is what it
+  // goes back to once it has an object again.
   bool visible = 7;
 
   // How much of the bound data is drawn. Absent means all of it.
@@ -603,8 +614,11 @@ message SetActorRequest {
   //
   // Here rather than on SetParent, which moves objects and takes an
   // ObjectHandle. An actor outlives the object it was drawn under, so this is
-  // how a detached one is placed again — and how one is moved between objects
-  // without rebuilding it.
+  // how a detached one starts being drawn again — and how one is moved between
+  // objects without rebuilding it.
+  //
+  // The actor's transform is left alone, so it appears wherever that offset
+  // puts it under its new object.
   optional ObjectHandle parent = 7;
 }
 
@@ -722,4 +736,5 @@ message DeleteObjectResponse {
   // instead. Nothing is removed but the object named, so the list was always
   // empty. RemoveActor is what destroys an actor.
   reserved 3;
+  reserved "removed_actors";
 }

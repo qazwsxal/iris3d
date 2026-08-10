@@ -236,11 +236,15 @@ class SceneServiceServicer(object):
     def DeleteObject(self, request, context):
         """Removes one object from the scene.
 
-        Deletes exactly what is named, and nothing else. Every child is detached
-        and becomes a root, actors as much as objects — an actor is defined by the
-        arrays it binds, which outlive any node, so it can be attached elsewhere
-        with SetActor. No arrays are freed either; ReleaseData is what does that,
-        and RemoveActor is what destroys an actor.
+        Deletes exactly what is named, and nothing else. Every child survives it,
+        in the way that suits what it is: a child object becomes a root, since its
+        transform is a place it still occupies; a child actor is detached and
+        stops being drawn, since its transform is only an offset from the object
+        it was under. A detached actor keeps its arrays and settings and can be
+        placed again with SetActor.
+
+        No arrays are freed either; ReleaseData is what does that, and RemoveActor
+        is what destroys an actor.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

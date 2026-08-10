@@ -52,6 +52,7 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DataArray>()
             .init_resource::<DataStore>()
+            .add_systems(Startup, spawn_unplaced)
             .add_systems(
                 Update,
                 // Order matters: the drain creates actors, and only then are
@@ -60,6 +61,35 @@ impl Plugin for ScenePlugin {
                 (apply_scene_commands, registry::apply_actor_params).chain(),
             );
     }
+}
+
+/// Where actors go when they have no object.
+///
+/// A hidden node, and the parent of every detached actor. Deleting an object
+/// leaves its actors alive, and an actor with no object has nowhere to *be* —
+/// its transform is an offset from whatever it is drawn under, not a place of
+/// its own, so drawing one at that offset from the origin would put it
+/// somewhere arbitrary. It must not draw at all until something adopts it.
+///
+/// A parent rather than writing `Visibility::Hidden` onto the actor itself.
+/// That component is the client's own setting, reported back as
+/// `ActorSummary::visible` and written by `SetActor`; overwriting it would both
+/// destroy what the client asked for and let the next `SetActor { visible:
+/// true }` put an unplaced actor back on screen. Inherited from here, the rule
+/// cannot be broken by any command, and re-attaching restores exactly the
+/// visibility the client last chose.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct Unplaced(pub Entity);
+
+fn spawn_unplaced(mut commands: Commands) {
+    let entity = commands
+        .spawn((
+            Name::new("unplaced actors"),
+            Transform::default(),
+            Visibility::Hidden,
+        ))
+        .id();
+    commands.insert_resource(Unplaced(entity));
 }
 
 /// A place in the scene tree, and a name for it.
@@ -379,6 +409,7 @@ pub fn apply_scene_commands(
     globals: Query<&GlobalTransform>,
     mut actors: ActorQuery,
     mut awake: ResMut<KeepAwake>,
+    unplaced: Res<Unplaced>,
 ) {
     let batch: Vec<SceneCommand> = std::iter::from_fn(|| bridge.try_recv().ok()).collect();
     if batch.is_empty() {
@@ -540,8 +571,9 @@ pub fn apply_scene_commands(
                     &mut commands,
                     &mut index,
                     &mut pending_parent,
+                    unplaced.0,
+                    &objects,
                     &children,
-                    &ids,
                     id,
                 );
                 let _ = reply.send(removed);
@@ -845,10 +877,13 @@ fn set_actor(
         // ever parented under one — so no placement of it can close a loop.
         //
         // Its local transform is kept as it stands, which means it moves on
-        // screen if the new parent sits somewhere else. Following the actor
-        // instead would need the world-transform arithmetic `set_parent` does,
-        // and an actor's transform is an offset from whatever it is drawn
-        // under rather than a place of its own.
+        // screen if the new parent sits somewhere else. That is what an
+        // actor's transform *is* — an offset from whatever it is drawn under,
+        // not a place of its own — so there is nothing to preserve here, and
+        // no equivalent of `set_parent`'s world-transform arithmetic.
+        //
+        // Adopting one out of `Unplaced` is the same write, and is how a
+        // detached actor starts drawing again.
         commands.entity(entity).insert(ChildOf(parent));
         pending_parent.insert(entity, Some(parent));
     }
@@ -1015,29 +1050,31 @@ fn effective_parent(
 
 /// Removes one object, returning the handles actually removed.
 ///
-/// Deletes exactly what was named, and nothing else. Every child is detached
-/// and becomes a root — objects *and* actors alike, with no attempt to tell one
-/// from the other.
+/// Deletes exactly what was named, and nothing else. Every child survives it —
+/// but they do not all survive it the same way, because an object and an actor
+/// are not the same kind of thing.
 ///
-/// Actors used to die here. That made sense while an actor drew a source
-/// object's data, because losing the object left it drawing nothing; the
-/// `reap_orphaned_actors` sweep existed for exactly that. An actor binds arrays
-/// that outlive every node now, so one whose parent is deleted is still
-/// perfectly well-defined — it has its arrays, its settings and its own
-/// transform, and only wants somewhere to be. Which is precisely the state a
-/// detached object is in, so treating the two differently was a trap: deleting
-/// a grouping node kept some children and silently destroyed the rest.
+/// A child *object* becomes a root. Its transform is a place, so it still has
+/// one with nothing above it.
 ///
-/// The cost is that a detached actor draws at its own transform, which is now
-/// a world transform — the same jump a detached object makes, for the same
-/// reason. `SetActor`'s `parent` puts it somewhere again, and `RemoveActor` is
-/// what destroys one.
+/// A child *actor* moves to [`Unplaced`] and stops drawing. Its transform is an
+/// offset from whatever it is drawn under, so with nothing above it there is no
+/// answer to where it belongs, and drawing it at that offset from the origin
+/// would put it somewhere no one chose. It keeps its arrays, its parameters and
+/// its own visibility setting, and waits for `SetActor`'s `parent`.
+///
+/// Actors used to die here instead. That made sense while an actor drew a
+/// source object's data, because losing the object left it drawing nothing;
+/// the `reap_orphaned_actors` sweep existed for exactly that. An actor binds
+/// arrays that outlive every node now, so one whose parent is deleted is still
+/// completely defined and worth keeping. `RemoveActor` is what destroys one.
 fn delete_object(
     commands: &mut Commands,
     index: &mut HashMap<u64, Entity>,
     pending_parent: &mut HashMap<Entity, Option<Entity>>,
+    unplaced: Entity,
+    objects: &Objects,
     children: &Query<&Children>,
-    ids: &Query<&UniqueID>,
     id: u64,
 ) -> Deleted {
     let Some(entity) = index.get(&id).copied() else {
@@ -1046,26 +1083,27 @@ fn delete_object(
 
     if let Ok(list) = children.get(entity) {
         for child in list.iter() {
-            commands.entity(child).remove::<ChildOf>();
-            // The removal is queued, so anything listing the scene later in
-            // this same drain would otherwise report a parent that is about to
-            // be despawned.
-            pending_parent.insert(child, None);
+            // Anything here that is not an object is an actor drawn under it.
+            let moved_to = if objects.contains(child) {
+                commands.entity(child).remove::<ChildOf>();
+                None
+            } else {
+                commands.entity(child).insert(ChildOf(unplaced));
+                Some(unplaced)
+            };
+            // Both are queued, so anything listing the scene later in this same
+            // drain would otherwise report a parent about to be despawned.
+            pending_parent.insert(child, moved_to);
         }
     }
 
-    let deleted = Deleted {
-        objects: ids
-            .get(entity)
-            .map(|unique| vec![unique.0])
-            .unwrap_or_default(),
-    };
-    for handle in &deleted.objects {
-        index.remove(handle);
-    }
+    // The handle is what the lookup above matched on, so there is nothing to
+    // read back off the entity.
+    index.remove(&id);
     commands.entity(entity).despawn();
+    let deleted = Deleted { objects: vec![id] };
 
-    info!("scene: deleted object {id}; its children are roots now");
+    info!("scene: deleted object {id}; its children outlived it");
 
     deleted
 }
@@ -1148,7 +1186,11 @@ mod tests {
         app.init_resource::<ActorRegistry>();
         app.init_resource::<KeepAwake>();
         app.init_resource::<GrpcBridge>();
+        // The parent detached actors are parked under. A Startup system in the
+        // real plugin; run here directly, since these tests never run Startup.
+        app.add_systems(Startup, spawn_unplaced);
         app.add_systems(Update, apply_scene_commands);
+        app.update();
         app
     }
 
@@ -1319,14 +1361,15 @@ mod tests {
         );
     }
 
-    /// Deleting an object detaches the actors drawn under it, and one of them
-    /// can then be drawn under some other object.
+    /// Deleting an object detaches the actors drawn under it, parks them where
+    /// they cannot draw, and lets one be drawn under some other object.
     ///
     /// They used to be destroyed, which made deletion inconsistent with itself:
     /// a child object survived and a child actor did not, so deleting a
     /// grouping node quietly took work with it. An actor binds arrays that
     /// outlive every node, so one whose parent is gone still knows everything
-    /// it needs to draw and is only missing somewhere to be.
+    /// it needs to draw and is only missing somewhere to be — and until it has
+    /// somewhere, it must not be drawn anywhere.
     #[test]
     fn an_actor_outlives_the_object_it_was_drawn_under() {
         let mut app = app();
@@ -1377,6 +1420,29 @@ mod tests {
             listing.iter().map(|a| (a.id, a.parent)).collect::<Vec<_>>(),
             vec![(actor, None)],
             "the actor has to survive its object, detached"
+        );
+        assert!(
+            listing[0].visible,
+            "detaching must not touch the client's own visibility setting"
+        );
+
+        // But parked where nothing draws it. It has no object, so its transform
+        // is an offset from nothing and there is no honest place to put it.
+        let entity = *app.world().resource::<Unplaced>();
+        let parked = app
+            .world()
+            .iter_entities()
+            .find(|e| e.get::<UniqueID>().is_some_and(|id| id.0 == actor))
+            .expect("the actor entity");
+        assert_eq!(
+            parked.get::<ChildOf>().map(|link| link.parent()),
+            Some(entity.0),
+            "a detached actor belongs to the unplaced node"
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(entity.0),
+            Some(&Visibility::Hidden),
+            "which is hidden, so nothing under it is drawn"
         );
 
         // And it goes back into the scene without being rebuilt.
