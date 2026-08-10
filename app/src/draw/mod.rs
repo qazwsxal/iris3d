@@ -16,9 +16,10 @@ use bevy::prelude::*;
 
 use crate::scene::actor::ColorMap;
 use crate::scene::data::{Field, Fields};
-use crate::scene::registry::{ActorKindId, ActorRegistry};
+use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{
-    ActorOf, Actors, ColorBy, DataArray, MeshData, MoleculeData, PointCloud, SceneObject, Subset,
+    ActorOf, Actors, ColorBy, DataArray, MeshData, MoleculeData, PointCloud, SceneObject,
+    Subset,
 };
 
 mod molecule;
@@ -106,6 +107,7 @@ pub(crate) type Drawable<'a, Style, Material> = (
     &'a Style,
     &'a ColorBy,
     &'a Subset,
+    &'a Bindings,
     &'a ActorOf,
     &'a Dirty,
     Option<&'a Mesh3d>,
@@ -255,11 +257,13 @@ impl Plugin for DrawPlugin {
 /// Style parameters are not among them — what a parameter affects is the
 /// backend's business, so each classifies its own. See the `invalidate` system
 /// in each of them.
+#[allow(clippy::too_many_arguments)]
 fn mark_dirty(
     mut commands: Commands,
     new_actors: Query<Entity, Added<ActorKindId>>,
     recoloured: Query<Entity, (With<ActorKindId>, Changed<ColorBy>)>,
     resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
+    rebound: Query<Entity, (With<ActorKindId>, Changed<Bindings>)>,
     changed_datasets: Query<
         &Actors,
         Or<(
@@ -287,6 +291,12 @@ fn mark_dirty(
     // A different selection means different vertices, so this is a rebuild
     // rather than a repaint.
     for entity in &resubset {
+        mark(&mut commands, entity, Dirty::GEOMETRY);
+    }
+
+    // Binding a different array is new data, not a new setting: the vertex count
+    // itself changes, so there is nothing to write in place.
+    for entity in &rebound {
         mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 
@@ -377,7 +387,33 @@ pub(crate) fn vertex_colours(
     arrays: &Assets<DataArray>,
     count: usize,
 ) -> Option<Vec<[f32; 4]>> {
-    let values = scalarise(field, arrays.get(&field.array)?);
+    scale_into_map(&scalarise(field, arrays.get(&field.array)?), colour, count)
+}
+
+/// The same, for an array bound straight to an actor's colour input.
+///
+/// No [`Field`] involved: a bound array carries its own shape, so a multi-
+/// component one reduces to magnitude exactly as a vector field does. What the
+/// numbers *mean* was decided by whoever bound them.
+pub(crate) fn bound_colours(
+    array: &DataArray,
+    colour: &ColorBy,
+    count: usize,
+) -> Option<Vec<[f32; 4]>> {
+    let raw = array.to_f32();
+    let components = array.components().max(1) as usize;
+    let values: Vec<f32> = if components == 1 {
+        raw
+    } else {
+        raw.chunks_exact(components)
+            .map(|element| element.iter().map(|v| v * v).sum::<f32>().sqrt())
+            .collect()
+    };
+    scale_into_map(&values, colour, count)
+}
+
+/// Scales values into the colour map, autoscaling unless a range is set.
+fn scale_into_map(values: &[f32], colour: &ColorBy, count: usize) -> Option<Vec<[f32; 4]>> {
     if values.len() < count {
         return None;
     }

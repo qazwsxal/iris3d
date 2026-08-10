@@ -133,7 +133,31 @@ def main():
             wanted = preferred.get(summary.dataset_kind)
             # The grid already has the volume `hydrogen` asked for, and the root
             # is an empty grouping node that nothing can draw.
-            if wanted is not None and not summary.actors:
+            if wanted is None or summary.actors:
+                continue
+            # `points` reads bound arrays rather than the object's dataset, so its
+            # data goes in through `upload_data` and is named at the actor. The
+            # other kinds still take theirs from the object they draw.
+            if wanted == "points":
+                original = everything[summary.name]
+                held = client.upload_data(
+                    {
+                        name: values
+                        for name, values in original.items()
+                        if name in ("positions", "von_mises", "height")
+                    }
+                )
+                params: dict[str, object] = {
+                    "positions": iris3d.Bind(held["positions"])
+                }
+                # Whichever scalar the sample happens to carry. Nothing infers
+                # this from the name any more — the script picks.
+                for scalar in ("von_mises", "height"):
+                    if scalar in held:
+                        params["colour"] = iris3d.Bind(held[scalar])
+                        break
+                client.add_actor(summary.handle, wanted, params=params)
+            else:
                 client.add_actor(summary.handle, wanted)
 
         print(f"\n{'handle':<8}{'object':<18}{'kind':<11}{'drawn as':<16}arrays")

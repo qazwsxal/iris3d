@@ -16,9 +16,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
-use crate::scene::data::Fields;
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float};
-use crate::scene::{DataArray, DatasetKind, PointCloud};
+use crate::scene::{DataArray, DataStore, DatasetKind, Dtype};
 
 use super::{Dirty, Drawable, mark};
 
@@ -30,18 +29,44 @@ pub struct PointsStyle {
     pub size: f32,
 }
 
-const PARAMS: &[ParamSpec] = &[ParamSpec {
-    id: "size",
-    label: "size",
-    kind: ParamKind::Float {
-        default: 0.05,
-        min: 0.001,
-        max: 1.0,
-        // Useful sizes span three orders of magnitude, so a linear slider
-        // spends most of its travel on values nobody wants.
-        logarithmic: true,
+const PARAMS: &[ParamSpec] = &[
+    // What this needs to draw anything, stated rather than inferred from an
+    // array happening to be called "positions". A client binds whatever it
+    // uploaded, under whatever name.
+    ParamSpec {
+        id: "positions",
+        label: "positions",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
+            required: true,
+        },
     },
-}];
+    // What tints them, if anything. One value per point; the colour map and its
+    // range stay in `ColorBy`, because those are about presentation rather than
+    // about which numbers are being shown.
+    ParamSpec {
+        id: "colour",
+        label: "colour by",
+        kind: ParamKind::Array {
+            dtypes: &[],
+            shape: &[0],
+            required: false,
+        },
+    },
+    ParamSpec {
+        id: "size",
+        label: "size",
+        kind: ParamKind::Float {
+            default: 0.05,
+            min: 0.001,
+            max: 1.0,
+            // Useful sizes span three orders of magnitude, so a linear slider
+            // spends most of its travel on values nobody wants.
+            logarithmic: true,
+        },
+    },
+];
 
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
@@ -114,17 +139,22 @@ pub fn draw_points(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PointQuadMaterial>>,
     arrays: Res<Assets<DataArray>>,
+    store: Res<DataStore>,
     dirty: Query<Drawable<PointsStyle, PointQuadMaterial>>,
-    clouds: Query<(&PointCloud, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, subset, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, bound, _source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
-        let Ok((cloud, fields)) = clouds.get(source.0) else {
-            continue;
-        };
-        let Some(array) = arrays.get(&cloud.positions) else {
+        // The actor's own binding rather than its source object's dataset. The
+        // object is a place in the tree now; the data is whatever was bound.
+        let Some(array) = bound
+            .get("positions")
+            .and_then(|id| store.get(id))
+            .and_then(|held| arrays.get(&held.handle))
+        else {
+            // `check_bindings` refuses an actor with no positions, so reaching
+            // here means the array was released from under a living actor.
             continue;
         };
 
@@ -142,9 +172,12 @@ pub fn draw_points(
         let count = centres.len();
 
         if dirty.geometry || dirty.colour {
-            let tint = super::colour_field(colour, fields)
-                .and_then(|field| {
-                    super::vertex_colours(field, colour, &arrays, array.count() as usize)
+            let tint = bound
+                .get("colour")
+                .and_then(|id| store.get(id))
+                .and_then(|held| arrays.get(&held.handle))
+                .and_then(|values| {
+                    super::bound_colours(values, colour, array.count() as usize)
                 })
                 // Colours are computed over the whole field, then narrowed to
                 // the drawn points, so a subset does not shift the mapping.
@@ -211,8 +244,10 @@ pub fn draw_points(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::data::{BufferMeta, Dtype, NamedArray};
+    use crate::scene::data::{BufferMeta, Dtype};
+    use crate::scene::registry::Bindings;
     use crate::scene::{ActorKindId, ActorOf, ColorBy, SceneObject, Subset};
+    use bevy::platform::collections::HashMap;
 
     /// Runs the invalidation chain and this backend, with no renderer behind
     /// it: everything being asserted is about assets, not pixels.
@@ -220,6 +255,7 @@ mod tests {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
+        app.init_resource::<DataStore>();
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<PointQuadMaterial>>();
         app.add_systems(
@@ -232,6 +268,11 @@ mod tests {
                 .chain(),
         );
 
+        let meta = BufferMeta {
+            name: "whatever".into(),
+            dtype: Dtype::Float32,
+            shape: vec![4, 3],
+        };
         let positions = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
@@ -240,22 +281,18 @@ mod tests {
                 shape: vec![4, 3],
                 data: vec![0; 48],
             });
+        // Held by handle, with no object involved: the array is not the object's
+        // any more, and the name it arrived under carries no meaning.
+        app.world_mut()
+            .resource_mut::<DataStore>()
+            .insert(0, meta, positions);
+        // The object is only a place in the tree now.
         let object = app
             .world_mut()
-            .spawn((
-                SceneObject {
-                    name: "cloud".into(),
-                    arrays: vec![NamedArray {
-                        meta: BufferMeta {
-                            name: "positions".into(),
-                            dtype: Dtype::Float32,
-                            shape: vec![4, 3],
-                        },
-                        handle: positions.clone(),
-                    }],
-                },
-                PointCloud { positions },
-            ))
+            .spawn(SceneObject {
+                name: "somewhere".into(),
+                arrays: Vec::new(),
+            })
             .id();
         let actor = app
             .world_mut()
@@ -264,6 +301,7 @@ mod tests {
                 PointsStyle { size: 0.05 },
                 ColorBy::default(),
                 Subset::All,
+                Bindings(HashMap::from_iter([("positions", 0)])),
                 ActorOf(object),
             ))
             .id();

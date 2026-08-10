@@ -489,6 +489,26 @@ pub struct ActorKindId(pub &'static str);
 #[derive(Component, Debug, Clone, Default, PartialEq)]
 pub struct ActorParams(pub ParamMap);
 
+/// The arrays an actor has bound, by input id.
+///
+/// Derived from [`ActorParams`], like a backend's style component, and for the
+/// same reason: a backend reads a plain typed field rather than searching the
+/// map. One component for every kind rather than one per kind, because a
+/// binding means the same thing everywhere and every backend resolves it the
+/// same way — look the handle up in [`DataStore`](super::DataStore).
+///
+/// Written only when it actually differs, which is what keeps a slider drag from
+/// invalidating geometry: `apply_actor_params` runs on any parameter change, and
+/// an unconditional insert would mark this `Changed` every time.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct Bindings(pub HashMap<&'static str, u64>);
+
+impl Bindings {
+    pub fn get(&self, input: &str) -> Option<u64> {
+        self.0.get(input).copied()
+    }
+}
+
 /// Regenerates backends' typed style components from the parameters.
 ///
 /// `Changed` covers insertion, so an actor gets its style component on the
@@ -497,13 +517,29 @@ pub struct ActorParams(pub ParamMap);
 pub fn apply_actor_params(
     mut commands: Commands,
     registry: Res<ActorRegistry>,
-    changed: Query<(Entity, &ActorKindId, &ActorParams), Changed<ActorParams>>,
+    changed: Query<(Entity, &ActorKindId, &ActorParams, Option<&Bindings>), Changed<ActorParams>>,
 ) {
-    for (entity, kind, params) in &changed {
+    for (entity, kind, params, bound) in &changed {
         let Some(registered) = registry.get(kind.0) else {
             warn!("draw: no backend registered for actor kind \"{}\"", kind.0);
             continue;
         };
+
+        // Bindings before the style component, so a backend that reads both in
+        // the same tick sees them agree.
+        let wanted = Bindings(
+            registered
+                .inputs()
+                .filter_map(|spec| Some((spec.id, data(&params.0, spec.id)?)))
+                .collect(),
+        );
+        // Only when it differs: this system runs on any parameter change, and
+        // an unconditional insert would mark the bindings `Changed` on every
+        // slider drag, throwing away the geometry to rebuild it identically.
+        if bound != Some(&wanted) {
+            commands.entity(entity).insert(wanted);
+        }
+
         let mut entity = commands.entity(entity);
         (registered.apply)(&mut entity, &params.0);
     }

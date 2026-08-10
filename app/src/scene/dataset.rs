@@ -16,8 +16,15 @@ use std::ops::Range;
 use super::data::DataArray;
 
 /// An unstructured set of points. `positions` is `[n, 3]` float32.
+///
+/// Nothing reads `positions` any more: the points backend takes its geometry
+/// from the array bound to its `positions` input instead of from the object it
+/// draws. The component survives only because `mark_dirty` still watches it for
+/// the three backends that have not been converted, and goes with the last of
+/// them.
 #[derive(Component, Debug)]
 pub struct PointCloud {
+    #[allow(dead_code)]
     pub positions: Handle<DataArray>,
 }
 

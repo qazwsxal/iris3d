@@ -250,7 +250,7 @@ pub fn draw_molecules(
     layouts: Query<&MoleculeLayout>,
     molecules: Query<(&MoleculeData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, subset, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, _bound, source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }

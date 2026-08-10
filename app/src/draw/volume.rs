@@ -396,7 +396,7 @@ pub fn draw_volumes(
     placements: Query<&GlobalTransform>,
     grids: Query<(&GridData, Option<&Fields>)>,
 ) {
-    for (entity, style, colour, _subset, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, _subset, _bound, source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
