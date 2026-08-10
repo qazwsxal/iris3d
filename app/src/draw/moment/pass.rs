@@ -29,6 +29,7 @@ use bevy::render::mesh::{RenderMesh, RenderMeshBufferInfo};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
     LoadOp, Operations, PipelineCache, RenderPassColorAttachment, RenderPassDescriptor, StoreOp,
+    TextureView,
 };
 use bevy::render::renderer::{RenderContext, ViewQuery};
 use bevy::render::view::{ViewTarget, ViewUniformOffset};
@@ -36,6 +37,19 @@ use bevy::render::view::{ViewTarget, ViewUniformOffset};
 use super::extract::ExtractedVolumes;
 use super::pipeline::{MomentResolvePipelineId, QueuedMomentPipelines};
 use super::prepare::{MomentBindGroup, MomentResolveBindGroup, MomentTexture};
+
+/// One of the accumulation attachments, cleared and kept.
+fn attachment(view: &TextureView) -> RenderPassColorAttachment<'_> {
+    RenderPassColorAttachment {
+        view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: Operations {
+            load: LoadOp::Clear(LinearRgba::NONE.into()),
+            store: StoreOp::Store,
+        },
+    }
+}
 
 /// Accumulates every volume's signed optical depth into the moment target.
 pub fn moment_pass(
@@ -63,17 +77,12 @@ pub fn moment_pass(
 
     let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
         label: Some("moment_pass"),
-        color_attachments: &[Some(RenderPassColorAttachment {
-            view: &moments.0.default_view,
-            depth_slice: None,
-            resolve_target: None,
-            // Cleared to zero every frame: an empty pixel has absorbed nothing
-            // and must reconstruct to `T = exp(0) = 1`.
-            ops: Operations {
-                load: LoadOp::Clear(LinearRgba::NONE.into()),
-                store: StoreOp::Store,
-            },
-        })],
+        // Cleared to zero every frame: an empty pixel has absorbed nothing and
+        // must reconstruct to `T = exp(0) = 1`.
+        color_attachments: &[
+            Some(attachment(&moments.moments.default_view)),
+            Some(attachment(&moments.totals.default_view)),
+        ],
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
@@ -150,6 +159,7 @@ pub fn moment_resolve(
         &ViewTarget,
         &MomentResolveBindGroup,
         &MomentResolvePipelineId,
+        &ViewUniformOffset,
         Option<&MainPassResolutionOverride>,
     )>,
     volumes: Res<ExtractedVolumes>,
@@ -159,7 +169,8 @@ pub fn moment_resolve(
     if volumes.0.is_empty() {
         return;
     }
-    let (camera, target, bind_group, pipeline_id, resolution_override) = view.into_inner();
+    let (camera, target, bind_group, pipeline_id, view_uniform, resolution_override) =
+        view.into_inner();
 
     let Some(pipeline) = pipeline_cache.get_render_pipeline(pipeline_id.0) else {
         return;
@@ -185,7 +196,7 @@ pub fn moment_resolve(
     }
 
     pass.set_render_pipeline(pipeline);
-    pass.set_bind_group(0, &bind_group.0, &[]);
+    pass.set_bind_group(0, &bind_group.0, &[view_uniform.offset]);
     pass.draw(0..3, 0..1);
 
     pass_span.end(&mut pass);

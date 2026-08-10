@@ -22,6 +22,7 @@ use bevy::render::view::{ExtractedView, ViewUniform};
 use bevy::shader::Shader;
 
 use super::extract::ExtractedVolumes;
+use super::prepare::MomentBounds;
 use super::MomentTransparency;
 
 /// The moment target's format, fixed here so the pipeline and the texture
@@ -49,19 +50,27 @@ pub fn init_moment_pipelines(
                 uniform_buffer::<ViewUniform>(true),
                 storage_buffer_read_only_sized(false, None),
                 texture_depth_2d(),
+                uniform_buffer::<MomentBounds>(false),
             ),
         ),
     );
 
     let resolve_layout = BindGroupLayoutDescriptor::new(
         "moment_resolve_bind_group_layout",
-        &BindGroupLayoutEntries::single(
+        &BindGroupLayoutEntries::sequential(
             ShaderStages::FRAGMENT,
-            // Never filtered, and loaded by integer coordinate. Interpolating
-            // moments between neighbouring pixels is only meaningful in a
-            // light-space map, where prefiltering is the whole advantage; in
-            // view space it mixes unrelated depth distributions.
-            texture_2d(TextureSampleType::Float { filterable: false }),
+            (
+                uniform_buffer::<ViewUniform>(true),
+                // Never filtered, and loaded by integer coordinate.
+                // Interpolating moments between neighbouring pixels is only
+                // meaningful in a light-space map, where prefiltering is the
+                // whole advantage; in view space it mixes unrelated depth
+                // distributions.
+                texture_2d(TextureSampleType::Float { filterable: false }),
+                texture_2d(TextureSampleType::Float { filterable: false }),
+                texture_depth_2d(),
+                uniform_buffer::<MomentBounds>(false),
+            ),
         ),
     );
 
@@ -112,16 +121,26 @@ impl SpecializedMeshPipeline for MomentMeshPipeline {
             },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
-                targets: vec![Some(ColorTargetState {
-                    format: MOMENT_FORMAT,
-                    // Additive. This is the one line that makes the whole
-                    // method order-independent.
-                    blend: Some(BlendState {
-                        color: ADDITIVE,
-                        alpha: ADDITIVE,
+                // Both targets additive. This is the one line that makes the
+                // whole method order-independent.
+                targets: vec![
+                    Some(ColorTargetState {
+                        format: MOMENT_FORMAT,
+                        blend: Some(BlendState {
+                            color: ADDITIVE,
+                            alpha: ADDITIVE,
+                        }),
+                        write_mask: ColorWrites::ALL,
                     }),
-                    write_mask: ColorWrites::ALL,
-                })],
+                    Some(ColorTargetState {
+                        format: MOMENT_FORMAT,
+                        blend: Some(BlendState {
+                            color: ADDITIVE,
+                            alpha: ADDITIVE,
+                        }),
+                        write_mask: ColorWrites::ALL,
+                    }),
+                ],
                 ..default()
             }),
             // Both signs in one draw: the fragment shader branches on
