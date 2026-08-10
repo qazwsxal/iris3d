@@ -197,14 +197,11 @@ class Grid:
 class Coloring:
     """How an actor takes its colour."""
 
-    #: Field mapped across the colour map. None paints flat — or, for a
-    #: molecule, standard element colours.
-    field: str | None = None
     #: "viridis", "cool-warm", "grayscale" or "element".
     map: str = "viridis"
-    #: Value range the map spans. None autoscales to the field's own range.
+    #: Value range the map spans. None autoscales to the bound array's own range.
     range: tuple[float, float] | None = None
-    #: sRGB, used when ``field`` is None.
+    #: sRGB, used when no colour array is bound.
     flat: tuple[float, float, float] | None = None
 
 
@@ -351,8 +348,6 @@ def _params(params: Mapping[str, float | bool | str] | None) -> dict[str, ParamV
 
 def _color_spec(coloring: Coloring) -> ColorSpec:
     spec = ColorSpec(map=coloring.map)
-    if coloring.field is not None:
-        spec.field = coloring.field
     if coloring.range is not None:
         spec.range.CopyFrom(Range(low=coloring.range[0], high=coloring.range[1]))
     if coloring.flat is not None:
@@ -362,7 +357,6 @@ def _color_spec(coloring: Coloring) -> ColorSpec:
 
 def _coloring(spec: ColorSpec) -> Coloring:
     return Coloring(
-        field=spec.field if spec.HasField("field") else None,
         map=spec.map,
         range=(spec.range.low, spec.range.high) if spec.HasField("range") else None,
         flat=(spec.flat.r, spec.flat.g, spec.flat.b) if spec.HasField("flat") else None,

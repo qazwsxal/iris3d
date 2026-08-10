@@ -570,7 +570,9 @@ mod tests {
         let (mut app, _, actor) = scene();
         settle(&mut app, actor);
 
-        app.world_mut().get_mut::<ColorBy>(actor).unwrap().field = Some("stress".into());
+        // Any change to the colouring; the ramp stands in for what used to be a
+        // change of field.
+        app.world_mut().get_mut::<ColorBy>(actor).unwrap().map = ColorMap::CoolWarm;
         app.update();
         assert_eq!(flags(&app, actor), Dirty::COLOUR);
     }
@@ -596,7 +598,9 @@ mod tests {
         let (mut app, object, actor) = scene();
         settle(&mut app, actor);
 
-        app.world_mut().get_mut::<ColorBy>(actor).unwrap().field = Some("stress".into());
+        // Any change to the colouring; the ramp stands in for what used to be a
+        // change of field.
+        app.world_mut().get_mut::<ColorBy>(actor).unwrap().map = ColorMap::CoolWarm;
         app.world_mut()
             .get_mut::<PointCloud>(object)
             .unwrap()

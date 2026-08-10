@@ -8,7 +8,6 @@
 
 use bevy_egui::egui;
 
-use crate::scene::DatasetKind;
 use crate::scene::Subset;
 use crate::scene::actor::ColorMap;
 use crate::scene::registry::{
@@ -281,61 +280,17 @@ fn controls(
         }
     }
 
-    // Colour by. For a molecule, no field means CPK element colouring rather
-    // than a flat wash, so name it accordingly.
-    let unset = if row.kind == DatasetKind::Molecule {
-        "element (CPK)"
-    } else {
-        "flat"
-    };
+    // Which ramp, not which data — what is coloured is whatever array is bound
+    // to the kind's colour input, and that has its own picker above.
     ui.horizontal(|ui| {
-        ui.label("colour by");
-        let selected = current.colour.field.clone().unwrap_or_else(|| unset.into());
-        egui::ComboBox::from_id_salt((current.entity, "colour"))
-            .selected_text(selected)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(current.colour.field.is_none(), unset)
-                    .clicked()
-                {
-                    actions
-                        .0
-                        .push(UiAction::SetColourField(current.entity, None));
-                }
-                for field in &row.fields {
-                    let picked = current.colour.field.as_deref() == Some(field.name.as_str());
-                    // Vector and tensor fields are reduced to magnitude, so say
-                    // so rather than implying a direct mapping.
-                    let label = if field.kind == "scalar" {
-                        field.name.clone()
-                    } else {
-                        format!("{} ({} magnitude)", field.name, field.kind)
-                    };
-                    if ui.selectable_label(picked, label).clicked() && !picked {
-                        actions.0.push(UiAction::SetColourField(
-                            current.entity,
-                            Some(field.name.clone()),
-                        ));
-                    }
-                }
-            });
-    });
-
-    if current.colour.field.is_some() {
-        ui.horizontal(|ui| {
-            ui.label("map");
-            for map in [ColorMap::Viridis, ColorMap::CoolWarm, ColorMap::Grayscale] {
-                if ui
-                    .selectable_label(current.colour.map == map, map.as_str())
-                    .clicked()
-                {
-                    actions.0.push(UiAction::SetColourMap(current.entity, map));
-                }
+        ui.label("map");
+        for map in [ColorMap::Viridis, ColorMap::CoolWarm, ColorMap::Grayscale] {
+            if ui
+                .selectable_label(current.colour.map == map, map.as_str())
+                .clicked()
+            {
+                actions.0.push(UiAction::SetColourMap(current.entity, map));
             }
-        });
-    }
-
-    if row.fields.is_empty() {
-        ui.label(egui::RichText::new("no fields").weak());
-    }
+        }
+    });
 }

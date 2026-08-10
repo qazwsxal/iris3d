@@ -552,7 +552,6 @@ fn colour_from_proto(spec: ColorSpec) -> Result<ColorBy, Status> {
         .transpose()?;
 
     Ok(ColorBy {
-        field: spec.field,
         map,
         range,
         flat: spec
@@ -565,7 +564,6 @@ fn colour_from_proto(spec: ColorSpec) -> Result<ColorBy, Status> {
 fn colour_to_proto(colour: &ColorBy) -> ColorSpec {
     let flat = Srgba::from(colour.flat).to_f32_array();
     ColorSpec {
-        field: colour.field.clone(),
         map: colour.map.as_str().to_string(),
         range: colour.range.map(|(low, high)| Range { low, high }),
         flat: Some(Color {

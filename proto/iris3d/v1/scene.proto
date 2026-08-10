@@ -510,9 +510,11 @@ message Color {
 // client typically nudges one of them; colouring is four related settings that
 // are rarely meaningful apart.
 message ColorSpec {
-  // Field to map across the colour map. Absent paints a flat colour — or, for
-  // molecules, standard element colouring.
-  optional string field = 1;
+  // Field 1 was `field`, naming a field to map across the colour map. *What* is
+  // coloured is now the array bound to the representation's colour input, so
+  // this message carries only the presentation: which ramp, over what range, and
+  // what to paint when nothing is bound.
+  reserved 1;
 
   // "viridis", "cool-warm", "grayscale", or "element". Empty means viridis.
   string map = 2;

@@ -644,7 +644,6 @@ pub fn apply_scene_commands(
                     &index,
                     &mut drawn,
                     &objects,
-                    &fields,
                     source,
                     kind,
                     parent,
@@ -779,7 +778,6 @@ fn add_actor(
     index: &HashMap<u64, Entity>,
     drawn: &mut HashMap<u64, Entity>,
     _objects: &Objects,
-    fields: &Query<&data::Fields>,
     source: u64,
     kind: String,
     parent: Option<u64>,
@@ -815,10 +813,7 @@ fn add_actor(
     // is no previous value to preserve.
     let params = registered.normalise(&params);
     check_bindings(registered, &params, store)?;
-    let colour = colour.unwrap_or_else(|| ColorBy {
-        field: default_colour_field(fields.get(source_entity).ok()),
-        ..default()
-    });
+    let colour = colour.unwrap_or_default();
 
     let subset = subset.map_or(Subset::All, |request| request.into_subset(arrays));
     let summarised_subset = match &subset {
@@ -1201,23 +1196,6 @@ fn collect_descendants(
         out.push(child);
         collect_descendants(child, objects, children, out);
     }
-}
-
-/// The field a new actor should colour by: the first scalar in name order, or
-/// `None` when the object has no scalar to show.
-///
-/// Chosen once, here, so that whatever the UI displays is what is actually
-/// drawn. Inferring it at draw time instead made "flat" in the UI mean
-/// "coloured by something you cannot see the name of".
-fn default_colour_field(fields: Option<&data::Fields>) -> Option<String> {
-    let mut scalars: Vec<&String> = fields?
-        .0
-        .iter()
-        .filter(|(_, field)| field.kind == data::FieldKind::Scalar)
-        .map(|(name, _)| name)
-        .collect();
-    scalars.sort();
-    scalars.first().map(|name| (*name).clone())
 }
 
 /// Describes one actor from its query item.

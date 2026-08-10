@@ -137,8 +137,6 @@ enum UiAction {
     RemoveActor(Entity),
     /// Change one parameter of an actor, leaving the rest alone.
     SetParam(Entity, &'static str, ParamValue),
-    /// `None` paints flat; otherwise names a field in the source's `Fields`.
-    SetColourField(Entity, Option<String>),
     SetColourMap(Entity, ColorMap),
 }
 
@@ -414,11 +412,6 @@ fn apply_actions(
                     continue;
                 };
                 current.0.insert(id.to_string(), value);
-            }
-            UiAction::SetColourField(entity, field) => {
-                if let Ok(mut colour) = colours.get_mut(entity) {
-                    colour.field = field;
-                }
             }
             UiAction::SetColourMap(entity, map) => {
                 if let Ok(mut colour) = colours.get_mut(entity) {

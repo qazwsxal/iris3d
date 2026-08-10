@@ -287,16 +287,14 @@ class Color(_message.Message):
     def __init__(self, r: _Optional[float] = ..., g: _Optional[float] = ..., b: _Optional[float] = ...) -> None: ...
 
 class ColorSpec(_message.Message):
-    __slots__ = ("field", "map", "range", "flat")
-    FIELD_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ("map", "range", "flat")
     MAP_FIELD_NUMBER: _ClassVar[int]
     RANGE_FIELD_NUMBER: _ClassVar[int]
     FLAT_FIELD_NUMBER: _ClassVar[int]
-    field: str
     map: str
     range: Range
     flat: Color
-    def __init__(self, field: _Optional[str] = ..., map: _Optional[str] = ..., range: _Optional[_Union[Range, _Mapping]] = ..., flat: _Optional[_Union[Color, _Mapping]] = ...) -> None: ...
+    def __init__(self, map: _Optional[str] = ..., range: _Optional[_Union[Range, _Mapping]] = ..., flat: _Optional[_Union[Color, _Mapping]] = ...) -> None: ...
 
 class Range(_message.Message):
     __slots__ = ("low", "high")
