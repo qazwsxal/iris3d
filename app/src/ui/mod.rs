@@ -1,30 +1,38 @@
-//! egui panels: menu bar, scene tree, and the array inventory.
+//! The egui interface: a menu bar, and one panel down the right-hand side.
+//!
+//! The panel carries three tabs — Data, Actors, Scene — and each is split into
+//! a list on top and a details section below it. Everything used to be spread
+//! across two side panels with the actor controls buried inside the tree, which
+//! meant tuning a slider squeezed the 3D view from both sides at once. One
+//! panel leaves the viewport the whole left of the window.
 //!
 //! The UI reads the world and emits [`UiAction`]s rather than mutating
 //! directly. Two reasons: egui closures would otherwise need several
 //! conflicting mutable borrows at once, and keeping every mutation in one place
-//! makes it obvious what the UI can actually do to the scene.
+//! makes it obvious what the UI can actually do to the scene. Splitting the
+//! tabs into modules of their own tightens that constraint rather than
+//! loosening it — a tab gets `&Gathered` and a queue to push onto, nothing
+//! more.
+
+mod actors;
+mod data;
+mod gather;
+mod scene;
 
 use bevy::asset::AssetId;
 use bevy::camera::Viewport;
 use bevy::camera::visibility::RenderLayers;
-use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_egui::egui::{LayerId, Ui, UiBuilder};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui};
 
-use crate::counter::UniqueID;
 use crate::scene::actor::ColorMap;
-use crate::scene::data::{FieldKind, Fields};
 use crate::scene::link::spawn_actor;
-use crate::scene::registry::{
-    ActorKindId, ActorParams, ActorRegistry, ParamKind, ParamMap, ParamSpec, ParamValue, flag,
-    float, text,
-};
-use crate::scene::{
-    ActorOf, Actors, ColorBy, DataArray, DatasetKind, SceneCommand, SceneObject, Subset,
-};
+use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamValue};
+use crate::scene::{ActorOf, ColorBy, DataArray, SceneCommand, Subset};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
+
+use gather::{ActorData, ObjectData};
 
 pub struct UiPlugin;
 
@@ -79,19 +87,37 @@ fn spawn_egui_camera(mut commands: Commands) {
 /// A layer of its own for the egui camera, so it renders no world content.
 const EGUI_LAYER: usize = 1;
 
+/// Which tab of the panel is showing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Data,
+    Actors,
+    Scene,
+}
+
 #[derive(Resource)]
 pub struct UiState {
-    pub show_scene: bool,
-    pub show_arrays: bool,
+    pub tab: Tab,
+    pub show_panel: bool,
+    /// The selected object.
+    ///
+    /// Not tab-local, unlike the two below: `viewport::overlays` reads it to
+    /// draw the selection outline, the Scene tree highlights it, and the Actors
+    /// tab tints its group. Selecting an actor moves this to that actor's
+    /// source so all three agree.
     pub selected: Option<Entity>,
+    pub selected_actor: Option<Entity>,
+    pub selected_array: Option<AssetId<DataArray>>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            show_scene: true,
-            show_arrays: true,
+            tab: Tab::Scene,
+            show_panel: true,
             selected: None,
+            selected_actor: None,
+            selected_array: None,
         }
     }
 }
@@ -99,6 +125,8 @@ impl Default for UiState {
 /// Something the user asked for, applied after the UI has finished drawing.
 enum UiAction {
     Select(Entity),
+    SelectActor(Entity),
+    SelectArray(AssetId<DataArray>),
     ToggleVisibility(Entity),
     Delete(u64),
     Frame(Entity),
@@ -117,58 +145,13 @@ enum UiAction {
 #[derive(Resource, Default)]
 struct PendingActions(Vec<UiAction>);
 
-/// A flattened view of one object, gathered before drawing so the UI closures
-/// borrow nothing from the world.
-struct Row {
-    entity: Entity,
-    id: u64,
-    name: String,
-    kind: DatasetKind,
-    visible: bool,
-    arrays: usize,
-    bytes: u64,
-    /// Field name and how many components it has, for the colour-by picker.
-    fields: Vec<FieldRow>,
-    actors: Vec<ActorRow>,
-    /// Kinds that could be added to this object, as `(id, label)`. Resolved
-    /// while gathering so the drawing closures never borrow the registry.
-    available: Vec<(&'static str, &'static str)>,
-    children: Vec<Entity>,
-}
-
-struct FieldRow {
-    name: String,
-    kind: &'static str,
-}
-
-struct ActorRow {
-    entity: Entity,
-    label: &'static str,
-    /// The controls to show, taken straight from the backend's declaration —
-    /// `&'static` so nothing here has to be cloned or borrowed from the world.
-    specs: &'static [ParamSpec],
-    params: ParamMap,
-    colour: ColorBy,
-    subset: Subset,
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_ui(
     mut contexts: EguiContexts,
     mut state: ResMut<UiState>,
     mut actions: ResMut<PendingActions>,
-    objects: Query<(
-        Entity,
-        &UniqueID,
-        &SceneObject,
-        &DatasetKind,
-        &Visibility,
-        Option<&Fields>,
-        Option<&Children>,
-        Option<&Actors>,
-        Option<&ChildOf>,
-    )>,
-    actors: Query<(&ActorKindId, &ActorParams, &ColorBy, &Subset)>,
+    objects: ObjectData,
+    actor_data: ActorData,
     registry: Res<ActorRegistry>,
     arrays: Res<Assets<DataArray>>,
     mut captured: ResMut<PointerCaptured>,
@@ -195,119 +178,16 @@ fn draw_ui(
     );
 
     // Gather first, draw second.
-    let mut rows: HashMap<Entity, Row> = HashMap::new();
-    let mut roots: Vec<Entity> = Vec::new();
-    // Which object holds each array, for the inventory panel.
-    let mut owners: HashMap<AssetId<DataArray>, (u64, String)> = HashMap::new();
+    let world = gather::gather(&objects, &actor_data, &registry);
 
-    for (entity, id, object, kind, visibility, fields, children, drawn_by, parent) in &objects {
-        // Nested objects come from the transform hierarchy; actors come from
-        // the source link. An actor may well be a child of some other object,
-        // so these two lists are no longer one list split in half.
-        let child_objects: Vec<Entity> = children
-            .into_iter()
-            .flatten()
-            .copied()
-            .filter(|child| objects.contains(*child))
-            .collect();
-        let drawn: Vec<ActorRow> = drawn_by
-            .into_iter()
-            .flat_map(|list| list.iter())
-            .filter_map(|entity| {
-                let (id, params, colour, subset) = actors.get(entity).ok()?;
-                // A kind with no registration cannot be drawn or configured, so
-                // there is nothing useful to show for it.
-                let registered = registry.get(id.0)?;
-                Some(ActorRow {
-                    entity,
-                    label: registered.label,
-                    specs: registered.params,
-                    params: params.0.clone(),
-                    colour: colour.clone(),
-                    subset: subset.clone(),
-                })
-            })
-            .collect();
-        let available: Vec<(&'static str, &'static str)> = registry
-            .for_dataset(*kind)
-            .map(|kind| (kind.id, kind.label))
-            .collect();
-
-        for array in &object.arrays {
-            owners.insert(array.handle.id(), (id.0, array.meta.name.clone()));
-        }
-        // An actor's selection is an array too, and it is held by the actor
-        // rather than the object. Without this the inventory calls it
-        // unreferenced, which is exactly backwards.
-        for actor in &drawn {
-            if let Subset::Selected { array, .. } = &actor.subset {
-                owners.insert(array.id(), (id.0, "subset".into()));
-            }
-        }
-
-        let mut field_names: Vec<FieldRow> = fields
-            .map(|fields| {
-                fields
-                    .0
-                    .iter()
-                    .map(|(name, field)| FieldRow {
-                        name: name.clone(),
-                        kind: match field.kind {
-                            FieldKind::Scalar => "scalar",
-                            FieldKind::Vector => "vector",
-                            FieldKind::Tensor(_) => "tensor",
-                        },
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        field_names.sort_by(|a, b| a.name.cmp(&b.name));
-
-        // A parent that is not itself an object does not make this a child.
-        let parented = parent.is_some_and(|link| objects.contains(link.parent()));
-        if !parented {
-            roots.push(entity);
-        }
-
-        rows.insert(
-            entity,
-            Row {
-                entity,
-                id: id.0,
-                name: object.name.clone(),
-                kind: *kind,
-                visible: *visibility != Visibility::Hidden,
-                arrays: object.arrays.len(),
-                bytes: object.total_bytes(),
-                fields: field_names,
-                actors: drawn,
-                available,
-                children: child_objects,
-            },
-        );
-    }
-
-    roots.sort_by_key(|entity| rows.get(entity).map(|row| row.id).unwrap_or_default());
-
-    let total_bytes: u64 = rows.values().map(|row| row.bytes).sum();
-    let object_count = rows.len();
-
-    // Panel extents, so the 3D camera can be inset to whatever is left over.
+    // How much the panels took, so the 3D camera can be inset to what is left.
     // Without this the scene renders across the whole window and hides behind
-    // the panels.
-    let mut edges = Vec4::ZERO;
-
-    edges.y = egui::Panel::top("menu")
+    // them.
+    let top = egui::Panel::top("menu")
         .show(&mut root, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("View", |ui| {
-                    ui.checkbox(&mut state.show_scene, "Scene tree");
-                    ui.checkbox(&mut state.show_arrays, "Arrays");
-                    ui.separator();
-                    ui.checkbox(&mut overlays.grid, "Ground grid");
-                    ui.checkbox(&mut overlays.world_axes, "World axes");
-                    ui.checkbox(&mut overlays.selection, "Selection outline");
-                    ui.checkbox(&mut overlays.all_bounds, "All bounds");
+                    ui.checkbox(&mut state.show_panel, "Panel");
                 });
                 ui.menu_button("Camera", |ui| {
                     if ui.button("Frame all").clicked() {
@@ -317,8 +197,8 @@ fn draw_ui(
                 });
                 ui.menu_button("Scene", |ui| {
                     if ui.button("Delete all objects").clicked() {
-                        for entity in &roots {
-                            if let Some(row) = rows.get(entity) {
+                        for entity in &world.roots {
+                            if let Some(row) = world.rows.get(entity) {
                                 actions.0.push(UiAction::Delete(row.id));
                             }
                         }
@@ -327,9 +207,10 @@ fn draw_ui(
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
-                        "{object_count} objects · {} arrays · {}",
+                        "{} objects · {} arrays · {}",
+                        world.rows.len(),
                         arrays.len(),
-                        human_bytes(total_bytes)
+                        human_bytes(world.total_bytes)
                     ));
                 });
             });
@@ -338,80 +219,57 @@ fn draw_ui(
         .rect
         .height();
 
-    if state.show_scene {
-        edges.x = egui::Panel::left("scene")
-            .resizable(true)
-            .default_size(320.0)
-            .show(&mut root, |ui| {
-                ui.heading("Scene");
-                ui.separator();
-                if roots.is_empty() {
-                    ui.weak("Nothing loaded. Upload over gRPC.");
-                }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let roots = roots.clone();
-                    for root in roots {
-                        object_node(ui, root, &rows, &mut state, &mut actions);
-                    }
-                });
-            })
-            .response
-            .rect
-            .width();
-    }
-
-    if state.show_arrays {
-        edges.z = egui::Panel::right("arrays")
+    let mut right = 0.0;
+    if state.show_panel {
+        right = egui::Panel::right("panel")
             .resizable(true)
             .default_size(380.0)
             .show(&mut root, |ui| {
-                ui.heading("Arrays");
-                ui.weak(format!(
-                    "{} in memory · {}",
-                    arrays.len(),
-                    human_bytes(total_bytes)
-                ));
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("array-grid")
-                        .num_columns(4)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("owner");
-                            ui.strong("name");
-                            ui.strong("type");
-                            ui.strong("size");
-                            ui.end_row();
-
-                            let mut listing: Vec<_> = arrays.iter().collect();
-                            listing.sort_by_key(|(id, _)| {
-                                owners
-                                    .get(id)
-                                    .map(|(handle, _)| *handle)
-                                    .unwrap_or(u64::MAX)
-                            });
-
-                            for (id, array) in listing {
-                                let (owner, name) = owners
-                                    .get(&id)
-                                    .cloned()
-                                    .unwrap_or((u64::MAX, "<unreferenced>".into()));
-                                if owner == u64::MAX {
-                                    ui.weak("—");
-                                } else {
-                                    ui.monospace(format!("{owner}"));
-                                }
-                                ui.label(name);
-                                ui.monospace(format!(
-                                    "{}{:?}",
-                                    array.dtype,
-                                    array.shape.iter().collect::<Vec<_>>()
-                                ));
-                                ui.monospace(human_bytes(array.data.len() as u64));
-                                ui.end_row();
-                            }
-                        });
+                ui.horizontal(|ui| {
+                    for (tab, label) in [
+                        (Tab::Data, "Data"),
+                        (Tab::Actors, "Actors"),
+                        (Tab::Scene, "Scene"),
+                    ] {
+                        if ui.selectable_label(state.tab == tab, label).clicked() {
+                            state.tab = tab;
+                        }
+                    }
                 });
+                ui.separator();
+
+                // Details before the list. An egui panel claims its space out
+                // of what is currently available and leaves the rest to
+                // whatever is added afterwards, so a list added first would
+                // take the lot and leave the details nothing to sit in.
+                let tab = state.tab;
+                egui::Panel::bottom("details")
+                    .resizable(true)
+                    .default_size(280.0)
+                    .min_size(60.0)
+                    .show(ui, |ui| {
+                        // A resizable panel is only as tall as content that
+                        // fills it, and a `ScrollArea` shrinks to fit by
+                        // default — which collapsed this to a single line
+                        // whenever nothing was selected. Refusing to shrink is
+                        // what makes the split hold its height.
+                        egui::ScrollArea::vertical()
+                            .id_salt("details")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| match tab {
+                                Tab::Data => data::details(ui, &world, &state, &arrays),
+                                Tab::Actors => actors::details(ui, &world, &state, &mut actions),
+                                Tab::Scene => scene::details(ui, &world, &state, &mut actions),
+                            });
+                    });
+
+                egui::ScrollArea::vertical()
+                    .id_salt("list")
+                    .show(ui, |ui| match tab {
+                        Tab::Data => data::list(ui, &world, &state, &mut actions, &arrays),
+                        Tab::Actors => actors::list(ui, &world, &state, &mut actions),
+                        Tab::Scene => scene::list(ui, &world, &state, &mut actions, &mut overlays),
+                    });
             })
             .response
             .rect
@@ -423,9 +281,9 @@ fn draw_ui(
         return Ok(());
     };
     let scale = window.scale_factor();
-    let position = UVec2::new((edges.x * scale) as u32, (edges.y * scale) as u32);
+    let position = UVec2::new(0, (top * scale) as u32);
     let full = UVec2::new(window.physical_width(), window.physical_height());
-    let taken = position + UVec2::new((edges.z * scale) as u32, (edges.w * scale) as u32);
+    let taken = position + UVec2::new((right * scale) as u32, 0);
     camera.viewport = if full.cmpgt(taken).all() {
         Some(Viewport {
             physical_position: position,
@@ -433,254 +291,11 @@ fn draw_ui(
             ..default()
         })
     } else {
-        // Panels cover everything; a zero-sized viewport would panic.
+        // The panel covers everything; a zero-sized viewport would panic.
         None
     };
 
     Ok(())
-}
-
-fn object_node(
-    ui: &mut egui::Ui,
-    entity: Entity,
-    rows: &HashMap<Entity, Row>,
-    state: &mut UiState,
-    actions: &mut PendingActions,
-) {
-    let Some(row) = rows.get(&entity) else { return };
-    let selected = state.selected == Some(entity);
-
-    let header = egui::CollapsingHeader::new(
-        egui::RichText::new(format!("[{}] {}", row.id, row.name)).strong(),
-    )
-    .id_salt(entity)
-    .default_open(true);
-
-    header.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(row.kind.as_str()).weak());
-            ui.separator();
-            ui.label(format!(
-                "{} arrays · {}",
-                row.arrays,
-                human_bytes(row.bytes)
-            ));
-        });
-
-        for actor in &row.actors {
-            actor_controls(ui, row, actor, actions);
-        }
-        if row.actors.is_empty() && row.kind != DatasetKind::Empty {
-            ui.label(egui::RichText::new("not drawn").weak());
-        }
-
-        // Adding rather than replacing: an object may be drawn several ways at
-        // once, and each way is its own entity with its own settings.
-        if !row.available.is_empty() {
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt((entity, "add"))
-                    .selected_text("add actor")
-                    .show_ui(ui, |ui| {
-                        for (id, label) in &row.available {
-                            if ui.selectable_label(false, *label).clicked() {
-                                actions.0.push(UiAction::AddActor(row.entity, id));
-                            }
-                        }
-                    });
-            });
-        }
-
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(selected, if selected { "selected" } else { "select" })
-                .clicked()
-            {
-                actions.0.push(UiAction::Select(row.entity));
-            }
-            if ui
-                .button(if row.visible { "hide" } else { "show" })
-                .clicked()
-            {
-                actions.0.push(UiAction::ToggleVisibility(row.entity));
-            }
-            if ui.button("frame").clicked() {
-                actions.0.push(UiAction::Frame(row.entity));
-            }
-            if ui.button("delete").clicked() {
-                actions.0.push(UiAction::Delete(row.id));
-            }
-        });
-
-        for child in &row.children {
-            object_node(ui, *child, rows, state, actions);
-        }
-    });
-}
-
-/// One actor: what it is, its parameters, and its colouring.
-///
-/// The controls are generated from the backend's own [`ParamSpec`]
-/// declarations, so adding an actor kind — or a parameter to an existing one —
-/// needs no edit here. A slider's range is the declared range, which is also
-/// the range values are clamped to on the way in, so the UI cannot ask for
-/// something a client could not.
-fn actor_controls(ui: &mut egui::Ui, row: &Row, current: &ActorRow, actions: &mut PendingActions) {
-    ui.group(|ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(current.label).strong());
-            // Worth saying outright: two identical-looking rows over one object
-            // are otherwise indistinguishable when what differs is which part
-            // of the data each draws.
-            if matches!(current.subset, Subset::Selected { .. }) {
-                ui.label(egui::RichText::new("subset").weak());
-            }
-            if ui.small_button("remove").clicked() {
-                actions.0.push(UiAction::RemoveActor(current.entity));
-            }
-        });
-
-        for spec in current.specs {
-            match spec.kind {
-                ParamKind::Float {
-                    default,
-                    min,
-                    max,
-                    logarithmic,
-                } => {
-                    let mut value = float(&current.params, spec.id, default);
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut value, min..=max)
-                                .logarithmic(logarithmic)
-                                .text(spec.label),
-                        )
-                        .changed()
-                    {
-                        actions.0.push(UiAction::SetParam(
-                            current.entity,
-                            spec.id,
-                            ParamValue::Float(value),
-                        ));
-                    }
-                }
-                ParamKind::Field => {
-                    // The fields are the source object's, which the row already
-                    // gathered for the colour picker.
-                    let chosen = text(&current.params, spec.id, "");
-                    ui.horizontal(|ui| {
-                        ui.label(spec.label);
-                        egui::ComboBox::from_id_salt((current.entity, spec.id))
-                            .selected_text(if chosen.is_empty() { "auto" } else { chosen })
-                            .show_ui(ui, |ui| {
-                                // Empty means "pick one for me", which is what
-                                // an actor starts with.
-                                if ui.selectable_label(chosen.is_empty(), "auto").clicked() {
-                                    actions.0.push(UiAction::SetParam(
-                                        current.entity,
-                                        spec.id,
-                                        ParamValue::Text(String::new()),
-                                    ));
-                                }
-                                for field in &row.fields {
-                                    let picked = chosen == field.name;
-                                    if ui.selectable_label(picked, &field.name).clicked() && !picked
-                                    {
-                                        actions.0.push(UiAction::SetParam(
-                                            current.entity,
-                                            spec.id,
-                                            ParamValue::Text(field.name.clone()),
-                                        ));
-                                    }
-                                }
-                            });
-                    });
-                }
-                ParamKind::Choice { options, default } => {
-                    let chosen = text(&current.params, spec.id, default);
-                    ui.horizontal(|ui| {
-                        ui.label(spec.label);
-                        for option in options {
-                            if ui.selectable_label(chosen == *option, *option).clicked() {
-                                actions.0.push(UiAction::SetParam(
-                                    current.entity,
-                                    spec.id,
-                                    ParamValue::Text((*option).to_string()),
-                                ));
-                            }
-                        }
-                    });
-                }
-                ParamKind::Bool { default } => {
-                    let mut value = flag(&current.params, spec.id, default);
-                    if ui.checkbox(&mut value, spec.label).changed() {
-                        actions.0.push(UiAction::SetParam(
-                            current.entity,
-                            spec.id,
-                            ParamValue::Bool(value),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Colour by. For a molecule, no field means CPK element colouring
-        // rather than a flat wash, so name it accordingly.
-        let unset = if row.kind == DatasetKind::Molecule {
-            "element (CPK)"
-        } else {
-            "flat"
-        };
-        ui.horizontal(|ui| {
-            ui.label("colour by");
-            let selected = current.colour.field.clone().unwrap_or_else(|| unset.into());
-            egui::ComboBox::from_id_salt((current.entity, "colour"))
-                .selected_text(selected.clone())
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(current.colour.field.is_none(), unset)
-                        .clicked()
-                    {
-                        actions
-                            .0
-                            .push(UiAction::SetColourField(current.entity, None));
-                    }
-                    for field in &row.fields {
-                        let picked = current.colour.field.as_deref() == Some(field.name.as_str());
-                        // Vector and tensor fields are reduced to magnitude, so
-                        // say so rather than implying a direct mapping.
-                        let label = if field.kind == "scalar" {
-                            field.name.clone()
-                        } else {
-                            format!("{} ({} magnitude)", field.name, field.kind)
-                        };
-                        if ui.selectable_label(picked, label).clicked() && !picked {
-                            actions.0.push(UiAction::SetColourField(
-                                current.entity,
-                                Some(field.name.clone()),
-                            ));
-                        }
-                    }
-                });
-        });
-
-        if current.colour.field.is_some() {
-            ui.horizontal(|ui| {
-                ui.label("map");
-                for map in [ColorMap::Viridis, ColorMap::CoolWarm, ColorMap::Grayscale] {
-                    if ui
-                        .selectable_label(current.colour.map == map, map.as_str())
-                        .clicked()
-                    {
-                        actions.0.push(UiAction::SetColourMap(current.entity, map));
-                    }
-                }
-            });
-        }
-
-        if row.fields.is_empty() {
-            ui.label(egui::RichText::new("no fields").weak());
-        }
-    });
 }
 
 /// Applies what the UI asked for.
@@ -710,7 +325,22 @@ fn apply_actions(
                 } else {
                     Some(entity)
                 };
+                // The Actors tab would otherwise keep showing the controls for
+                // an actor of whatever was selected before, tinted under a
+                // group that is no longer highlighted.
+                state.selected_actor = None;
             }
+            UiAction::SelectActor(entity) => {
+                state.selected_actor = Some(entity);
+                // Follow the source rather than the placement: the outline, the
+                // tree highlight and the tint in the actor list all key off the
+                // object selection, and three of them disagreeing is worse than
+                // the outline moving.
+                if let Ok(source) = sources.get(entity) {
+                    state.selected = Some(source.0);
+                }
+            }
+            UiAction::SelectArray(id) => state.selected_array = Some(id),
             UiAction::ToggleVisibility(entity) => {
                 if let Ok(mut visibility) = visibility.get_mut(entity) {
                     *visibility = match *visibility {
@@ -737,7 +367,7 @@ fn apply_actions(
                 let Some(registered) = registry.get(kind) else {
                     continue;
                 };
-                spawn_actor(
+                let (_, actor) = spawn_actor(
                     &mut commands,
                     &mut counter,
                     object,
@@ -751,12 +381,18 @@ fn apply_actions(
                         ColorBy::default(),
                     ),
                 );
+                // Show what was just added, so its controls appear without a
+                // second click into the list.
+                state.selected_actor = Some(actor);
             }
             UiAction::RemoveActor(entity) => {
                 // Only ever an actor, and actors own nothing, so there is no
                 // subtree to consider.
                 if sources.contains(entity) {
                     commands.entity(entity).despawn();
+                    if state.selected_actor == Some(entity) {
+                        state.selected_actor = None;
+                    }
                 }
             }
 
