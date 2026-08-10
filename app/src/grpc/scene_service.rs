@@ -288,10 +288,6 @@ impl SceneService for SceneBridgeService {
         request: Request<AddActorRequest>,
     ) -> Result<Response<AddActorResponse>, Status> {
         let request = request.into_inner();
-        let source = request
-            .source
-            .ok_or_else(|| Status::invalid_argument("source is required"))?
-            .id;
         // Required. An empty kind used to mean "whatever you would have
         // chosen", and there is no longer anything to choose — ask
         // ListActorKinds and name one.
@@ -301,14 +297,16 @@ impl SceneService for SceneBridgeService {
             ));
         }
         let kind = request.kind;
-        let parent = request.parent.map(|handle| handle.id);
+        let parent = request
+            .parent
+            .ok_or_else(|| Status::invalid_argument("parent is required"))?
+            .id;
         let params = params_from_proto(request.params)?;
         let colour = request.color.map(colour_from_proto).transpose()?;
         let subset = request.subset.map(subset_from_proto).transpose()?;
 
         let summary = self
             .submit(|reply| SceneCommand::AddActor {
-                source,
                 kind,
                 parent,
                 params,
@@ -387,10 +385,10 @@ impl SceneService for SceneBridgeService {
         &self,
         request: Request<ListActorsRequest>,
     ) -> Result<Response<ListActorsResponse>, Status> {
-        let source = request.into_inner().source.map(|handle| handle.id);
+        let parent = request.into_inner().parent.map(|handle| handle.id);
 
         let listing = self
-            .submit(|reply| SceneCommand::ListActors { source, reply })
+            .submit(|reply| SceneCommand::ListActors { parent, reply })
             .await?
             .map_err(scene_error)?;
 
@@ -528,7 +526,7 @@ fn actor_info(summary: &ActorSummary) -> ActorInfo {
     ActorInfo {
         handle: Some(ActorHandle { id: summary.id }),
         kind: summary.kind.clone(),
-        source: Some(ObjectHandle { id: summary.source }),
+
         parent: summary.parent.map(|id| ObjectHandle { id }),
         params: params_to_proto(&summary.params),
         color: Some(colour_to_proto(&summary.colour)),

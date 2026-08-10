@@ -141,7 +141,7 @@ pub fn draw_points(
     store: Res<DataStore>,
     dirty: Query<Drawable<PointsStyle, PointQuadMaterial>>,
 ) {
-    for (entity, style, colour, subset, bound, _source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, bound, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -243,7 +243,7 @@ mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype};
     use crate::scene::registry::Bindings;
-    use crate::scene::{ActorKindId, ActorOf, ColorBy, SceneObject, Subset};
+    use crate::scene::{ActorKindId, ColorBy, SceneObject, Subset};
     use bevy::platform::collections::HashMap;
 
     /// Runs the invalidation chain and this backend, with no renderer behind
@@ -298,7 +298,6 @@ mod tests {
                 ColorBy::default(),
                 Subset::All,
                 Bindings(HashMap::from_iter([("positions", 0)])),
-                ActorOf(object),
             ))
             .id();
 

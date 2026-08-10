@@ -199,15 +199,13 @@ class ActorSummary:
     handle: int
     #: Registered kind id, e.g. "points" or "ball-and-stick".
     kind: str
-    #: Handle of the object whose data is drawn.
-    source: int
-    #: Handle of the object whose transform is inherited — usually ``source``.
+    #: Handle of the object it is drawn under.
     parent: int | None
     #: Complete and in range, whatever was sent to produce it.
     params: dict[str, float | bool]
     coloring: Coloring
     visible: bool
-    #: How much of the source is drawn, or None for all of it.
+    #: How much of the bound data is drawn, or None for all of it.
     subset: SubsetSummary | None = None
 
 
@@ -385,7 +383,6 @@ def _actor(info: ActorInfo) -> ActorSummary:
     return ActorSummary(
         handle=info.handle.id,
         kind=info.kind,
-        source=info.source.id,
         parent=info.parent.id if info.HasField("parent") else None,
         params={key: _read_param(value) for key, value in info.params.items()},
         coloring=_coloring(info.color),
@@ -712,56 +709,55 @@ class Client:
 
     def add_actor(
         self,
-        source: int,
+        parent: int,
         kind: str,
         *,
-        parent: int | None = None,
         params: Mapping[str, float | bool | str] | None = None,
         coloring: Coloring | None = None,
         subset: np.ndarray | None = None,
         per_cell: bool = False,
     ) -> ActorSummary:
-        """Draws an object an additional way.
+        """Draws something under an object.
 
-        Adds rather than replaces: an object may be drawn several ways at once,
+        Adds rather than replaces: an object may carry several actors at once,
         each configured on its own.
 
-        ``kind`` is required, and an upload draws nothing until you call this.
-        The server has no opinion on how a dataset should look, so the choice
-        belongs here. :meth:`actor_kinds` reports what this build supports and
-        which datasets each one can draw.
+        ``parent`` is where it appears — whose transform it inherits, and whose
+        lifetime it shares. *What* it draws is in ``params``, as
+        :class:`Bind` values against the inputs its kind declares.
 
-        ``parent`` is the object whose *transform* is inherited, as distinct
-        from ``source``, whose *data* is drawn. Passing a different object
-        renders one dataset in two places without uploading it twice::
+        Showing one array in two places is two actors binding it under two
+        parents::
 
-            ghost = client.create_object("ghost")
-            client.set_transform(ghost, translation=(10, 0, 0))
-            client.add_actor(protein, parent=ghost)
+            data = client.upload_data({"xyz": positions})
+            here = client.create_object("here")
+            there = client.create_object("there")
+            client.set_transform(there, translation=(10, 0, 0))
+            for where in (here, there):
+                client.add_actor(where, "points",
+                                 params={"positions": Bind(data["xyz"])})
 
         Parameters left out take the kind's default, not the value some other
         actor happens to have.
 
-        ``subset`` draws only part of the source — a boolean mask over every
+        ``subset`` draws only part of the bound data — a boolean mask over every
         element, or an integer array of the elements to keep. This is what
         makes several actors worth having: one structure shown as cartoon over
         its protein and ball-and-stick over its ligand is two actors with two
         subsets. Selections are computed here rather than described to the
         server, so anything numpy can express works::
 
-            client.add_actor(mesh, subset=positions[:, 2] > 0)
+            client.add_actor(node, "surface", subset=positions[:, 2] > 0, ...)
 
         A mesh cell survives only when all of its corners do, and a bond only
         when both its atoms do, so a cut leaves a clean boundary rather than
         stretched or dangling geometry.
         """
         request = AddActorRequest(
-            source=ObjectHandle(id=source),
+            parent=ObjectHandle(id=parent),
             kind=kind,
             params=_params(params),
         )
-        if parent is not None:
-            request.parent.CopyFrom(ObjectHandle(id=parent))
         if coloring is not None:
             request.color.CopyFrom(_color_spec(coloring))
         if subset is not None:
@@ -817,11 +813,11 @@ class Client:
         response = self._scene.RemoveActor(RemoveActorRequest(handle=ActorHandle(id=handle)))
         return response.removed
 
-    def list_actors(self, source: int | None = None) -> list[ActorSummary]:
-        """Lists actors, optionally only those drawing one object."""
+    def list_actors(self, parent: int | None = None) -> list[ActorSummary]:
+        """Lists actors, optionally only those drawn under one object."""
         request = ListActorsRequest()
-        if source is not None:
-            request.source.CopyFrom(ObjectHandle(id=source))
+        if parent is not None:
+            request.parent.CopyFrom(ObjectHandle(id=parent))
         response = self._scene.ListActors(request)
         return [_actor(info) for info in response.actors]
 

@@ -5,10 +5,9 @@
 //! a tab take `&Row` wherever it likes; threading Bevy queries down through
 //! nested closures instead means a borrow conflict at every level.
 //!
-//! The rows are also where the two different questions about an object get
-//! answered separately: `children` is the transform tree, `actors` is what
-//! draws this object's data. Those are no longer the same list split in half —
-//! an actor may sit under some entirely different object.
+//! An object's children are two things at once — nested objects and the actors
+//! drawn under it — and the rows split them apart, by what each entity carries
+//! rather than by any second link.
 
 use bevy::asset::AssetId;
 use bevy::platform::collections::HashMap;
@@ -16,8 +15,8 @@ use bevy::prelude::*;
 
 use crate::counter::UniqueID;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
-use crate::scene::{Actors, ColorBy, DataArray, SceneObject, Subset};
 use crate::scene::{BufferMeta, DataStore};
+use crate::scene::{ColorBy, DataArray, SceneObject, Subset};
 
 /// A flattened view of one object.
 pub struct Row {
@@ -25,7 +24,7 @@ pub struct Row {
     pub id: u64,
     pub name: String,
     pub visible: bool,
-    /// Everything drawing this object's data, wherever it is placed.
+    /// Everything drawn under this object.
     pub actors: Vec<ActorRow>,
     /// Kinds that could be added to this object, as `(id, label)`. Resolved
     /// while gathering so the drawing closures never borrow the registry.
@@ -66,7 +65,6 @@ pub type ObjectData<'w, 's> = Query<
         &'static SceneObject,
         &'static Visibility,
         Option<&'static Children>,
-        Option<&'static Actors>,
         Option<&'static ChildOf>,
     ),
 >;
@@ -104,8 +102,7 @@ pub struct Gathered {
 }
 
 impl Gathered {
-    /// The actor with this entity, together with the object whose data it
-    /// draws.
+    /// The actor with this entity, together with the object it is drawn under.
     ///
     /// The object comes back too, because the controls head their panel with
     /// which object the actor is drawn under.
@@ -139,7 +136,10 @@ pub fn gather(
         .collect();
     bindable.sort_by_key(|(id, _)| *id);
 
-    for (entity, id, object, visibility, children, drawn_by, parent) in objects {
+    for (entity, id, object, visibility, children, parent) in objects {
+        // One child list, told apart by what each entity carries: a child that
+        // is an object is a nested node, and one the actor query matches is
+        // something drawn here.
         let child_objects: Vec<Entity> = children
             .into_iter()
             .flatten()
@@ -147,9 +147,10 @@ pub fn gather(
             .filter(|child| objects.contains(*child))
             .collect();
 
-        let drawn: Vec<ActorRow> = drawn_by
+        let drawn: Vec<ActorRow> = children
             .into_iter()
-            .flat_map(|list| list.iter())
+            .flatten()
+            .copied()
             .filter_map(|entity| {
                 let (actor_id, kind, params, colour, subset) = actors.get(entity).ok()?;
                 // A kind with no registration cannot be drawn or configured, so

@@ -105,7 +105,7 @@ pub fn draw_surfaces(
     store: Res<DataStore>,
     dirty: Query<Drawable<SurfaceStyle, StandardMaterial>>,
 ) {
-    for (entity, style, colour, subset, bound, _source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, subset, bound, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }

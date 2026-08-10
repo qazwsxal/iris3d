@@ -29,7 +29,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiCon
 use crate::scene::actor::ColorMap;
 use crate::scene::link::spawn_actor;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamValue};
-use crate::scene::{ActorOf, ColorBy, DataArray, SceneCommand, Subset};
+use crate::scene::{ColorBy, DataArray, SceneCommand, Subset};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
 use gather::{ActorData, ObjectData};
@@ -313,7 +313,7 @@ fn apply_actions(
     mut visibility: Query<&mut Visibility>,
     mut params: Query<(&ActorKindId, &mut ActorParams)>,
     mut colours: Query<&mut ColorBy>,
-    sources: Query<&ActorOf>,
+    placements: Query<&ChildOf, With<ActorKindId>>,
     bridge: Res<crate::grpc::GrpcBridge>,
 ) {
     for action in actions.0.drain(..) {
@@ -331,12 +331,12 @@ fn apply_actions(
             }
             UiAction::SelectActor(entity) => {
                 state.selected_actor = Some(entity);
-                // Follow the source rather than the placement: the outline, the
+                // Select the object it is drawn under too: the outline, the
                 // tree highlight and the tint in the actor list all key off the
                 // object selection, and three of them disagreeing is worse than
                 // the outline moving.
-                if let Ok(source) = sources.get(entity) {
-                    state.selected = Some(source.0);
+                if let Ok(link) = placements.get(entity) {
+                    state.selected = Some(link.parent());
                 }
             }
             UiAction::SelectArray(id) => state.selected_array = Some(id),
@@ -359,9 +359,8 @@ fn apply_actions(
             UiAction::Frame(entity) => frame.0 = Some(FrameTarget::Subtree(entity)),
             UiAction::FrameAll => frame.0 = Some(FrameTarget::All),
 
-            // Drawn in place, which is the only thing the tree can express.
-            // Sourcing an object's data under a *different* node is a scripted
-            // operation — there is nowhere sensible to click for it.
+            // Placed under the selected object. What it *draws* is bound
+            // afterwards, through the input pickers.
             UiAction::AddActor(object, kind) => {
                 let Some(registered) = registry.get(kind) else {
                     continue;
@@ -369,7 +368,6 @@ fn apply_actions(
                 let (_, actor) = spawn_actor(
                     &mut commands,
                     &mut counter,
-                    object,
                     object,
                     // Selections are computed by a client, not clicked together
                     // here, so the tree only ever adds a whole-dataset one.
@@ -387,7 +385,7 @@ fn apply_actions(
             UiAction::RemoveActor(entity) => {
                 // Only ever an actor, and actors own nothing, so there is no
                 // subtree to consider.
-                if sources.contains(entity) {
+                if placements.contains(entity) {
                     commands.entity(entity).despawn();
                     if state.selected_actor == Some(entity) {
                         state.selected_actor = None;

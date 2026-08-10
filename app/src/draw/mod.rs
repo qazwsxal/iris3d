@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use crate::scene::actor::ColorMap;
 
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
-use crate::scene::{ActorOf, ColorBy, DataArray, DataStore, Subset};
+use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
 mod molecule;
 mod points;
@@ -109,7 +109,6 @@ pub(crate) type Drawable<'a, Style, Material> = (
     &'a ColorBy,
     &'a Subset,
     &'a Bindings,
-    &'a ActorOf,
     &'a Dirty,
     Option<&'a Mesh3d>,
     Option<&'a MeshMaterial3d<Material>>,
@@ -467,9 +466,9 @@ fn ramp(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::SceneObject;
     use crate::scene::data::{BufferMeta, Dtype};
     use crate::scene::registry::{ActorParams, ParamValue};
-    use crate::scene::{ActorOf, SceneObject};
     use bevy::platform::collections::HashMap;
 
     fn array() -> DataArray {
@@ -508,8 +507,8 @@ mod tests {
             .id()
     }
 
-    /// Spawns an actor drawing `source`, placed under `parent`.
-    fn spawn_actor(app: &mut App, source: Entity, parent: Entity) -> Entity {
+    /// Spawns an actor drawn under `parent`.
+    fn spawn_actor(app: &mut App, parent: Entity) -> Entity {
         let mut params = crate::scene::registry::ParamMap::default();
         params.insert("size".into(), ParamValue::Float(1.0));
         app.world_mut()
@@ -519,7 +518,6 @@ mod tests {
                 ColorBy::default(),
                 Subset::All,
                 Bindings(HashMap::from_iter([("positions", 0u64)])),
-                ActorOf(source),
                 ChildOf(parent),
             ))
             .id()
@@ -530,7 +528,7 @@ mod tests {
     fn scene() -> (App, Entity, Entity) {
         let mut app = app();
         let object = spawn_object(&mut app, "test");
-        let actor = spawn_actor(&mut app, object, object);
+        let actor = spawn_actor(&mut app, object);
         app.update();
         (app, object, actor)
     }
@@ -657,8 +655,8 @@ mod tests {
         let mut app = app();
         let source = spawn_object(&mut app, "source");
         let elsewhere = spawn_object(&mut app, "elsewhere");
-        let first = spawn_actor(&mut app, source, source);
-        let second = spawn_actor(&mut app, source, elsewhere);
+        let first = spawn_actor(&mut app, source);
+        let second = spawn_actor(&mut app, elsewhere);
         app.update();
         settle(&mut app, first);
         settle(&mut app, second);

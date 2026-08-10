@@ -281,7 +281,7 @@ class Subset(_message.Message):
     def __init__(self, data: _Optional[bytes] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ...) -> None: ...
 
 class ActorInfo(_message.Message):
-    __slots__ = ("handle", "kind", "source", "parent", "params", "color", "visible", "subset")
+    __slots__ = ("handle", "kind", "parent", "params", "color", "visible", "subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -291,7 +291,6 @@ class ActorInfo(_message.Message):
         def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
-    SOURCE_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
@@ -299,13 +298,12 @@ class ActorInfo(_message.Message):
     SUBSET_FIELD_NUMBER: _ClassVar[int]
     handle: ActorHandle
     kind: str
-    source: ObjectHandle
     parent: ObjectHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
     subset: SubsetInfo
-    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ...) -> None: ...
 
 class SubsetInfo(_message.Message):
     __slots__ = ("encoding", "association", "selected")
@@ -328,7 +326,7 @@ class ActorKindInfo(_message.Message):
     def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
 
 class AddActorRequest(_message.Message):
-    __slots__ = ("source", "kind", "parent", "params", "color", "subset")
+    __slots__ = ("kind", "parent", "params", "color", "subset")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -336,19 +334,17 @@ class AddActorRequest(_message.Message):
         key: str
         value: ParamValue
         def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
-    SOURCE_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
-    source: ObjectHandle
     kind: str
     parent: ObjectHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     subset: Subset
-    def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ...) -> None: ...
+    def __init__(self, kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ...) -> None: ...
 
 class AddActorResponse(_message.Message):
     __slots__ = ("actor",)
@@ -398,10 +394,10 @@ class RemoveActorResponse(_message.Message):
     def __init__(self, removed: _Optional[bool] = ...) -> None: ...
 
 class ListActorsRequest(_message.Message):
-    __slots__ = ("source",)
-    SOURCE_FIELD_NUMBER: _ClassVar[int]
-    source: ObjectHandle
-    def __init__(self, source: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
+    __slots__ = ("parent",)
+    PARENT_FIELD_NUMBER: _ClassVar[int]
+    parent: ObjectHandle
+    def __init__(self, parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
 class ListActorsResponse(_message.Message):
     __slots__ = ("actors",)

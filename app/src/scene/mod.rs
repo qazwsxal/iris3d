@@ -39,7 +39,6 @@ pub mod subset;
 // module path — this is a binary crate, so unused re-exports are just noise.
 pub use actor::ColorBy;
 pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedBuffer};
-pub use link::{ActorOf, Actors};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
 pub use subset::{Subset, SubsetEncoding};
 
@@ -55,16 +54,10 @@ impl Plugin for ScenePlugin {
             .init_resource::<DataStore>()
             .add_systems(
                 Update,
-                // Order matters throughout: the drain creates actors, the reaper
-                // removes any a deletion orphaned before a backend can look at
-                // them, and only then are style components derived from the
-                // parameters the drain wrote.
-                (
-                    apply_scene_commands,
-                    link::reap_orphaned_actors,
-                    registry::apply_actor_params,
-                )
-                    .chain(),
+                // Order matters: the drain creates actors, and only then are
+                // style components and bindings derived from the parameters it
+                // wrote.
+                (apply_scene_commands, registry::apply_actor_params).chain(),
             );
     }
 }
@@ -110,17 +103,13 @@ pub struct ActorSummary {
     pub id: u64,
     /// Registered kind id — see [`ActorRegistry`].
     pub kind: String,
-    /// The object whose data is drawn.
-    pub source: u64,
-    /// The object whose transform is inherited, usually the same as `source`.
-    /// `None` when the actor has somehow been detached.
+    /// The object it is drawn under. `None` when it has somehow been detached.
     pub parent: Option<u64>,
     pub params: registry::ParamMap,
     pub colour: ColorBy,
     pub visible: bool,
-    /// How much of the source is drawn, or `None` for all of it. The selection
-    /// values are not carried back — the caller sent them, and they can be
-    /// large.
+    /// How much of the bound data is drawn, or `None` for all of it. The values
+    /// are not carried back — the caller sent them, and they can be large.
     pub subset: Option<SubsetSummary>,
 }
 
@@ -263,15 +252,14 @@ pub enum SceneCommand {
         reply: oneshot::Sender<Deleted>,
     },
 
-    /// Draws an object an additional way. Adds; never replaces.
+    /// Draws something under an object. Adds; never replaces.
     AddActor {
-        /// The object whose data to draw.
-        source: u64,
+        /// The object to draw under, whose transform it inherits and whose
+        /// lifetime it shares. *What* it draws is in `params`, as bindings.
+        parent: u64,
         /// Which registered kind draws it. Named by the caller, always: the
         /// server has no opinion on how a dataset should look.
         kind: String,
-        /// The object whose transform to inherit. `None` means `source`.
-        parent: Option<u64>,
         /// Partial. Anything unset takes the kind's **default**, there being no
         /// previous value.
         params: registry::ParamMap,
@@ -301,7 +289,7 @@ pub enum SceneCommand {
     },
     ListActors {
         /// Restrict to those drawing one object.
-        source: Option<u64>,
+        parent: Option<u64>,
         reply: oneshot::Sender<Result<Vec<ActorSummary>, SceneError>>,
     },
     ListActorKinds {
@@ -313,27 +301,16 @@ pub enum SceneCommand {
 #[derive(Debug, Default, Clone)]
 pub struct Deleted {
     pub objects: Vec<u64>,
-    /// Actors that were drawing the deleted objects, including any placed
-    /// under an object that survives.
+    /// Actors that were drawn under the deleted objects.
     pub actors: Vec<u64>,
 }
 
 /// Read-only view of the objects in the scene.
 ///
-/// Yields [`Actors`] rather than `Children`: the two answer different
-/// questions now, and every use here wants the actors drawing an object, not
-/// the mix of actors and nested objects sitting under it. Walking the tree
-/// needs a separate `Query<&Children>`.
-type Objects<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Entity,
-        &'static UniqueID,
-        &'static SceneObject,
-        Option<&'static Actors>,
-    ),
->;
+/// An object's actors are its children that an [`ActorQuery`] matches — the
+/// rest of its children are nested objects. One list, told apart by what the
+/// entity carries, since an actor is a plain child now.
+type Objects<'w, 's> = Query<'w, 's, (Entity, &'static UniqueID, &'static SceneObject)>;
 
 /// Mutable view of the actor entities.
 ///
@@ -351,7 +328,6 @@ type ActorQuery<'w, 's> = Query<
         &'static mut ColorBy,
         &'static mut Visibility,
         &'static mut Subset,
-        &'static ActorOf,
         Option<&'static ChildOf>,
     ),
     With<ActorKindId>,
@@ -366,7 +342,6 @@ type ActorItem<'a> = (
     &'a ColorBy,
     &'a Visibility,
     &'a Subset,
-    &'a ActorOf,
     Option<&'a ChildOf>,
 );
 
@@ -527,12 +502,15 @@ pub fn apply_scene_commands(
             SceneCommand::ListObjects { reply } => {
                 let mut listing: Vec<ObjectSummary> = objects
                     .iter()
-                    .map(|(entity, id, object, drawn_by)| {
-                        let drawn = drawn_by
+                    .map(|(entity, id, object)| {
+                        // An object's actors are the children the actor query
+                        // matches; the rest of its children are nested objects.
+                        let drawn = children
+                            .get(entity)
                             .into_iter()
                             .flat_map(|list| list.iter())
-                            .filter_map(|entity| {
-                                summarise_actor(actors.get(entity).ok()?, &ids, &arrays)
+                            .filter_map(|child| {
+                                summarise_actor(actors.get(child).ok()?, &ids, &arrays)
                             })
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -564,7 +542,6 @@ pub fn apply_scene_commands(
             }
 
             SceneCommand::AddActor {
-                source,
                 kind,
                 parent,
                 params,
@@ -578,10 +555,8 @@ pub fn apply_scene_commands(
                     &registry,
                     &index,
                     &mut drawn,
-                    &objects,
-                    source,
-                    kind,
                     parent,
+                    kind,
                     params,
                     colour,
                     subset,
@@ -628,8 +603,8 @@ pub fn apply_scene_commands(
                 let _ = reply.send(existed);
             }
 
-            SceneCommand::ListActors { source, reply } => {
-                let filter = match source {
+            SceneCommand::ListActors { parent, reply } => {
+                let filter = match parent {
                     Some(id) => match index.get(&id) {
                         Some(entity) => Some(*entity),
                         None => {
@@ -641,7 +616,13 @@ pub fn apply_scene_commands(
                 };
                 let mut listing: Vec<ActorSummary> = actors
                     .iter()
-                    .filter(|item| filter.is_none_or(|object| item.7.0 == object))
+                    // Filtered on where an actor is drawn. It used to filter on
+                    // whose data it read, which is no longer a thing an actor
+                    // has — it reads arrays, and any number of them.
+                    .filter(|item| {
+                        filter
+                            .is_none_or(|object| item.7.is_some_and(|link| link.parent() == object))
+                    })
                     .filter_map(|item| summarise_actor(item, &ids, &arrays))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
@@ -704,7 +685,7 @@ fn check_bindings(
     Ok(())
 }
 
-/// Adds a way of drawing an object.
+/// Adds a way of drawing, at a place in the tree.
 #[allow(clippy::too_many_arguments)]
 fn add_actor(
     commands: &mut Commands,
@@ -712,23 +693,15 @@ fn add_actor(
     registry: &ActorRegistry,
     index: &HashMap<u64, Entity>,
     drawn: &mut HashMap<u64, Entity>,
-    _objects: &Objects,
-    source: u64,
+    parent: u64,
     kind: String,
-    parent: Option<u64>,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
     subset: Option<subset::SubsetRequest>,
     arrays: &mut Assets<DataArray>,
     store: &DataStore,
 ) -> Result<ActorSummary, SceneError> {
-    let source_entity = *index.get(&source).ok_or(SceneError::NoSuchObject(source))?;
-    let parent_entity = match parent {
-        Some(id) => *index.get(&id).ok_or(SceneError::NoSuchObject(id))?,
-        // Drawn where the data already is, which is what almost every caller
-        // wants and what an upload does.
-        None => source_entity,
-    };
+    let parent_entity = *index.get(&parent).ok_or(SceneError::NoSuchObject(parent))?;
 
     // The caller names the kind. There is no default to fall back on: which
     // representation suits some data is a judgement, and the server has no
@@ -767,7 +740,6 @@ fn add_actor(
     let (id, entity) = link::spawn_actor(
         commands,
         counter,
-        source_entity,
         parent_entity,
         subset,
         (
@@ -779,19 +751,14 @@ fn add_actor(
     drawn.insert(id, entity);
 
     info!(
-        "scene: object {source} also drawn as {} (actor {id}){}",
-        registered.id,
-        match parent {
-            Some(parent) if parent != source => format!(", placed under object {parent}"),
-            _ => String::new(),
-        }
+        "scene: actor {id} draws {} under object {parent}",
+        registered.id
     );
 
     Ok(ActorSummary {
         id,
         kind: registered.id.to_string(),
-        source,
-        parent: Some(parent.unwrap_or(source)),
+        parent: Some(parent),
         params,
         colour,
         visible: true,
@@ -1059,12 +1026,15 @@ fn delete_object(
         if let Ok(unique) = ids.get(object) {
             deleted.objects.push(unique.0);
         }
-        if let Ok((.., Some(drawn_by))) = objects.get(object) {
-            for actor in drawn_by.iter() {
-                if let Ok(unique) = ids.get(actor) {
+        // The actors drawn here are children; Bevy's recursive despawn takes
+        // them with the object, so this only has to *report* them.
+        if let Ok(list) = children.get(object) {
+            for child in list.iter() {
+                if !objects.contains(child)
+                    && let Ok(unique) = ids.get(child)
+                {
                     deleted.actors.push(unique.0);
                 }
-                commands.entity(actor).despawn();
             }
         }
     }
@@ -1115,17 +1085,15 @@ fn collect_descendants(
 
 /// Describes one actor from its query item.
 ///
-/// `None` when the source object has no handle, which should not happen and is
-/// not worth inventing one for — such an actor is about to be reaped.
+/// `Option` only so callers can filter with `?`; an actor always describes.
 fn summarise_actor(
-    (_, id, kind, params, colour, visibility, subset, source, parent): ActorItem<'_>,
+    (_, id, kind, params, colour, visibility, subset, parent): ActorItem<'_>,
     ids: &Query<&UniqueID>,
     arrays: &Assets<DataArray>,
 ) -> Option<ActorSummary> {
     Some(ActorSummary {
         id: id.0,
         kind: kind.0.to_string(),
-        source: ids.get(source.0).ok()?.0,
         parent: parent
             .and_then(|link| ids.get(link.parent()).ok())
             .map(|unique| unique.0),

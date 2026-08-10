@@ -499,10 +499,10 @@ message ActorInfo {
   // Registered kind id, e.g. "points" or "ball-and-stick". See ListActorKinds.
   string kind = 2;
 
-  // The object whose data is drawn.
-  ObjectHandle source = 3;
+  // Field 3 was `source`, the object whose data was drawn.
+  reserved 3;
 
-  // The object whose transform is inherited. Usually the same as `source`.
+  // The object it is drawn under.
   ObjectHandle parent = 4;
 
   // Complete and in range, whatever was sent to produce it.
@@ -547,17 +547,19 @@ message ActorKindInfo {
 }
 
 message AddActorRequest {
-  // The object whose data to draw.
-  ObjectHandle source = 1;
+  // Field 1 was `source`, the object whose data to draw. An actor binds its
+  // arrays through `params` now, so there is no one object it reads.
+  reserved 1;
 
   // Registered kind id. REQUIRED: ask ListActorKinds and name one. There is no
   // default — how a dataset should look is the caller's judgement, and the
   // server's only basis for guessing was the order its backends registered in.
   string kind = 2;
 
-  // The object whose transform to inherit. Absent means `source`, drawing the
-  // data where it already is.
-  optional ObjectHandle parent = 3;
+  // The object to draw under: whose transform it inherits, and whose lifetime
+  // it shares. REQUIRED — an actor is a child of a node, not a free-floating
+  // thing.
+  ObjectHandle parent = 3;
 
   // Settings to override. Anything not named takes the kind's default — this
   // is a new actor, so there is no previous value to keep.
@@ -610,8 +612,11 @@ message RemoveActorResponse {
 }
 
 message ListActorsRequest {
-  // Restrict to actors drawing this object. Absent lists all of them.
-  optional ObjectHandle source = 1;
+  // Restrict to actors drawn under this object. Absent lists all of them.
+  //
+  // Filtered on placement, not on what is read: an actor reads any number of
+  // arrays and no one object.
+  optional ObjectHandle parent = 1;
 }
 
 message ListActorsResponse {
