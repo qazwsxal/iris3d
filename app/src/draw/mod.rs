@@ -260,11 +260,14 @@ impl Plugin for DrawPlugin {
                     .in_set(Backends),
                 // After the backends, so a placement picks up a handle on the
                 // same frame the actor gets one rather than a frame late.
+                //
+                // No `VolumeMaterial` here: a volume's uniform holds the world
+                // transform of the copy being drawn, so its placements each get
+                // their own material rather than a copy of one. See `volume`.
                 (
                     copy_meshes,
                     copy_materials::<StandardMaterial>,
                     copy_materials::<PointQuadMaterial>,
-                    copy_materials::<VolumeMaterial>,
                 ),
                 clear_dirty,
             )

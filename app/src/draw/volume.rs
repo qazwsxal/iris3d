@@ -33,6 +33,7 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 
 use crate::scene::actor::ColorMap;
+use crate::scene::link::{Placement, Placements};
 use crate::scene::registry::{
     ActorKind, ActorRegistry, ParamKind, ParamSpec, float, text, uvec3 as param_uvec3,
     vec3 as param_vec3,
@@ -280,23 +281,30 @@ pub struct VolumeTexture {
 /// Every parameter here is a uniform or the choice of texture, so none of them
 /// touches the box mesh.
 ///
-/// Moving the object counts too: `uvw_from_world` is built from the transform,
-/// so it goes stale the moment the object moves. This is the one backend where
-/// a transform change is a redraw rather than something the scene graph handles
-/// on its own.
+/// Moving the object counts too: `uvw_from_world` is built from the world
+/// transform of the copy being drawn, so it goes stale the moment that copy
+/// moves. This is the one backend where a transform change is a redraw rather
+/// than something the scene graph handles on its own — and the transform to
+/// watch is the *placement's*, since that is the one that ends up in the
+/// uniform. It also covers a placement that has just appeared, whose transform
+/// is not propagated until the frame after it is spawned.
 pub fn invalidate(
     mut commands: Commands,
-    changed: Query<
-        Entity,
-        (
-            With<VolumeStyle>,
-            Or<(Changed<VolumeStyle>, Changed<GlobalTransform>)>,
-        ),
-    >,
+    changed: Query<Entity, (With<VolumeStyle>, Changed<VolumeStyle>)>,
+    moved: Query<&Placement, Changed<GlobalTransform>>,
+    volumes: Query<(), With<VolumeStyle>>,
     regridded: Query<Entity, Changed<VolumeGrid>>,
 ) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
+    }
+    // Filtered to volumes: every placement in the scene moves when its object
+    // does, and marking a mesh actor dirty for that would have it rebuild a
+    // material the scene graph was already handling for free.
+    for placement in &moved {
+        if volumes.contains(placement.0) {
+            mark(&mut commands, placement.0, Dirty::MATERIAL);
+        }
     }
     // The grid decides the box mesh and the texture, so moving or resizing it is
     // a rebuild rather than a uniform write.
@@ -484,14 +492,15 @@ pub fn draw_volumes(
     store: Res<DataStore>,
     dirty: Query<Drawable<VolumeStyle, VolumeMaterial>>,
     cached: Query<&VolumeTexture>,
-    placements: Query<&GlobalTransform>,
     grids: Query<&VolumeGrid>,
+    placements: Query<&Placements>,
+    drawn: Query<(&GlobalTransform, Option<&MeshMaterial3d<VolumeMaterial>>)>,
 ) {
-    for (entity, style, colour, _subset, bound, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, _subset, bound, dirty, mesh3d, _) in &dirty {
         if !dirty.any() {
             continue;
         }
-        let (Ok(grid), Ok(placement)) = (grids.get(entity), placements.get(entity)) else {
+        let Ok(grid) = grids.get(entity) else {
             continue;
         };
 
@@ -545,30 +554,45 @@ pub fn draw_volumes(
             );
         }
 
-        // World -> local -> unit cube, composed once here so the shader needs
-        // no inverse and no mesh instance data.
-        let uvw_from_world = Mat4::from_scale(1.0 / size.max(Vec3::splat(f32::EPSILON)))
-            * Mat4::from_translation(-grid.origin)
-            * placement.to_matrix().inverse();
+        // One material per placement, unlike every other backend.
+        //
+        // The uniform folds world -> local -> unit cube into a single matrix so
+        // the shader needs no inverse and no mesh instance data — which means
+        // it holds the *world* transform of the copy being drawn. Two copies of
+        // a volume sit in two places, so they cannot share one. Only the
+        // material is per copy: the 3D texture is the expensive part and stays
+        // one image behind all of them.
+        for placement in placements
+            .get(entity)
+            .into_iter()
+            .flat_map(|list| list.iter())
+        {
+            let Ok((placed, existing)) = drawn.get(placement) else {
+                continue;
+            };
+            let uvw_from_world = Mat4::from_scale(1.0 / size.max(Vec3::splat(f32::EPSILON)))
+                * Mat4::from_translation(-grid.origin)
+                * placed.to_matrix().inverse();
 
-        super::ensure_material(
-            &mut commands,
-            entity,
-            &mut materials,
-            material3d,
-            VolumeMaterial {
-                uniform: VolumeUniform {
-                    uvw_from_world,
-                    options: Vec4::new(
-                        style.steps,
-                        style.opacity,
-                        style.mode.index(),
-                        colour_map_index(colour.map),
-                    ),
+            super::ensure_material(
+                &mut commands,
+                placement,
+                &mut materials,
+                existing,
+                VolumeMaterial {
+                    uniform: VolumeUniform {
+                        uvw_from_world,
+                        options: Vec4::new(
+                            style.steps,
+                            style.opacity,
+                            style.mode.index(),
+                            colour_map_index(colour.map),
+                        ),
+                    },
+                    field: image.clone(),
                 },
-                field: image,
-            },
-        );
+            );
+        }
 
         debug!(
             "draw: volume, density d{density_handle} coloured by d{}, {:?} of {} samples",

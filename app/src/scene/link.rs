@@ -65,12 +65,11 @@ pub struct Placements(Vec<Entity>);
 
 /// Whether the client asked for this actor to be drawn.
 ///
-/// A plain flag rather than a `Visibility`, because the actor entity must not
-/// have one. `Mesh3d` requires `Transform` but *not* `Visibility`, so an entity
-/// holding a mesh and no `Visibility` is never collected by the visibility
-/// systems and never renders — which is exactly what an actor has to be, the
-/// owner of the assets, on screen only through its placements. Storing this
-/// setting in a `Visibility` would put it back on screen at the origin.
+/// A flag of its own rather than the actor's `Visibility`, because that one is
+/// already spoken for: the actor holds the mesh it owns, and its `Visibility`
+/// is pinned to `Hidden` to keep that mesh off screen. See [`spawn_actor`].
+/// This is the setting, and [`apply_shown`] gives it to the placements, which
+/// are what actually draw.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shown(pub bool);
 
@@ -82,9 +81,20 @@ impl Default for Shown {
 
 /// Spawns an actor to be drawn under `parents`.
 ///
-/// No `Visibility` and no `Transform`, deliberately: see [`Shown`], and an
-/// actor has no placement of its own for a transform to mean anything about.
-/// `Mesh3d` brings a `Transform` when a backend draws, which goes unread.
+/// `Visibility::Hidden`, always and permanently. An actor owns the mesh a
+/// backend builds for it, and a mesh on a visible entity is drawn — the actor
+/// is a root, so it would appear at the origin as a second copy of everything.
+///
+/// Leaving `Visibility` off does not work, however much it looks like it
+/// should. `Mesh3d`'s derive requires only `Transform`, but `VisibilityPlugin`
+/// adds `Mesh3d -> Visibility` as a *runtime* required component, so the moment
+/// a backend inserts a mesh Bevy supplies a default `Visibility::Inherited` and
+/// the actor renders. A required component is only filled in when absent, so
+/// carrying `Hidden` from the start is what holds.
+///
+/// Hiding the actor costs its placements nothing: they are children of the
+/// objects, not of the actor, so nothing inherits this. Their own visibility
+/// comes from [`Shown`] via [`apply_shown`].
 ///
 /// `subset` is a parameter rather than something the caller folds into `extra`
 /// because every backend queries one, so it cannot be optional — and a bundle
@@ -98,7 +108,14 @@ pub fn spawn_actor(
 ) -> (u64, Entity) {
     let id = counter.next();
     let entity = commands
-        .spawn((UniqueID(id), subset, Parents(parents), Shown(true), extra))
+        .spawn((
+            UniqueID(id),
+            subset,
+            Parents(parents),
+            Shown(true),
+            Visibility::Hidden,
+            extra,
+        ))
         .id();
     (id, entity)
 }
@@ -169,6 +186,10 @@ mod tests {
 
     fn app() -> App {
         let mut app = App::new();
+        // The one thing `VisibilityPlugin` does that matters here, without
+        // dragging in the rest of it. Leave this out and an actor looks safely
+        // invisible in a test while rendering in the app.
+        app.register_required_components::<Mesh3d, Visibility>();
         app.add_systems(Update, (sync_placements, apply_shown).chain());
         app
     }
@@ -210,21 +231,55 @@ mod tests {
         found
     }
 
-    /// The actor itself must never be collected for rendering. Everything it
-    /// draws goes through a placement, and an actor that rendered on its own
-    /// would put a copy at the origin belonging to no object.
+    /// The actor itself must never be drawn, even once it holds a mesh.
+    ///
+    /// It is a root, so a visible one puts a copy of everything at the origin
+    /// alongside the real placements — which is exactly what happened when this
+    /// relied on the actor simply having no `Visibility`. `VisibilityPlugin`
+    /// registers `Mesh3d -> Visibility` at runtime, so the first backend to
+    /// draw handed it a default `Inherited`.
     #[test]
-    fn an_actor_carries_no_visibility_of_its_own() {
+    fn an_actor_stays_hidden_once_a_backend_gives_it_a_mesh() {
         let mut app = app();
         let object = object(&mut app);
         let actor = actor(&mut app, vec![object]);
         app.update();
 
-        assert!(
-            app.world().get::<Visibility>(actor).is_none(),
-            "an actor with a Visibility is an actor that renders"
+        app.world_mut()
+            .entity_mut(actor)
+            .insert(Mesh3d(Handle::default()));
+        app.update();
+
+        assert_eq!(
+            app.world().get::<Visibility>(actor),
+            Some(&Visibility::Hidden),
+            "a mesh on a visible actor is a second copy of everything at the origin"
         );
+        // And the setting a client sees is untouched by that.
         assert_eq!(app.world().get::<Shown>(actor), Some(&Shown(true)));
+    }
+
+    /// Hiding the actor must not hide what it draws. The placements are
+    /// children of the objects, so nothing inherits it.
+    #[test]
+    fn hiding_the_actor_does_not_hide_its_placements() {
+        let mut app = app();
+        let object = object(&mut app);
+        let actor = actor(&mut app, vec![object]);
+        app.update();
+
+        let placement = app
+            .world_mut()
+            .query::<(Entity, &Placement)>()
+            .iter(app.world())
+            .find(|(_, p)| p.0 == actor)
+            .map(|(entity, _)| entity)
+            .expect("a placement");
+        assert_eq!(
+            app.world().get::<Visibility>(placement),
+            Some(&Visibility::Inherited),
+            "the copy under the object is what draws"
+        );
     }
 
     /// One actor, two objects, two placements. The point of the split.
