@@ -944,15 +944,28 @@ fn set_parent(
     }
 
     if keep_world_transform {
-        // GlobalTransform is whatever the last propagation produced, so an
-        // object created earlier in this same tick still reads as identity.
-        let world = globals.get(entity).copied().unwrap_or_default();
-        let parent_world = parent_entity
-            .and_then(|p| globals.get(p).ok().copied())
-            .unwrap_or_default();
-        if let Ok(mut local) = transforms.get_mut(entity) {
-            *local = world.reparented_to(&parent_world);
-        }
+        // Both world transforms have to be real ones. An object created
+        // earlier in this same tick has neither: it is in `index` because the
+        // drain recorded it, but `Commands` has not spawned it yet, so its
+        // `GlobalTransform` has not been propagated and its `Transform` is not
+        // there to write to. Reading through those misses would place the
+        // object as though it and its new parent both sat at the origin —
+        // wrong, and silently so, which is worse than the refusal the three
+        // sibling commands already give for the same situation.
+        let world = *globals
+            .get(entity)
+            .map_err(|_| SceneError::NoSuchObject(id))?;
+        let parent_world = match (parent_entity, parent) {
+            (Some(target), Some(parent_id)) => *globals
+                .get(target)
+                .map_err(|_| SceneError::NoSuchObject(parent_id))?,
+            // Detaching: the world is the parent, and it is at the origin.
+            _ => GlobalTransform::default(),
+        };
+        let Ok(mut local) = transforms.get_mut(entity) else {
+            return Err(SceneError::NoSuchObject(id));
+        };
+        *local = world.reparented_to(&parent_world);
     }
 
     match parent_entity {
@@ -1176,5 +1189,140 @@ fn summarise(
         total_bytes: object.total_bytes(),
         representations,
         parent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::counter::GlobalIDCounter;
+    use crate::grpc::GrpcBridge;
+    use crate::redraw::KeepAwake;
+
+    fn app() -> App {
+        let mut app = App::new();
+        // Enough of the world for the drain to run: the assets it ingests into,
+        // the handle counter, an empty registry (nothing here asks to be drawn)
+        // and the channel it reads. `TransformPlugin` is what makes
+        // `GlobalTransform` mean anything, which the reparent path depends on.
+        app.add_plugins(TransformPlugin);
+        app.add_message::<AssetEvent<DataArray>>();
+        app.init_resource::<Assets<DataArray>>();
+        app.init_resource::<GlobalIDCounter>();
+        app.init_resource::<RepresentationRegistry>();
+        app.init_resource::<KeepAwake>();
+        app.init_resource::<GrpcBridge>();
+        app.add_systems(Update, apply_scene_commands);
+        app
+    }
+
+    /// Queues a command the way the gRPC side does, and hands back the reply.
+    fn send<T>(
+        app: &App,
+        make: impl FnOnce(oneshot::Sender<T>) -> SceneCommand,
+    ) -> oneshot::Receiver<T> {
+        let (tx, rx) = oneshot::channel();
+        app.world()
+            .resource::<GrpcBridge>()
+            .sender()
+            .send(make(tx))
+            .expect("the scene is draining");
+        rx
+    }
+
+    fn create(app: &App, name: &str) -> oneshot::Receiver<ObjectSummary> {
+        send(app, |reply| SceneCommand::CreateObject {
+            name: name.into(),
+            reply,
+        })
+    }
+
+    fn place(app: &App, id: u64, x: f32) -> oneshot::Receiver<Result<(), SceneError>> {
+        send(app, |reply| SceneCommand::SetTransform {
+            id,
+            translation: Some(Vec3::new(x, 0.0, 0.0)),
+            rotation: None,
+            scale: None,
+            reply,
+        })
+    }
+
+    fn reparent(
+        app: &App,
+        id: u64,
+        parent: Option<u64>,
+    ) -> oneshot::Receiver<Result<(), SceneError>> {
+        send(app, |reply| SceneCommand::SetParent {
+            id,
+            parent,
+            keep_world_transform: true,
+            reply,
+        })
+    }
+
+    /// The ordinary case: both objects are really in the world, so the child's
+    /// local transform absorbs the parent's and it does not move.
+    #[test]
+    fn keeping_the_world_transform_offsets_the_child() {
+        let mut app = app();
+        let mut parent = create(&app, "parent");
+        let mut child = create(&app, "child");
+        app.update();
+        let parent = parent.try_recv().expect("a reply").id;
+        let child = child.try_recv().expect("a reply").id;
+
+        place(&app, parent, 5.0);
+        place(&app, child, 1.0);
+        app.update();
+
+        let mut moved = reparent(&app, child, Some(parent));
+        app.update();
+        assert_eq!(moved.try_recv().expect("a reply"), Ok(()));
+
+        let entity = app
+            .world_mut()
+            .query::<(Entity, &UniqueID)>()
+            .iter(app.world())
+            .find(|(_, id)| id.0 == child)
+            .map(|(entity, _)| entity)
+            .expect("the child is in the world");
+        let local = app.world().get::<Transform>(entity).expect("a transform");
+        assert_eq!(
+            local.translation,
+            Vec3::new(-4.0, 0.0, 0.0),
+            "the child should stay where it was in world space"
+        );
+    }
+
+    /// The same command against an object created earlier in the *same* drain.
+    /// Its handle is already in `index`, but `Commands` has not spawned it, so
+    /// neither world transform exists. Answering with the origin would misplace
+    /// the object without saying so, so the command has to fail instead.
+    ///
+    /// No client can reach this today — naming the object needs the handle, and
+    /// the handle only arrives in a reply, by which point the spawn has landed.
+    /// The test builds the batch by hand, since handles are allocated in order.
+    #[test]
+    fn refuses_to_keep_the_world_transform_of_an_object_made_this_tick() {
+        let mut app = app();
+        let mut parent = create(&app, "parent");
+        app.update();
+        let parent = parent.try_recv().expect("a reply").id;
+
+        // Both in one batch, the second naming what the first will create.
+        let mut child = create(&app, "child");
+        let mut moved = reparent(&app, parent + 1, Some(parent));
+        app.update();
+
+        assert_eq!(
+            child.try_recv().expect("a reply").id,
+            parent + 1,
+            "handles come out of one sequence, so the batch could name it"
+        );
+        assert_eq!(
+            moved.try_recv().expect("a reply"),
+            Err(SceneError::NoSuchObject(parent + 1)),
+            "a silent misplacement is worse than a refusal"
+        );
     }
 }
