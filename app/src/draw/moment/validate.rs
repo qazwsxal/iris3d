@@ -42,6 +42,67 @@ pub fn sphere_transmittance(radius: f32, offset: f32, sigma: f32, tint: f32) -> 
     (-sigma * chord * (1.0 - tint)).exp()
 }
 
+/// `reconstruct.wgsl`'s `absorbed_fraction`, in Rust, so it can be tested.
+///
+/// A second implementation of the same arithmetic is a real cost — the two can
+/// drift — but the alternative was no test at all. The WGSL runs only on a GPU,
+/// inside a pass whose one caller currently asks it a question with a known
+/// answer, so a mistake in the Cholesky or the root finding would not have
+/// shown up in any picture. Keep the two in step by hand; the tests below are
+/// what tell you the algorithm itself is right.
+#[allow(dead_code)]
+pub fn absorbed_fraction(raw: [f32; 4], at: f32) -> f32 {
+    const BIAS: f32 = 3.0e-5;
+    let b: Vec<f32> = raw.iter().map(|m| m * (1.0 - BIAS) + 0.5 * BIAS).collect();
+    let degenerate = if at > b[0] { 1.0 } else { 0.0 };
+
+    let (l21, l31) = (b[0], b[1]);
+    let d2 = b[1] - b[0] * b[0];
+    if d2 <= 0.0 {
+        return degenerate;
+    }
+    let l32 = (b[2] - b[0] * b[1]) / d2;
+    let d3 = b[3] - l31 * l31 - l32 * l32 * d2;
+    if d3 <= 0.0 {
+        return degenerate;
+    }
+
+    let y2 = at - l21;
+    let y3 = at * at - l31 - l32 * y2;
+    let c3 = y3 / d3;
+    let c2 = y2 / d2 - l32 * c3;
+    let c1 = 1.0 - l21 * c2 - l31 * c3;
+
+    let discriminant = c2 * c2 - 4.0 * c3 * c1;
+    if c3 == 0.0 || discriminant < 0.0 {
+        return degenerate;
+    }
+    let q = -0.5 * (c2 + c2.signum() * discriminant.sqrt());
+    let (first, second) = ((q / c3).min(c1 / q), (q / c3).max(c1 / q));
+
+    if at <= first {
+        return 0.0;
+    }
+    if at <= second {
+        return (at * second - b[0] * (at + second) + b[1]) / ((second - first) * (at - first));
+    }
+    1.0 - (first * second - b[0] * (first + second) + b[1]) / ((at - first) * (at - second))
+}
+
+/// Normalised power moments of a uniform measure on `[low, high]`.
+///
+/// The measure an absorbing slab actually produces: constant density between
+/// the two faces, nothing outside them.
+#[allow(dead_code)]
+pub fn slab_moments(low: f32, high: f32) -> [f32; 4] {
+    let mut moments = [0.0; 4];
+    for (index, moment) in moments.iter_mut().enumerate() {
+        let k = index as i32 + 1;
+        *moment = (high.powi(k + 1) - low.powi(k + 1)) / ((k + 1) as f32 * (high - low));
+    }
+    moments
+}
+
 /// Turns the moment passes on for every 3D camera.
 ///
 /// Temporary, and living in the test module rather than beside the plugin
@@ -302,6 +363,81 @@ mod tests {
         assert!(
             outside > inside * 1.2,
             "expected a visible step at the inner rim, got {inside} then {outside}"
+        );
+    }
+
+    /// Nothing lies in front of the near face, and everything lies in front of
+    /// the far one. These are the two ends the reconstruction has to pin down
+    /// before anything between them is worth discussing.
+    #[test]
+    fn the_ends_of_a_slab_are_recovered() {
+        let moments = slab_moments(0.3, 0.8);
+        assert_eq!(absorbed_fraction(moments, 0.3), 0.0, "at the near face");
+        assert!(
+            absorbed_fraction(moments, 0.3 - 0.05) == 0.0,
+            "in front of the slab"
+        );
+        assert!(
+            absorbed_fraction(moments, 1.0) > 0.98,
+            "past the far face: got {}",
+            absorbed_fraction(moments, 1.0)
+        );
+    }
+
+    /// The reconstruction never claims more absorbance than there is. It is a
+    /// lower bound, so every error is towards a volume that reads too bright,
+    /// never too dark.
+    #[test]
+    fn the_reconstruction_never_overestimates() {
+        for (low, high) in [(0.4, 0.6), (0.3, 0.8), (0.05, 0.95), (0.45, 0.55)] {
+            let moments = slab_moments(low, high);
+            for step in 0..=20 {
+                let at = step as f32 / 20.0;
+                let truth = ((at - low) / (high - low)).clamp(0.0, 1.0);
+                let got = absorbed_fraction(moments, at);
+                assert!(
+                    got <= truth + 1e-3,
+                    "[{low}, {high}] at {at}: {got} exceeds the true {truth}"
+                );
+            }
+        }
+    }
+
+    /// How badly four power moments bound a *continuous* measure, recorded
+    /// rather than papered over.
+    ///
+    /// At its own midpoint a uniform slab should reconstruct at one half. It
+    /// does not come close, because the bound is exact only for measures living
+    /// on two points and a slab is the opposite of that. This is worth pinning
+    /// down: the reference document's §3.3 claims uniform interior absorbance
+    /// is *easier* to reconstruct than surfaces, and for the bound that is
+    /// backwards. It is easier to accumulate.
+    ///
+    /// The test asserts the error is real and bounded rather than asserting it
+    /// is small. If a later change improves it, this fails and should be
+    /// tightened.
+    #[test]
+    fn a_continuous_slab_is_bounded_loosely() {
+        let moments = slab_moments(0.4, 0.6);
+        let midpoint = absorbed_fraction(moments, 0.5);
+        assert!(
+            (0.2..0.35).contains(&midpoint),
+            "expected the known loose bound near 0.26, got {midpoint}"
+        );
+    }
+
+    /// The looseness at the far end is what made the fullscreen resolve use the
+    /// total instead of asking the moments. A volume spanning most of the
+    /// domain loses several per cent of its absorbance there, and since the
+    /// resolve's query point is always the far end, that was pure error.
+    #[test]
+    fn the_far_end_is_where_the_bound_costs_most() {
+        let narrow = absorbed_fraction(slab_moments(0.45, 0.55), 1.0);
+        let wide = absorbed_fraction(slab_moments(0.05, 0.95), 1.0);
+        assert!(narrow > 0.999, "a thin slab is bounded tightly: {narrow}");
+        assert!(
+            (0.9..0.95).contains(&wide),
+            "a wide one is not: {wide}"
         );
     }
 

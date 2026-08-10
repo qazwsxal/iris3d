@@ -89,6 +89,7 @@ use bevy::core_pipeline::schedule::{Core3d, Core3dSystems};
 use bevy::prelude::*;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::render_resource::{SpecializedMeshPipelines, WgpuFeatures};
+use bevy::shader::load_shader_library;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
@@ -164,6 +165,8 @@ impl Plugin for MomentPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "moment.wgsl");
         embedded_asset!(app, "resolve.wgsl");
+        // Imported by nothing yet — see the note at the top of the file.
+        load_shader_library!(app, "reconstruct.wgsl");
 
         app.add_plugins(ExtractComponentPlugin::<MomentTransparency>::default())
             .add_systems(Startup, validate::spawn_test_scene)
