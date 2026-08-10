@@ -50,6 +50,7 @@ from .v1.scene_pb2 import (
     UploadDataRequest,
     UploadObjectRequest,
     Vector3,
+    VectorValue,
 )
 from .v1.scene_pb2_grpc import SceneServiceStub
 
@@ -314,9 +315,14 @@ def _param_value(value: float | bool | str) -> ParamValue:
         return ParamValue(number=float(value))
     if isinstance(value, str):
         return ParamValue(text=value)
+    # Before the generic sequence check would catch a string, which is why that
+    # is tested above: "xyz" is a sequence of three characters.
+    if isinstance(value, (tuple, list, np.ndarray)):
+        components = [float(component) for component in value]
+        return ParamValue(vector=VectorValue(components=components))
     raise TypeError(
-        "parameter values must be a number, a bool, a string or a Bind, "
-        f"not {type(value).__name__}"
+        "parameter values must be a number, a bool, a string, a sequence of "
+        f"numbers or a Bind, not {type(value).__name__}"
     )
 
 
@@ -331,6 +337,8 @@ def _read_param(value: ParamValue) -> float | bool | str:
             # Comes back wrapped, so a round trip keeps an array distinguishable
             # from a number that happens to equal its handle.
             return Bind(value.data.id)
+        case "vector":
+            return tuple(value.vector.components)
         case _:
             return value.number
 

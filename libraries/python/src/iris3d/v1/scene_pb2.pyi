@@ -189,16 +189,18 @@ class ActorHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ParamValue(_message.Message):
-    __slots__ = ("number", "flag", "text", "data")
+    __slots__ = ("number", "flag", "text", "vector", "data")
     NUMBER_FIELD_NUMBER: _ClassVar[int]
     FLAG_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
+    VECTOR_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
     number: float
     flag: bool
     text: str
+    vector: VectorValue
     data: DataHandle
-    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ..., data: _Optional[_Union[DataHandle, _Mapping]] = ...) -> None: ...
+    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ..., vector: _Optional[_Union[VectorValue, _Mapping]] = ..., data: _Optional[_Union[DataHandle, _Mapping]] = ...) -> None: ...
 
 class FloatParam(_message.Message):
     __slots__ = ("default_value", "min", "max", "logarithmic")
@@ -231,7 +233,7 @@ class ChoiceParam(_message.Message):
     def __init__(self, options: _Optional[_Iterable[str]] = ..., default_value: _Optional[str] = ...) -> None: ...
 
 class ParamSpec(_message.Message):
-    __slots__ = ("id", "label", "number", "flag", "field", "choice", "array")
+    __slots__ = ("id", "label", "number", "flag", "field", "choice", "array", "vector")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     NUMBER_FIELD_NUMBER: _ClassVar[int]
@@ -239,6 +241,7 @@ class ParamSpec(_message.Message):
     FIELD_FIELD_NUMBER: _ClassVar[int]
     CHOICE_FIELD_NUMBER: _ClassVar[int]
     ARRAY_FIELD_NUMBER: _ClassVar[int]
+    VECTOR_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
     number: FloatParam
@@ -246,7 +249,28 @@ class ParamSpec(_message.Message):
     field: FieldParam
     choice: ChoiceParam
     array: ArrayParam
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., field: _Optional[_Union[FieldParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ...) -> None: ...
+    vector: VectorParam
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., field: _Optional[_Union[FieldParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ..., vector: _Optional[_Union[VectorParam, _Mapping]] = ...) -> None: ...
+
+class VectorValue(_message.Message):
+    __slots__ = ("components",)
+    COMPONENTS_FIELD_NUMBER: _ClassVar[int]
+    components: _containers.RepeatedScalarFieldContainer[float]
+    def __init__(self, components: _Optional[_Iterable[float]] = ...) -> None: ...
+
+class VectorParam(_message.Message):
+    __slots__ = ("components", "default_value", "min", "max", "integral")
+    COMPONENTS_FIELD_NUMBER: _ClassVar[int]
+    DEFAULT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    MIN_FIELD_NUMBER: _ClassVar[int]
+    MAX_FIELD_NUMBER: _ClassVar[int]
+    INTEGRAL_FIELD_NUMBER: _ClassVar[int]
+    components: int
+    default_value: _containers.RepeatedScalarFieldContainer[float]
+    min: float
+    max: float
+    integral: bool
+    def __init__(self, components: _Optional[int] = ..., default_value: _Optional[_Iterable[float]] = ..., min: _Optional[float] = ..., max: _Optional[float] = ..., integral: _Optional[bool] = ...) -> None: ...
 
 class ArrayParam(_message.Message):
     __slots__ = ("dtypes", "shape", "required")

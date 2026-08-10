@@ -31,6 +31,18 @@ pub enum ParamValue {
     Bool(bool),
     /// A name: a field to read, or one option out of a fixed set.
     Text(String),
+    /// A fixed-length vector of numbers: an origin, a spacing, a size in
+    /// samples.
+    ///
+    /// One variant covering every length rather than `Vec2`, `Vec3`, `Vec4` in
+    /// turn. The length a parameter accepts is in its
+    /// [`ParamKind::Vector`] declaration, so 2D work needs no new variant here —
+    /// only a spec that asks for two components.
+    ///
+    /// Held as `f64` because it also carries counts: a grid's `dims` are
+    /// integers, and `f32` stops representing those exactly at 16.8 million,
+    /// which a 256³ grid is not far off in total samples.
+    Vector(Vec<f64>),
     /// An uploaded array, by the handle [`DataStore`](super::DataStore) knows it
     /// by.
     ///
@@ -43,6 +55,13 @@ pub enum ParamValue {
 }
 
 impl ParamValue {
+    pub fn as_vector(&self) -> Option<&[f64]> {
+        match self {
+            ParamValue::Vector(values) => Some(values),
+            _ => None,
+        }
+    }
+
     pub fn as_data(&self) -> Option<u64> {
         match self {
             ParamValue::Data(id) => Some(*id),
@@ -108,6 +127,51 @@ pub fn data(params: &ParamMap, id: &str) -> Option<u64> {
     params.get(id).and_then(|value| value.as_data())
 }
 
+/// Reads a vector parameter of any declared length, padding with zeros if what
+/// is stored is the wrong length. For a control that has to render something
+/// whatever the map holds. See [`float`].
+pub fn vector(params: &ParamMap, id: &str, components: usize) -> Vec<f64> {
+    let mut values = params
+        .get(id)
+        .and_then(|value| value.as_vector())
+        .map(<[f64]>::to_vec)
+        .unwrap_or_default();
+    values.resize(components, 0.0);
+    values
+}
+
+/// Reads a three-component vector parameter. See [`float`].
+// Waiting on the volume backend, which is where a grid's origin and spacing
+// arrive as parameters.
+#[allow(dead_code)]
+pub fn vec3(params: &ParamMap, id: &str, fallback: Vec3) -> Vec3 {
+    params
+        .get(id)
+        .and_then(|value| value.as_vector())
+        .filter(|values| values.len() == 3)
+        .map(|values| Vec3::new(values[0] as f32, values[1] as f32, values[2] as f32))
+        .unwrap_or(fallback)
+}
+
+/// Reads a three-component vector parameter as counts. See [`float`].
+///
+/// Negative or fractional components round towards a usable count rather than
+/// wrapping: a dimension of -1 is nonsense, and silently becoming 4294967295
+/// would ask for an allocation the size of the address space.
+// As for `vec3`: the volume backend is where a grid's dims arrive.
+#[allow(dead_code)]
+pub fn uvec3(params: &ParamMap, id: &str, fallback: UVec3) -> UVec3 {
+    params
+        .get(id)
+        .and_then(|value| value.as_vector())
+        .filter(|values| values.len() == 3)
+        .map(|values| {
+            let axis = |value: f64| value.round().clamp(0.0, u32::MAX as f64) as u32;
+            UVec3::new(axis(values[0]), axis(values[1]), axis(values[2]))
+        })
+        .unwrap_or(fallback)
+}
+
 /// What a parameter is, which decides both its control and its valid range.
 #[derive(Debug, Clone, Copy)]
 pub enum ParamKind {
@@ -134,6 +198,27 @@ pub enum ParamKind {
     Choice {
         options: &'static [&'static str],
         default: &'static str,
+    },
+    /// A fixed-length vector of numbers: an origin, a spacing, a size in
+    /// samples.
+    ///
+    /// `components` is the length, so a 2D parameter is this same variant asking
+    /// for two. Every component shares one range, which is true of everything
+    /// wanted so far — a spacing is positive on all three axes, an origin
+    /// unbounded on all three.
+    ///
+    // Declared before the volume backend that needs it, for the same reason as
+    // `Array`: a declaration nothing consumes would be a control that does
+    // nothing, so the two land together.
+    #[allow(dead_code)]
+    Vector {
+        components: usize,
+        default: &'static [f64],
+        min: f64,
+        max: f64,
+        /// Whole numbers only, for counts like a grid's dimensions. Clients
+        /// should offer an integer control rather than a fractional one.
+        integral: bool,
     },
     /// An array the backend reads: positions, indices, a scalar field.
     ///
@@ -173,6 +258,7 @@ impl ParamKind {
             ParamKind::Bool { default } => Some(ParamValue::Bool(default)),
             ParamKind::Field => Some(ParamValue::Text(String::new())),
             ParamKind::Choice { default, .. } => Some(ParamValue::Text(default.to_string())),
+            ParamKind::Vector { default, .. } => Some(ParamValue::Vector(default.to_vec())),
             ParamKind::Array { .. } => None,
         }
     }
@@ -234,6 +320,29 @@ impl ParamKind {
             (ParamKind::Choice { options, .. }, ParamValue::Text(value)) => options
                 .contains(&value.as_str())
                 .then_some(ParamValue::Text(value)),
+            // Wrong length is rejected rather than padded or truncated: a
+            // two-component origin is a caller mistake, and guessing the third
+            // would place the data somewhere nobody asked for.
+            (
+                ParamKind::Vector {
+                    components,
+                    min,
+                    max,
+                    integral,
+                    ..
+                },
+                ParamValue::Vector(values),
+            ) => (values.len() == components).then(|| {
+                ParamValue::Vector(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            let value = value.clamp(min, max);
+                            if integral { value.round() } else { value }
+                        })
+                        .collect(),
+                )
+            }),
             // Whether the array *fits* is `accepts`, checked where the store is
             // reachable. Here it only has to be a handle rather than a number
             // somebody meant as a slider value.
@@ -469,6 +578,84 @@ mod tests {
             dtype,
             shape: shape.to_vec(),
         }
+    }
+
+    const VECTORS: &[ParamSpec] = &[
+        ParamSpec {
+            id: "origin",
+            label: "origin",
+            kind: ParamKind::Vector {
+                components: 3,
+                default: &[0.0, 0.0, 0.0],
+                min: -1e6,
+                max: 1e6,
+                integral: false,
+            },
+        },
+        ParamSpec {
+            id: "dims",
+            label: "dimensions",
+            kind: ParamKind::Vector {
+                components: 3,
+                default: &[1.0, 1.0, 1.0],
+                min: 1.0,
+                max: 4096.0,
+                integral: true,
+            },
+        },
+    ];
+
+    /// A vector of the wrong length is refused outright. Padding a
+    /// two-component origin would place the data on a third axis nobody named,
+    /// and truncating a four-component one would silently drop what was sent.
+    #[test]
+    fn a_vector_of_the_wrong_length_is_refused() {
+        let origin = VECTORS[0].kind;
+        assert_eq!(
+            origin.sanitise(ParamValue::Vector(vec![1.0, 2.0, 3.0])),
+            Some(ParamValue::Vector(vec![1.0, 2.0, 3.0]))
+        );
+        assert_eq!(origin.sanitise(ParamValue::Vector(vec![1.0, 2.0])), None);
+        assert_eq!(
+            origin.sanitise(ParamValue::Vector(vec![1.0, 2.0, 3.0, 4.0])),
+            None
+        );
+        // Still type-checked: a slider value is not a vector.
+        assert_eq!(origin.sanitise(ParamValue::Float(1.0)), None);
+    }
+
+    /// Components clamp to the declared range, and an integral vector rounds —
+    /// a count of 2.5 samples is not a thing to allocate.
+    #[test]
+    fn vector_components_clamp_and_counts_round() {
+        assert_eq!(
+            VECTORS[0]
+                .kind
+                .sanitise(ParamValue::Vector(vec![-1e9, 0.5, 1e9])),
+            Some(ParamValue::Vector(vec![-1e6, 0.5, 1e6]))
+        );
+        assert_eq!(
+            VECTORS[1]
+                .kind
+                .sanitise(ParamValue::Vector(vec![2.5, 0.0, 99999.0])),
+            Some(ParamValue::Vector(vec![3.0, 1.0, 4096.0]))
+        );
+    }
+
+    /// Reading a count back is total: a wrong-length or negative value falls
+    /// back rather than wrapping to four billion.
+    #[test]
+    fn reading_counts_never_wraps() {
+        let mut params = ParamMap::default();
+        params.insert("dims".into(), ParamValue::Vector(vec![-3.0, 2.6, 4.0]));
+        assert_eq!(uvec3(&params, "dims", UVec3::ONE), UVec3::new(0, 3, 4));
+
+        params.insert("dims".into(), ParamValue::Vector(vec![2.0, 2.0]));
+        assert_eq!(
+            uvec3(&params, "dims", UVec3::splat(7)),
+            UVec3::splat(7),
+            "the wrong length is not a partial answer"
+        );
     }
 
     /// An input accepts on element type and shape, and 0 in a declared shape

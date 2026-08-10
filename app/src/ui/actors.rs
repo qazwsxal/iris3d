@@ -11,7 +11,9 @@ use bevy_egui::egui;
 use crate::scene::DatasetKind;
 use crate::scene::Subset;
 use crate::scene::actor::ColorMap;
-use crate::scene::registry::{ParamKind, ParamValue, data as registry_data, flag, float, text};
+use crate::scene::registry::{
+    ParamKind, ParamValue, data as registry_data, flag, float, text, vector as registry_vector,
+};
 
 use super::gather::{ActorRow, Gathered, Row};
 use super::{PendingActions, UiAction, UiState};
@@ -162,6 +164,48 @@ fn controls(
                         current.entity,
                         spec.id,
                         ParamValue::Float(value),
+                    ));
+                }
+            }
+            ParamKind::Vector {
+                components,
+                min,
+                max,
+                integral,
+                ..
+            } => {
+                // One drag value per component. Labelled x/y/z up to three and
+                // then by index, so a two-component parameter reads correctly
+                // without this needing to know what it is for.
+                let mut values = registry_vector(&current.params, spec.id, components);
+                let mut edited = false;
+                ui.horizontal(|ui| {
+                    ui.label(spec.label);
+                    for (axis, value) in values.iter_mut().enumerate() {
+                        let name = ["x", "y", "z", "w"]
+                            .get(axis)
+                            .copied()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| axis.to_string());
+                        let speed = if integral { 1.0 } else { 0.01 };
+                        if ui
+                            .add(
+                                egui::DragValue::new(value)
+                                    .speed(speed)
+                                    .range(min..=max)
+                                    .prefix(format!("{name} ")),
+                            )
+                            .changed()
+                        {
+                            edited = true;
+                        }
+                    }
+                });
+                if edited {
+                    actions.0.push(UiAction::SetParam(
+                        current.entity,
+                        spec.id,
+                        ParamValue::Vector(values),
                     ));
                 }
             }

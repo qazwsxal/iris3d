@@ -28,6 +28,7 @@ use super::proto::{
     ParamValue as ProtoParam, Range, ReleaseDataRequest, ReleaseDataResponse, RemoveActorRequest,
     RemoveActorResponse, SetActorRequest, SetActorResponse, SetParentRequest, SetParentResponse,
     SetTransformRequest, SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadDataRequest,
+    VectorParam, VectorValue,
     UploadDataResponse, UploadObjectRequest, UploadObjectResponse, Vector3, param_spec,
     param_value::Value, scene_service_server::SceneService, subset as subset_proto,
     upload_data_request::Payload as DataPayload, upload_object_request::Payload,
@@ -498,6 +499,7 @@ fn params_from_proto(
                 Some(Value::Flag(flag)) => ParamValue::Bool(flag),
                 Some(Value::Text(text)) => ParamValue::Text(text),
                 Some(Value::Data(handle)) => ParamValue::Data(handle.id),
+                Some(Value::Vector(vector)) => ParamValue::Vector(vector.components),
                 // An empty `oneof` says nothing at all, and guessing which
                 // parameter was meant is worse than saying so.
                 None => {
@@ -520,6 +522,9 @@ fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, Proto
                 ParamValue::Bool(flag) => Value::Flag(*flag),
                 ParamValue::Text(text) => Value::Text(text.clone()),
                 ParamValue::Data(id) => Value::Data(DataHandle { id: *id }),
+                ParamValue::Vector(values) => Value::Vector(VectorValue {
+                    components: values.clone(),
+                }),
             };
             (key.clone(), ProtoParam { value: Some(value) })
         })
@@ -672,6 +677,19 @@ fn kind_info(summary: &KindSummary) -> ActorKindInfo {
                             default_value: default.to_string(),
                         })
                     }
+                    ParamKind::Vector {
+                        components,
+                        default,
+                        min,
+                        max,
+                        integral,
+                    } => param_spec::Kind::Vector(VectorParam {
+                        components: components as u32,
+                        default_value: default.to_vec(),
+                        min,
+                        max,
+                        integral,
+                    }),
                     ParamKind::Array {
                         dtypes,
                         shape,

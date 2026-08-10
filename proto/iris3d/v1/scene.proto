@@ -385,6 +385,10 @@ message ParamValue {
     // decided by the parameter's ParamSpec.
     string text = 3;
 
+    // A fixed-length vector: an origin, a spacing, a size in samples. Its
+    // length must match the components the ParamSpec declares.
+    VectorValue vector = 5;
+
     // An array uploaded with UploadData, bound to an ArrayParam input.
     //
     // Geometry travels as a parameter on purpose. An actor's arrays and its
@@ -439,7 +443,39 @@ message ParamSpec {
     FieldParam field = 5;
     ChoiceParam choice = 6;
     ArrayParam array = 7;
+    VectorParam vector = 8;
   }
+}
+
+// VectorValue carries a fixed-length vector of numbers.
+//
+// `double` rather than `float` because these also carry counts: a grid's dims
+// are integers, and float32 stops representing whole numbers exactly at 16.8
+// million, which the sample count of a 256^3 grid is not far from.
+message VectorValue {
+  repeated double components = 1;
+}
+
+// VectorParam is a fixed-length vector of numbers, such as a grid's origin,
+// spacing or dimensions.
+//
+// One message for every length rather than separate Vec2/Vec3/Vec4 types, so a
+// two-component parameter is this same message asking for two components. Every
+// component shares one range, which suits everything wanted so far: a spacing is
+// positive on all axes, an origin unbounded on all of them.
+message VectorParam {
+  // How many components. A value of the wrong length is rejected rather than
+  // padded — a two-component origin is a mistake, and inventing the third would
+  // place data somewhere nobody asked for.
+  uint32 components = 1;
+
+  repeated double default_value = 2;
+  double min = 3;
+  double max = 4;
+
+  // Whole numbers only, for counts. Offer an integer control rather than a
+  // fractional one.
+  bool integral = 5;
 }
 
 // ArrayParam is an array the representation reads: positions, indices, a scalar
