@@ -5,8 +5,14 @@
 //! the same. For a single convex volume the answer is closed form, so this
 //! module holds both the closed form and a scene to compare against it.
 //!
-//! Set `IRIS3D_MOMENT_TEST=1` to get the scene. It is off otherwise, so nothing
-//! here reaches an ordinary session.
+//! Two scenes, chosen with `IRIS3D_MOMENT_TEST`:
+//!
+//! - `1` — a lone neutral sphere and an overlapping tinted pair. Steps 1 and 2.
+//! - `nested` — one sphere wholly inside another. Step 4.
+//!
+//! Both are off unless asked for, so nothing here reaches an ordinary session.
+//! `IRIS3D_MOMENT_SIGMA=0` renders the same frame with nothing absorbing, which
+//! divides out the background and leaves the transmittance on its own.
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::render::view::Msaa;
@@ -67,7 +73,17 @@ pub fn enable_on_cameras(
 }
 
 fn in_test_scene() -> bool {
-    std::env::var("IRIS3D_MOMENT_TEST").as_deref() == Ok("1")
+    scene_name().is_some()
+}
+
+/// Which test scene was asked for, if any.
+///
+/// `1` is the original trio and `nested` is the step 4 scene. Kept as separate
+/// scenes rather than one crowded one because the camera frames whatever is
+/// there: adding geometry to a scene moves everything already in it, and the
+/// pixel checks would have to be recalibrated every time.
+fn scene_name() -> Option<String> {
+    std::env::var("IRIS3D_MOMENT_TEST").ok().filter(|name| !name.is_empty())
 }
 
 /// Says so when a view asked for moment transparency and cannot have it.
@@ -98,20 +114,64 @@ pub const TEST_SIGMA: f32 = 1.5;
 /// identical whichever order the two are drawn in — which, since nothing here
 /// sorts, it does by construction. Their intersection must read as the sum of
 /// the two absorbances, so it is darker than either.
-pub fn spawn_test_scene(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
-    if std::env::var("IRIS3D_MOMENT_TEST").as_deref() != Ok("1") {
-        return;
+pub fn spawn_test_scene(commands: Commands, meshes: ResMut<Assets<Mesh>>) {
+    match scene_name().as_deref() {
+        Some("1") => spawn_trio(commands, meshes),
+        Some("nested") => spawn_nested(commands, meshes),
+        Some(other) => warn!("draw: no moment test scene called \"{other}\""),
+        None => {}
     }
+}
+
+/// Radius of the inner shell in the nested scene, as a fraction of
+/// [`TEST_RADIUS`].
+pub const NESTED_INNER: f32 = 0.6;
+
+/// One closed mesh wholly inside another — step 4 of the build order.
+///
+/// A ray through the middle now crosses four faces rather than two, in the
+/// order front, front, back, back. Nothing pairs them up: each deposits
+/// `±sigma * z` and the additive blend is left to cancel what should cancel.
+/// If the sign rule is right this needs no code at all, which is the claim
+/// being tested.
+///
+/// The answer stays closed form. Two concentric spheres absorb the sum of two
+/// chords, so the picture must show a distinct step at the inner silhouette —
+/// and that step is what a broken pairing would smear or invert.
+fn spawn_nested(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+    let sigma = configured_sigma();
+    let outer = meshes.add(Sphere::new(TEST_RADIUS).mesh().ico(5).unwrap());
+    let inner = meshes.add(Sphere::new(TEST_RADIUS * NESTED_INNER).mesh().ico(5).unwrap());
+
+    for mesh in [outer, inner] {
+        commands.spawn((
+            Mesh3d(mesh),
+            Transform::IDENTITY,
+            MomentVolume {
+                sigma,
+                tint: Vec3::ZERO,
+            },
+        ));
+    }
+
+    info!("draw: moment nested test scene spawned");
+}
+
+fn configured_sigma() -> f32 {
+    std::env::var("IRIS3D_MOMENT_SIGMA")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(TEST_SIGMA)
+}
+
+fn spawn_trio(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 
     // Overridable so the same frame can be rendered at sigma = 0, which
     // transmits everything and is therefore the background on its own. Dividing
     // one render by the other isolates `T` per pixel, which is what the
     // analytic check needs — the camera frames the scene bounds, so the volumes
     // have to stay put for the two frames to line up.
-    let sigma = std::env::var("IRIS3D_MOMENT_SIGMA")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(TEST_SIGMA);
+    let sigma = configured_sigma();
 
     // Deliberately no material. A `Mesh3d` with no `MeshMaterial3d` is never
     // queued into the opaque or transparent phases, so the only thing that
@@ -206,6 +266,40 @@ mod tests {
             (resolved - first * second).abs() < 1e-6,
             "accumulating then resolving gave {resolved}, transmitting twice gives {}",
             first * second
+        );
+    }
+
+    /// Two concentric shells transmit the product of what each transmits, which
+    /// is the same additivity as the overlapping case — nesting is not a
+    /// special geometry, only a special arrangement.
+    #[test]
+    fn nested_shells_compose() {
+        let inner_radius = TEST_RADIUS * NESTED_INNER;
+        for offset in [0.0, 0.3, 0.55] {
+            let expected = sphere_transmittance(TEST_RADIUS, offset, TEST_SIGMA, 0.0)
+                * sphere_transmittance(inner_radius, offset, TEST_SIGMA, 0.0);
+            let chords = 2.0 * (TEST_RADIUS.powi(2) - offset * offset).sqrt()
+                + 2.0 * (inner_radius.powi(2) - offset * offset).sqrt();
+            let got = (-TEST_SIGMA * chords).exp();
+            assert!((got - expected).abs() < 1e-6, "at {offset}: {got} vs {expected}");
+        }
+    }
+
+    /// The inner silhouette is a step, not a smooth join: crossing it adds a
+    /// whole second pair of faces. A pairing bug shows up here first, because
+    /// this is where the number of crossings changes.
+    #[test]
+    fn the_inner_silhouette_is_a_step() {
+        let inner_radius = TEST_RADIUS * NESTED_INNER;
+        let just_inside = |d: f32| {
+            sphere_transmittance(TEST_RADIUS, d, TEST_SIGMA, 0.0)
+                * sphere_transmittance(inner_radius, d, TEST_SIGMA, 0.0)
+        };
+        let inside = just_inside(inner_radius - 0.02);
+        let outside = just_inside(inner_radius + 0.02);
+        assert!(
+            outside > inside * 1.2,
+            "expected a visible step at the inner rim, got {inside} then {outside}"
         );
     }
 
