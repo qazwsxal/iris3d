@@ -64,16 +64,22 @@ def hydrogen(client, root, cursor, gap=3.0):
     round.
     """
     arrays, grid = testdata.hydrogen_orbital(n=64)
-    handle = client.upload_object("hydrogen 3dz2", arrays, grid=grid)
+    # A grouping node with no data of its own: the arrays go in separately and
+    # the actor binds them, so the object is only a place in the tree.
+    handle = client.create_object("hydrogen 3dz2")
     client.set_parent(handle, root)
 
     # The grid is centred on its own origin, so only the slot offset applies.
     width = grid.dims[0] * grid.spacing[0]
     client.set_transform(handle, translation=(cursor + width / 2.0, 0.0, 0.0))
 
-    # The upload draws nothing on its own, so the volume is asked for outright.
-    # Settings go in at the same time — before, this took a second call to find
-    # the actor the upload had quietly made and a third to configure it.
+    held = client.upload_data(
+        {"probability": arrays["probability"], "amplitude": arrays["amplitude"]}
+    )
+
+    # The arrangement of the samples travels as three vectors rather than as an
+    # array, which is the whole reason a grid is worth having: 64³ samples state
+    # their geometry in nine numbers instead of 262144 coordinates.
     #
     # Two separate choices here, which is the whole point of the controls:
     # `density` says what makes the volume solid, and the colouring says what
@@ -92,14 +98,33 @@ def hydrogen(client, root, cursor, gap=3.0):
         handle,
         "volume",
         params={
-            "density": "probability",
+            "density": iris3d.Bind(held["probability"]),
+            "colour": iris3d.Bind(held["amplitude"]),
+            "dims": grid.dims,
+            "origin": grid.origin,
+            "spacing": grid.spacing,
             "mode": "blend",
             "opacity": 12.0,
             "steps": 256.0,
         },
-        coloring=iris3d.Coloring(field="amplitude", map="cool-warm"),
+        coloring=iris3d.Coloring(map="cool-warm"),
     )
     return handle
+
+
+def kind_for(arrays):
+    """This script's choice of representation for its own data.
+
+    Inference, but on the right side of the wire. These arrays were named by
+    ``testdata`` and ``molecules`` a few lines away, so recognising them here is
+    reading one's own notes — whereas the server doing it meant guessing from
+    names it had never seen before.
+    """
+    if "elements" in arrays:
+        return "ball-and-stick"
+    if "indices" in arrays:
+        return "surface"
+    return "points"
 
 
 def bind(client, kind, arrays):
@@ -160,30 +185,28 @@ def main():
 
         hydrogen(client, root, cursor)
 
-        # An upload puts data in the scene; it does not decide how the data
-        # looks. The server reports what it can draw and which datasets each
-        # kind accepts, and choosing among them is this script's business. First
-        # kind that fits is a fine policy for a sample loader — a real client
-        # would offer the list.
-        preferred: dict[str, str] = {}
-        for kind in client.actor_kinds().values():
-            for dataset in kind.supports:
-                preferred.setdefault(dataset, kind.id)
+        # How each sample should look is *this script's* decision, and it is the
+        # only thing that can make it — the server no longer offers a mapping
+        # from a dataset shape to a kind, because an actor's data is bound to it
+        # rather than taken from the object it hangs under. `actor_kinds()` still
+        # says what exists, which is what stops this asking for something the
+        # build cannot draw.
+        available = client.actor_kinds()
         for summary in client.list_objects():
-            wanted = preferred.get(summary.dataset_kind)
             # The grid already has the volume `hydrogen` asked for, and the root
-            # is an empty grouping node that nothing can draw.
-            if wanted is None or summary.actors:
+            # is a grouping node with nothing to draw.
+            original = everything.get(summary.name)
+            if original is None or summary.actors:
                 continue
-            # These read bound arrays rather than the object's dataset, so their
-            # data goes in through `upload_data` and is named at the actor. Only
-            # `volume` still takes its own from the object it draws.
-            if wanted in ("points", "surface", "ball-and-stick"):
-                client.add_actor(
-                    summary.handle, wanted, params=bind(client, wanted, everything[summary.name])
-                )
-            else:
-                client.add_actor(summary.handle, wanted)
+            wanted = kind_for(original)
+            if wanted not in available:
+                print(f"skipping {summary.name}: this build cannot draw {wanted}")
+                continue
+            client.add_actor(
+                summary.handle,
+                wanted,
+                params=bind(client, wanted, everything[summary.name]),
+            )
 
         print(f"\n{'handle':<8}{'object':<18}{'kind':<11}{'drawn as':<16}arrays")
         print("-" * 78)
@@ -196,8 +219,14 @@ def main():
                 f"{', '.join(r.kind for r in summary.actors) or '-':<16}{arrays}"
             )
 
-        total = sum(s.total_bytes for s in client.list_objects())
-        print(f"\n{total / 1024:.1f} KiB resident")
+        # Both, now that data can live away from any object. Summing only the
+        # objects' buffers reported a fraction of what was actually held.
+        in_objects = sum(s.total_bytes for s in client.list_objects())
+        held = sum(d.byte_length for d in client.list_data())
+        print(
+            f"\n{(in_objects + held) / 1024:.1f} KiB resident"
+            f" ({held / 1024:.1f} KiB of it bound rather than owned)"
+        )
 
 
 if __name__ == "__main__":

@@ -378,16 +378,14 @@ class SubsetInfo(_message.Message):
     def __init__(self, encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ..., selected: _Optional[int] = ...) -> None: ...
 
 class ActorKindInfo(_message.Message):
-    __slots__ = ("id", "label", "supports", "params")
+    __slots__ = ("id", "label", "params")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
-    SUPPORTS_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
-    supports: _containers.RepeatedScalarFieldContainer[str]
     params: _containers.RepeatedCompositeFieldContainer[ParamSpec]
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., supports: _Optional[_Iterable[str]] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
 
 class AddActorRequest(_message.Message):
     __slots__ = ("source", "kind", "parent", "params", "color", "subset")

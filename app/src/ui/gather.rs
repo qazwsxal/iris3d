@@ -184,10 +184,10 @@ pub fn gather(
             })
             .collect();
 
-        let available: Vec<(&'static str, &'static str)> = registry
-            .for_dataset(*kind)
-            .map(|kind| (kind.id, kind.label))
-            .collect();
+        // Every kind, for every object. What an actor draws is what it binds, so
+        // there is nothing about this node that could rule a kind out.
+        let available: Vec<(&'static str, &'static str)> =
+            registry.iter().map(|kind| (kind.id, kind.label)).collect();
 
         for array in &object.arrays {
             owners.insert(

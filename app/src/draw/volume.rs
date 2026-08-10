@@ -33,10 +33,11 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 
 use crate::scene::actor::ColorMap;
-use crate::scene::data::Fields;
-use crate::scene::dataset::GridData;
-use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float, text};
-use crate::scene::{DataArray, DatasetKind};
+use crate::scene::registry::{
+    ActorKind, ActorRegistry, ParamKind, ParamSpec, float, text, uvec3 as param_uvec3,
+    vec3 as param_vec3,
+};
+use crate::scene::{DataArray, DataStore};
 
 use super::{Dirty, Drawable, mark};
 
@@ -74,14 +75,6 @@ impl VolumeMode {
 
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct VolumeStyle {
-    /// The field that makes the volume solid. Empty means the first scalar, as
-    /// `ColorBy` does.
-    ///
-    /// Named for what it does rather than for what it is. Colour comes from
-    /// `ColorBy::field`, which may name a different field entirely — density
-    /// from one quantity and colour from another is the usual pairing in
-    /// scientific volume rendering.
-    pub density: String,
     pub mode: VolumeMode,
     /// Samples per ray. A quality control, not a brightness control — the
     /// shader scales opacity by the step length so the picture holds still.
@@ -89,13 +82,97 @@ pub struct VolumeStyle {
     pub opacity: f32,
 }
 
+/// Where the samples sit, kept apart from [`VolumeStyle`] on purpose.
+///
+/// Style changes are material-only: opacity and steps go to the shader as
+/// uniforms and touch nothing else. The grid is the opposite — it decides the
+/// box mesh and the texture upload. Sharing one component would mean a single
+/// frame of an opacity drag rebuilding the mesh and re-uploading a 64³ texture,
+/// which is exactly what grading `Dirty` exists to avoid.
+///
+/// This is the same reasoning that keeps `Bindings` separate.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct VolumeGrid {
+    pub origin: Vec3,
+    pub spacing: Vec3,
+    pub dims: UVec3,
+}
+
+impl VolumeGrid {
+    /// Samples in the grid.
+    pub fn point_count(&self) -> u64 {
+        self.dims.x as u64 * self.dims.y as u64 * self.dims.z as u64
+    }
+
+    /// Extent of the box the samples span. An axis of one sample spans nothing,
+    /// which is what a slice uploaded as a grid looks like — hence the
+    /// saturating subtraction rather than one that wraps.
+    pub fn size(&self) -> Vec3 {
+        self.dims.saturating_sub(UVec3::ONE).as_vec3() * self.spacing
+    }
+}
+
 const MODES: &[&str] = &["maximum", "mean", "blend"];
 
 const PARAMS: &[ParamSpec] = &[
+    // What makes the volume solid. One value per sample; the grid says how those
+    // samples are arranged.
     ParamSpec {
         id: "density",
         label: "density",
-        kind: ParamKind::Field,
+        kind: ParamKind::Array {
+            dtypes: &[],
+            shape: &[0],
+            required: true,
+        },
+    },
+    // What tints it, which is a separate choice from what makes it solid.
+    // Density from one quantity and colour from another is the usual pairing in
+    // scientific volume rendering; unbound means colour by the density itself.
+    ParamSpec {
+        id: "colour",
+        label: "colour by",
+        kind: ParamKind::Array {
+            dtypes: &[],
+            shape: &[0],
+            required: false,
+        },
+    },
+    // The geometry a grid does not upload. This is the whole reason the grid
+    // type exists: 64³ samples state their arrangement in nine numbers rather
+    // than 262144 coordinates, so it cannot arrive as an array.
+    ParamSpec {
+        id: "dims",
+        label: "samples",
+        kind: ParamKind::Vector {
+            components: 3,
+            default: &[1.0, 1.0, 1.0],
+            min: 1.0,
+            max: 4096.0,
+            integral: true,
+        },
+    },
+    ParamSpec {
+        id: "origin",
+        label: "origin",
+        kind: ParamKind::Vector {
+            components: 3,
+            default: &[0.0, 0.0, 0.0],
+            min: -1.0e6,
+            max: 1.0e6,
+            integral: false,
+        },
+    },
+    ParamSpec {
+        id: "spacing",
+        label: "spacing",
+        kind: ParamKind::Vector {
+            components: 3,
+            default: &[1.0, 1.0, 1.0],
+            min: 1.0e-6,
+            max: 1.0e6,
+            integral: false,
+        },
     },
     ParamSpec {
         id: "mode",
@@ -131,15 +208,20 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "volume",
         label: "volume",
-        supports: |dataset| dataset == DatasetKind::Grid,
         params: PARAMS,
         apply: |entity, params| {
-            entity.insert(VolumeStyle {
-                density: text(params, "density", "").to_string(),
-                mode: VolumeMode::from_str(text(params, "mode", "maximum")),
-                steps: float(params, "steps", 128.0),
-                opacity: float(params, "opacity", 1.0),
-            });
+            entity.insert((
+                VolumeStyle {
+                    mode: VolumeMode::from_str(text(params, "mode", "maximum")),
+                    steps: float(params, "steps", 128.0),
+                    opacity: float(params, "opacity", 1.0),
+                },
+                VolumeGrid {
+                    origin: param_vec3(params, "origin", Vec3::ZERO),
+                    spacing: param_vec3(params, "spacing", Vec3::ONE),
+                    dims: param_uvec3(params, "dims", UVec3::ONE),
+                },
+            ));
         },
     });
 }
@@ -187,9 +269,11 @@ impl Material for VolumeMaterial {
 /// Only a change of field does.
 #[derive(Component, Debug)]
 pub struct VolumeTexture {
-    density: String,
+    /// The arrays this was built from, by handle. Keyed on the binding rather
+    /// than on a field name, so rebinding is what invalidates it.
+    density: u64,
     /// `None` when colour comes from the density.
-    colour: Option<String>,
+    colour: Option<u64>,
     image: Handle<Image>,
 }
 
@@ -209,9 +293,15 @@ pub fn invalidate(
             Or<(Changed<VolumeStyle>, Changed<GlobalTransform>)>,
         ),
     >,
+    regridded: Query<Entity, Changed<VolumeGrid>>,
 ) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
+    }
+    // The grid decides the box mesh and the texture, so moving or resizing it is
+    // a rebuild rather than a uniform write.
+    for entity in &regridded {
+        mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 }
 
@@ -307,7 +397,7 @@ fn quantise(value: f32, (low, high): (f32, f32)) -> u8 {
 fn volume_texture(
     density: &[f32],
     colour: Option<&[f32]>,
-    grid: &GridData,
+    grid: &VolumeGrid,
     colour_range: Option<(f32, f32)>,
 ) -> Option<Image> {
     let expected = grid.point_count() as usize;
@@ -391,93 +481,60 @@ pub fn draw_volumes(
     mut materials: ResMut<Assets<VolumeMaterial>>,
     mut images: ResMut<Assets<Image>>,
     arrays: Res<Assets<DataArray>>,
+    store: Res<DataStore>,
     dirty: Query<Drawable<VolumeStyle, VolumeMaterial>>,
     cached: Query<&VolumeTexture>,
     placements: Query<&GlobalTransform>,
-    grids: Query<(&GridData, Option<&Fields>)>,
+    grids: Query<&VolumeGrid>,
 ) {
-    for (entity, style, colour, _subset, _bound, source, dirty, mesh3d, material3d) in &dirty {
+    for (entity, style, colour, _subset, bound, _source, dirty, mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
-        let Ok((grid, fields)) = grids.get(source.0) else {
-            continue;
-        };
-        let Ok(placement) = placements.get(entity) else {
+        let (Ok(grid), Ok(placement)) = (grids.get(entity), placements.get(entity)) else {
             continue;
         };
 
-        let Some(fields) = fields else { continue };
-        // Named field first, then the first scalar in name order — the same
-        // fallback `ColorBy` uses, so "auto" means the same thing everywhere.
-        let density_name = if style.density.is_empty() {
-            let mut scalars: Vec<&String> = fields
-                .0
-                .iter()
-                .filter(|(_, field)| field.kind == crate::scene::data::FieldKind::Scalar)
-                .map(|(name, _)| name)
-                .collect();
-            scalars.sort();
-            match scalars.first() {
-                Some(name) => (*name).clone(),
-                None => continue,
-            }
-        } else {
-            style.density.clone()
-        };
-        let Some(density_field) = fields.0.get(&density_name) else {
-            warn!("draw: a volume's density field \"{density_name}\" is not on the grid");
+        // Required, so `check_bindings` refused an actor without it.
+        let Some(density_handle) = bound.get("density") else {
             continue;
         };
-
-        // Colour is a separate choice: density says how solid the volume is,
-        // this says what tints it. Naming the same field, or none at all, means
-        // colouring by the density.
-        let colour_name = colour
-            .field
-            .clone()
-            .filter(|name| *name != density_name)
-            .filter(|name| {
-                let known = fields.0.contains_key(name);
-                if !known {
-                    warn!("draw: a volume's colour field \"{name}\" is not on the grid");
-                }
-                known
-            });
+        // Colouring by the same array as the density is the same as not naming
+        // one, so it is dropped rather than uploaded into both channels.
+        let colour_handle = bound.get("colour").filter(|id| *id != density_handle);
 
         // Re-uploading is the one expensive thing here, so it happens only when
-        // the geometry is stale or one of the chosen fields actually changed.
+        // the geometry is stale or one of the bound arrays actually changed.
         let previous = cached.get(entity).ok();
         let reusable = previous.filter(|cache| {
-            cache.density == density_name && cache.colour == colour_name && !dirty.geometry
+            cache.density == density_handle && cache.colour == colour_handle && !dirty.geometry
         });
         let image = match reusable {
             Some(cache) => cache.image.clone(),
             None => {
-                let Some(array) = arrays.get(&density_field.array) else {
+                let Some(density) = super::bound(bound, "density", &store, &arrays) else {
                     continue;
                 };
-                let tint = colour_name
-                    .as_ref()
-                    .and_then(|name| fields.0.get(name))
-                    .and_then(|field| arrays.get(&field.array))
+                let tint = colour_handle
+                    .and_then(|id| store.get(id))
+                    .and_then(|held| arrays.get(&held.handle))
                     .map(|array| array.to_f32());
                 let Some(texture) =
-                    volume_texture(&array.to_f32(), tint.as_deref(), grid, colour.range)
+                    volume_texture(&density.to_f32(), tint.as_deref(), grid, colour.range)
                 else {
                     continue;
                 };
                 let handle = images.add(texture);
                 commands.entity(entity).insert(VolumeTexture {
-                    density: density_name.clone(),
-                    colour: colour_name.clone(),
+                    density: density_handle,
+                    colour: colour_handle,
                     image: handle.clone(),
                 });
                 handle
             }
         };
 
-        let size = (grid.dims.saturating_sub(UVec3::ONE)).as_vec3() * grid.spacing;
+        let size = grid.size();
         if dirty.geometry {
             super::ensure_mesh(
                 &mut commands,
@@ -514,8 +571,8 @@ pub fn draw_volumes(
         );
 
         debug!(
-            "draw: volume, density \"{density_name}\" coloured by \"{}\", {:?} of {} samples",
-            colour_name.as_deref().unwrap_or(&density_name),
+            "draw: volume, density d{density_handle} coloured by d{}, {:?} of {} samples",
+            colour_handle.unwrap_or(density_handle),
             style.mode,
             grid.point_count()
         );
@@ -526,8 +583,8 @@ pub fn draw_volumes(
 mod tests {
     use super::*;
 
-    fn grid(dims: [u32; 3]) -> GridData {
-        GridData {
+    fn grid(dims: [u32; 3]) -> VolumeGrid {
+        VolumeGrid {
             origin: Vec3::ZERO,
             spacing: Vec3::ONE,
             dims: UVec3::from(dims),

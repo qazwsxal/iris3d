@@ -18,7 +18,6 @@ use bevy::ecs::system::EntityCommands;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use super::DatasetKind;
 use super::data::{BufferMeta, Dtype};
 
 /// A single tunable value on an actor.
@@ -382,8 +381,7 @@ pub struct ActorKind {
     /// Stable identifier — `"points"`, `"ball-and-stick"`. Goes over the wire.
     pub id: &'static str,
     pub label: &'static str,
-    /// Whether this kind can draw a dataset of the given shape.
-    pub supports: fn(DatasetKind) -> bool,
+
     pub params: &'static [ParamSpec],
     /// Writes the backend's own typed style component from the parameters.
     ///
@@ -468,11 +466,6 @@ impl ActorRegistry {
     #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &ActorKind> {
         self.0.iter()
-    }
-
-    /// The kinds that can draw this dataset, in registration order.
-    pub fn for_dataset(&self, dataset: DatasetKind) -> impl Iterator<Item = &ActorKind> {
-        self.0.iter().filter(move |kind| (kind.supports)(dataset))
     }
 }
 
@@ -569,7 +562,6 @@ mod tests {
         ActorKind {
             id: "test",
             label: "test",
-            supports: |dataset| dataset == DatasetKind::Points,
             params: SPECS,
             apply: |_, _| {},
         }
@@ -600,7 +592,6 @@ mod tests {
         ActorKind {
             id: "bound",
             label: "bound",
-            supports: |_| true,
             params: WITH_INPUTS,
             apply: |_, _| {},
         }
@@ -775,11 +766,12 @@ mod tests {
         assert_eq!(normalised.len(), 2);
     }
 
-    /// The registry reports what could draw a dataset, in the order it was
-    /// registered, and stops there. It used to hand out the first of them as a
-    /// default, which made registration order into a rendering decision.
+    /// Kinds come back in registration order, and every one of them is offered
+    /// for every object. Which kinds *could* draw an object used to be filtered
+    /// by a `supports(DatasetKind)` predicate; an actor's data is bound to it
+    /// now, so the object it hangs under says nothing about what can draw it.
     #[test]
-    fn supporting_kinds_come_back_in_registration_order() {
+    fn kinds_come_back_in_registration_order() {
         let mut registry = ActorRegistry::default();
         registry.register(kind());
         registry.register(ActorKind {
@@ -787,12 +779,8 @@ mod tests {
             ..kind()
         });
 
-        let supporting: Vec<&str> = registry
-            .for_dataset(DatasetKind::Points)
-            .map(|kind| kind.id)
-            .collect();
-        assert_eq!(supporting, ["test", "second"]);
-        assert_eq!(registry.for_dataset(DatasetKind::Mesh).count(), 0);
+        let listed: Vec<&str> = registry.iter().map(|kind| kind.id).collect();
+        assert_eq!(listed, ["test", "second"]);
     }
 
     /// Style component derived from the map, which is what lets the map be the

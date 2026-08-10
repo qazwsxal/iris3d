@@ -631,9 +631,10 @@ message ActorKindInfo {
   string id = 1;
   string label = 2;
 
-  // Dataset kinds this can draw, using the same names as
-  // `ObjectInfo.dataset_kind`.
-  repeated string supports = 3;
+  // Field 3 was `supports`, a list of dataset kinds this could draw. An actor
+  // binds its own arrays now, so the object it hangs under says nothing about
+  // what can draw there, and every kind is offered for every object.
+  reserved 3;
 
   repeated ParamSpec params = 4;
 }

@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag};
 use crate::scene::subset::Remap;
-use crate::scene::{DataArray, DataStore, DatasetKind, Dtype};
+use crate::scene::{DataArray, DataStore, Dtype};
 
 use super::{Dirty, Drawable, mark};
 
@@ -81,7 +81,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "surface",
         label: "surface",
-        supports: |dataset| dataset == DatasetKind::Mesh,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(SurfaceStyle {

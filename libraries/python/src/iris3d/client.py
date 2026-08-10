@@ -295,8 +295,6 @@ class ActorKindSummary:
 
     id: str
     label: str
-    #: Dataset kinds this can draw, matching ``ObjectSummary.dataset_kind``.
-    supports: tuple[str, ...]
     params: tuple[ParamInfo, ...]
 
 
@@ -494,7 +492,6 @@ def _kind(info: ActorKindInfo) -> ActorKindSummary:
     return ActorKindSummary(
         id=info.id,
         label=info.label,
-        supports=tuple(info.supports),
         params=tuple(params),
     )
 

@@ -15,7 +15,7 @@ use bevy::asset::embedded_asset;
 use bevy::prelude::*;
 
 use crate::scene::actor::ColorMap;
-use crate::scene::data::{Field, Fields};
+use crate::scene::data::Fields;
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{
     ActorOf, Actors, ColorBy, DataArray, DataStore, MeshData, MoleculeData, PointCloud,
@@ -364,52 +364,16 @@ fn clear_dirty(mut dirty: Query<&mut Dirty>) {
     }
 }
 
-/// Resolves the field an actor is coloured by.
+/// Maps a bound array onto vertex colours.
 ///
-/// `None` means flat, and nothing is inferred here. An earlier version fell
-/// back to the first scalar field when none was set, which meant the render
-/// was coloured by a field the UI reported as "flat". The default is now
-/// chosen once, explicitly, when the actor is created — see
-/// `scene::default_colour_field`.
-pub(crate) fn colour_field<'a>(colour: &ColorBy, fields: Option<&'a Fields>) -> Option<&'a Field> {
-    // A name that no longer resolves means the field went away; fall back to
-    // flat rather than silently picking a different one.
-    fields?.0.get(colour.field.as_ref()?)
-}
-
-/// Reduces a field to one number per element.
+/// No `Field` and no name lookup: a bound array carries its own shape, so a
+/// multi-component one reduces to magnitude exactly as a vector field used to.
+/// What the numbers *mean* was decided by whoever bound them.
 ///
-/// Colour mapping needs a scalar, so vector and tensor fields are reduced to
-/// their magnitude. That is a defensible default but not always the one you
-/// want — von Mises is the conventional scalar for a stress tensor, for
-/// instance — so derived quantities should eventually be selectable in their
-/// own right rather than assumed here.
-pub(crate) fn scalarise(field: &Field, array: &DataArray) -> Vec<f32> {
-    let raw = array.to_f32();
-    let components = field.meta.components().max(1) as usize;
-    if components == 1 {
-        return raw;
-    }
-    raw.chunks_exact(components)
-        .map(|element| element.iter().map(|v| v * v).sum::<f32>().sqrt())
-        .collect()
-}
-
-/// Maps a field's values onto vertex colours, autoscaling unless a range is set.
-pub(crate) fn vertex_colours(
-    field: &Field,
-    colour: &ColorBy,
-    arrays: &Assets<DataArray>,
-    count: usize,
-) -> Option<Vec<[f32; 4]>> {
-    scale_into_map(&scalarise(field, arrays.get(&field.array)?), colour, count)
-}
-
-/// The same, for an array bound straight to an actor's colour input.
-///
-/// No [`Field`] involved: a bound array carries its own shape, so a multi-
-/// component one reduces to magnitude exactly as a vector field does. What the
-/// numbers *mean* was decided by whoever bound them.
+/// Magnitude is a defensible reduction but not always the one you want — von
+/// Mises is the conventional scalar for a stress tensor — so derived quantities
+/// should eventually be computed by the client and bound like anything else,
+/// which is now the natural way to do it.
 pub(crate) fn bound_colours(
     array: &DataArray,
     colour: &ColorBy,

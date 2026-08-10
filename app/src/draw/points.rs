@@ -17,7 +17,7 @@ use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float};
-use crate::scene::{DataArray, DataStore, DatasetKind, Dtype};
+use crate::scene::{DataArray, DataStore, Dtype};
 
 use super::{Dirty, Drawable, mark};
 
@@ -72,7 +72,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "points",
         label: "points",
-        supports: |dataset| dataset == DatasetKind::Points,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(PointsStyle {

@@ -146,8 +146,6 @@ pub struct SubsetSummary {
 pub struct KindSummary {
     pub id: String,
     pub label: String,
-    /// Dataset kinds this can draw, by name.
-    pub supports: Vec<String>,
     pub params: &'static [registry::ParamSpec],
 }
 
@@ -733,11 +731,6 @@ pub fn apply_scene_commands(
                     .map(|kind| KindSummary {
                         id: kind.id.to_string(),
                         label: kind.label.to_string(),
-                        supports: DatasetKind::ALL
-                            .iter()
-                            .filter(|dataset| (kind.supports)(**dataset))
-                            .map(|dataset| dataset.as_str().to_string())
-                            .collect(),
                         params: kind.params,
                     })
                     .collect();
@@ -796,7 +789,7 @@ fn add_actor(
     registry: &ActorRegistry,
     index: &HashMap<u64, Entity>,
     drawn: &mut HashMap<u64, Entity>,
-    objects: &Objects,
+    _objects: &Objects,
     fields: &Query<&data::Fields>,
     source: u64,
     kind: String,
@@ -815,23 +808,19 @@ fn add_actor(
         None => source_entity,
     };
 
-    let dataset = objects
-        .get(source_entity)
-        .map(|(_, _, _, kind, _)| *kind)
-        .map_err(|_| SceneError::NoSuchObject(source))?;
-
     // The caller names the kind. There is no default to fall back on: which
-    // representation suits a dataset is a judgement, and the server has no
+    // representation suits some data is a judgement, and the server has no
     // basis for it beyond the order its backends registered in.
+    //
+    // Nor is there a check that the kind suits the object any more. It used to
+    // ask `supports(DatasetKind)`, which only meant anything while an actor took
+    // its data from the object it hung under. An actor binds its own arrays now,
+    // so what the object holds — usually nothing — says nothing about what can
+    // draw there. `check_bindings` is the real gate, and it asks about the data
+    // rather than about the node.
     let registered = registry
         .get(&kind)
         .ok_or_else(|| SceneError::UnknownKind(kind.clone()))?;
-    if !(registered.supports)(dataset) {
-        return Err(SceneError::KindNotSupported {
-            kind: registered.id.to_string(),
-            dataset,
-        });
-    }
 
     // Unset parameters take the kind's default: this is a new actor, so there
     // is no previous value to preserve.
