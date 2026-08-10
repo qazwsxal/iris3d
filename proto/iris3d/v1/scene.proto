@@ -37,6 +37,11 @@ package iris3d.v1;
 service SceneService {
   // Uploads a single object as a stream of chunks.
   //
+  // The object holds data and a place in the tree. Nothing draws it: call
+  // AddActor to say how it should look. The server does not choose a
+  // representation on a client's behalf, so an upload alone changes what is in
+  // the scene without changing what is on screen.
+  //
   // The first message on the stream MUST carry `header`; every subsequent
   // message MUST carry `chunk`. Chunks are written into the buffers declared
   // by the header, and the upload is only committed to the scene once every
@@ -486,8 +491,9 @@ message AddActorRequest {
   // The object whose data to draw.
   ObjectHandle source = 1;
 
-  // Registered kind id. Empty picks whatever the server draws this kind of
-  // dataset with by default, which is what an upload would have chosen.
+  // Registered kind id. REQUIRED: ask ListActorKinds and name one. There is no
+  // default — how a dataset should look is the caller's judgement, and the
+  // server's only basis for guessing was the order its backends registered in.
   string kind = 2;
 
   // The object whose transform to inherit. Absent means `source`, drawing the
@@ -498,7 +504,7 @@ message AddActorRequest {
   // is a new actor, so there is no previous value to keep.
   map<string, ParamValue> params = 4;
 
-  // Absent colours by the first scalar field, matching what an upload does.
+  // Absent colours by the first scalar field the source object carries.
   optional ColorSpec color = 5;
 
   // Absent draws the whole dataset.

@@ -71,11 +71,14 @@ def hydrogen(client, root, cursor, gap=3.0):
     width = grid.dims[0] * grid.spacing[0]
     client.set_transform(handle, translation=(cursor + width / 2.0, 0.0, 0.0))
 
-    # The upload already made a volume, because `volume` is the kind registered
-    # for grids. Two separate choices here, which is the whole point of the
-    # controls: `density` says what makes the volume solid, and the colouring
-    # says what tints it. Opacity is turned well up because most of the box is
-    # nearly empty, and at 1.0 the lobes barely register.
+    # The upload draws nothing on its own, so the volume is asked for outright.
+    # Settings go in at the same time — before, this took a second call to find
+    # the actor the upload had quietly made and a third to configure it.
+    #
+    # Two separate choices here, which is the whole point of the controls:
+    # `density` says what makes the volume solid, and the colouring says what
+    # tints it. Opacity is turned well up because most of the box is nearly
+    # empty, and at 1.0 the lobes barely register.
     #
     # Density is the probability, the square of the amplitude, so it has no
     # sign to lose. Colour is the signed amplitude on a diverging map, which is
@@ -85,10 +88,15 @@ def hydrogen(client, root, cursor, gap=3.0):
     # This grid spans 24 units against the torus's 8, so it dominates the
     # default framing. Orbit round it rather than judging it from where the
     # camera lands.
-    drawn = client.list_actors(handle)[0]
-    client.set_actor(
-        drawn.handle,
-        {"density": "probability", "mode": "blend", "opacity": 12.0, "steps": 256.0},
+    client.add_actor(
+        handle,
+        "volume",
+        params={
+            "density": "probability",
+            "mode": "blend",
+            "opacity": 12.0,
+            "steps": 256.0,
+        },
         coloring=iris3d.Coloring(field="amplitude", map="cool-warm"),
     )
     return handle
@@ -111,6 +119,22 @@ def main():
             client.set_transform(handle, translation=placements[name])
 
         hydrogen(client, root, cursor)
+
+        # An upload puts data in the scene; it does not decide how the data
+        # looks. The server reports what it can draw and which datasets each
+        # kind accepts, and choosing among them is this script's business. First
+        # kind that fits is a fine policy for a sample loader — a real client
+        # would offer the list.
+        preferred: dict[str, str] = {}
+        for kind in client.actor_kinds():
+            for dataset in kind.supports:
+                preferred.setdefault(dataset, kind.id)
+        for summary in client.list_objects():
+            wanted = preferred.get(summary.dataset_kind)
+            # The grid already has the volume `hydrogen` asked for, and the root
+            # is an empty grouping node that nothing can draw.
+            if wanted is not None and not summary.actors:
+                client.add_actor(summary.handle, wanted)
 
         print(f"\n{'handle':<8}{'object':<18}{'kind':<11}{'drawn as':<16}arrays")
         print("-" * 78)

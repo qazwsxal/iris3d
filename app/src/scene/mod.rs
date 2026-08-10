@@ -243,8 +243,9 @@ pub enum SceneCommand {
     AddActor {
         /// The object whose data to draw.
         source: u64,
-        /// `None` takes whatever the registry draws this dataset with.
-        kind: Option<String>,
+        /// Which registered kind draws it. Named by the caller, always: the
+        /// server has no opinion on how a dataset should look.
+        kind: String,
         /// The object whose transform to inherit. `None` means `source`.
         parent: Option<u64>,
         /// Partial. Anything unset takes the kind's **default**, there being no
@@ -411,7 +412,6 @@ pub fn apply_scene_commands(
                 let (id, summary) = spawn_object(
                     &mut commands,
                     &mut counter,
-                    &registry,
                     &mut index,
                     object,
                     ingested.kind,
@@ -443,7 +443,6 @@ pub fn apply_scene_commands(
                 let (_, summary) = spawn_object(
                     &mut commands,
                     &mut counter,
-                    &registry,
                     &mut index,
                     object,
                     DatasetKind::Empty,
@@ -656,7 +655,7 @@ fn add_actor(
     objects: &Objects,
     fields: &Query<&data::Fields>,
     source: u64,
-    kind: Option<String>,
+    kind: String,
     parent: Option<u64>,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
@@ -676,19 +675,12 @@ fn add_actor(
         .map(|(_, _, _, kind, _)| *kind)
         .map_err(|_| SceneError::NoSuchObject(source))?;
 
-    let registered = match &kind {
-        Some(name) => registry
-            .get(name)
-            .ok_or_else(|| SceneError::UnknownKind(name.clone()))?,
-        None => registry
-            .default_for(dataset)
-            // Nothing registered can draw this shape of data, which is not the
-            // caller naming something wrong.
-            .ok_or_else(|| SceneError::KindNotSupported {
-                kind: "default".into(),
-                dataset,
-            })?,
-    };
+    // The caller names the kind. There is no default to fall back on: which
+    // representation suits a dataset is a judgement, and the server has no
+    // basis for it beyond the order its backends registered in.
+    let registered = registry
+        .get(&kind)
+        .ok_or_else(|| SceneError::UnknownKind(kind.clone()))?;
     if !(registered.supports)(dataset) {
         return Err(SceneError::KindNotSupported {
             kind: registered.id.to_string(),
@@ -817,26 +809,23 @@ fn set_actor(
 /// Spawns an object entity, its default actor, and registers its handle.
 /// Returns the handle and a summary of the new object.
 #[allow(clippy::too_many_arguments)]
+/// Adds an object to the world. It holds data and a place in the tree, and
+/// nothing draws it.
+///
+/// Choosing how to draw something is not the server's decision to make. It
+/// used to pick the first registered kind that supported the dataset, which
+/// meant the server answered a question only the caller can — and answered it
+/// out of whatever order the backends happened to register in. A client that
+/// wants the obvious representation asks `ListActorKinds` and names one.
 fn spawn_object(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
-    registry: &ActorRegistry,
     index: &mut HashMap<u64, Entity>,
     object: SceneObject,
     kind: DatasetKind,
     fields: Option<data::Fields>,
 ) -> (u64, ObjectSummary) {
     let id = counter.next();
-    // Which kind this is depends entirely on what the backends registered, so
-    // an upload of a dataset nothing can draw simply gets no actor rather than
-    // one that silently does nothing.
-    let default_kind = registry.default_for(kind);
-    let colour = ColorBy {
-        field: default_colour_field(fields.as_ref()),
-        ..default()
-    };
-    // Taken before the object is moved into the world; the actor's handle is
-    // only known after, so the summary is assembled at the end.
     let name = object.name.clone();
     let buffers: Vec<BufferMeta> = object
         .arrays
@@ -857,57 +846,25 @@ fn spawn_object(
         .id();
     index.insert(id, spawned);
 
-    // Give the object something to draw, so an upload is visible without a
-    // follow-up call. Source and placement are the same object here; they only
-    // differ once a client asks for an actor of one object under another.
-    let drawn: Vec<ActorSummary> = default_kind
-        .map(|default_kind| {
-            let params = default_kind.defaults();
-            let (actor, _) = link::spawn_actor(
-                commands,
-                counter,
-                spawned,
-                spawned,
-                Subset::All,
-                (
-                    ActorKindId(default_kind.id),
-                    ActorParams(params.clone()),
-                    colour.clone(),
-                ),
-            );
-            ActorSummary {
-                id: actor,
-                kind: default_kind.id.to_string(),
-                source: id,
-                parent: Some(id),
-                params,
-                colour,
-                visible: true,
-                // An upload draws all of what it uploaded.
-                subset: None,
-            }
-        })
-        .into_iter()
-        .collect();
-
     let summary = ObjectSummary {
         id,
         name,
         kind,
         buffers,
         total_bytes,
-        actors: drawn,
+        // Nothing draws a new object. The caller adds an actor when it has
+        // decided how it wants this drawn.
+        actors: Vec::new(),
         parent: None,
     };
 
     info!(
-        "scene: added {} object {} \"{}\" ({} arrays, {} bytes, {})",
+        "scene: added {} object {} \"{}\" ({} arrays, {} bytes, not drawn)",
         kind.as_str(),
         id,
         summary.name,
         summary.buffers.len(),
         summary.total_bytes,
-        default_kind.map(|kind| kind.id).unwrap_or("no actor"),
     );
 
     (id, summary)

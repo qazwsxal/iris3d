@@ -257,9 +257,15 @@ impl SceneService for SceneBridgeService {
             .source
             .ok_or_else(|| Status::invalid_argument("source is required"))?
             .id;
-        // Empty rather than absent means "whatever you would have chosen", so
-        // there is no separate way to say it.
-        let kind = (!request.kind.is_empty()).then_some(request.kind);
+        // Required. An empty kind used to mean "whatever you would have
+        // chosen", and there is no longer anything to choose — ask
+        // ListActorKinds and name one.
+        if request.kind.is_empty() {
+            return Err(Status::invalid_argument(
+                "kind is required; ask ListActorKinds for the ones this build supports",
+            ));
+        }
+        let kind = request.kind;
         let parent = request.parent.map(|handle| handle.id);
         let params = params_from_proto(request.params)?;
         let colour = request.color.map(colour_from_proto).transpose()?;

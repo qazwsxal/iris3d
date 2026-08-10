@@ -207,10 +207,9 @@ impl ActorKind {
 
 /// Every actor kind some backend has registered.
 ///
-/// Order is registration order, and it decides which kind an upload is drawn
-/// with: [`default_for`](Self::default_for) takes the first that supports the
-/// dataset. Backends registering in `DrawPlugin` therefore also declare a
-/// preference.
+/// Order is registration order, and it is presentation order only — what the
+/// UI lists and what `ListActorKinds` returns. Nothing here picks a kind on a
+/// caller's behalf: the registry answers what exists, and the caller decides.
 #[derive(Resource, Default)]
 pub struct ActorRegistry(Vec<ActorKind>);
 
@@ -240,11 +239,6 @@ impl ActorRegistry {
     /// The kinds that can draw this dataset, in registration order.
     pub fn for_dataset(&self, dataset: DatasetKind) -> impl Iterator<Item = &ActorKind> {
         self.0.iter().filter(move |kind| (kind.supports)(dataset))
-    }
-
-    /// How to draw an upload that did not ask for anything specific.
-    pub fn default_for(&self, dataset: DatasetKind) -> Option<&ActorKind> {
-        self.for_dataset(dataset).next()
     }
 }
 
@@ -344,8 +338,11 @@ mod tests {
         assert_eq!(normalised.len(), 2);
     }
 
+    /// The registry reports what could draw a dataset, in the order it was
+    /// registered, and stops there. It used to hand out the first of them as a
+    /// default, which made registration order into a rendering decision.
     #[test]
-    fn the_first_registered_supporting_kind_is_the_default() {
+    fn supporting_kinds_come_back_in_registration_order() {
         let mut registry = ActorRegistry::default();
         registry.register(kind());
         registry.register(ActorKind {
@@ -353,14 +350,12 @@ mod tests {
             ..kind()
         });
 
-        assert_eq!(
-            registry
-                .default_for(DatasetKind::Points)
-                .map(|kind| kind.id),
-            Some("test")
-        );
-        assert_eq!(registry.for_dataset(DatasetKind::Points).count(), 2);
-        assert!(registry.default_for(DatasetKind::Mesh).is_none());
+        let supporting: Vec<&str> = registry
+            .for_dataset(DatasetKind::Points)
+            .map(|kind| kind.id)
+            .collect();
+        assert_eq!(supporting, ["test", "second"]);
+        assert_eq!(registry.for_dataset(DatasetKind::Mesh).count(), 0);
     }
 
     /// Style component derived from the map, which is what lets the map be the

@@ -655,7 +655,7 @@ class Client:
     def add_actor(
         self,
         source: int,
-        kind: str = "",
+        kind: str,
         *,
         parent: int | None = None,
         params: Mapping[str, float | bool | str] | None = None,
@@ -666,9 +666,12 @@ class Client:
         """Draws an object an additional way.
 
         Adds rather than replaces: an object may be drawn several ways at once,
-        each configured on its own. ``kind`` defaults to whatever the server
-        would have chosen for this dataset — see :meth:`actor_kinds` for what a
-        build supports.
+        each configured on its own.
+
+        ``kind`` is required, and an upload draws nothing until you call this.
+        The server has no opinion on how a dataset should look, so the choice
+        belongs here. :meth:`actor_kinds` reports what this build supports and
+        which datasets each one can draw.
 
         ``parent`` is the object whose *transform* is inherited, as distinct
         from ``source``, whose *data* is drawn. Passing a different object
