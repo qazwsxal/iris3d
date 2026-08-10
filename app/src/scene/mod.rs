@@ -171,12 +171,6 @@ pub enum SceneError {
     },
     /// No backend registered a kind by that name, so nothing could draw it.
     UnknownKind(String),
-    /// The kind exists but cannot draw this shape of data — ball-and-stick over
-    /// a triangle mesh, say.
-    KindNotSupported {
-        kind: String,
-        dataset: DatasetKind,
-    },
     /// The requested parent is the object itself or one of its descendants.
     ///
     /// Rejecting this is not optional: Bevy's transform propagation *panics* on
@@ -212,11 +206,6 @@ impl Display for SceneError {
                 f,
                 "no actor kind \"{kind}\" — ask ListActorKinds \
                  for the ones this build supports"
-            ),
-            SceneError::KindNotSupported { kind, dataset } => write!(
-                f,
-                "actor kind \"{kind}\" cannot draw {} data",
-                dataset.as_str()
             ),
             SceneError::WouldCycle { object, parent } => write!(
                 f,

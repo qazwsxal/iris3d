@@ -185,14 +185,6 @@ pub enum ParamKind {
     Bool {
         default: bool,
     },
-    /// Names a field on the source object.
-    ///
-    /// The empty string means "choose one", and what that resolves to is the
-    /// backend's business — the same posture `ColorBy::field` takes. Nothing
-    /// here checks that the name exists, because the object it must exist on is
-    /// not known until draw time, and a field can appear or vanish after the
-    /// parameter is set.
-    Field,
     /// One option out of a fixed set, such as a rendering mode.
     Choice {
         options: &'static [&'static str],
@@ -255,7 +247,6 @@ impl ParamKind {
         match self {
             ParamKind::Float { default, .. } => Some(ParamValue::Float(default)),
             ParamKind::Bool { default } => Some(ParamValue::Bool(default)),
-            ParamKind::Field => Some(ParamValue::Text(String::new())),
             ParamKind::Choice { default, .. } => Some(ParamValue::Text(default.to_string())),
             ParamKind::Vector { default, .. } => Some(ParamValue::Vector(default.to_vec())),
             ParamKind::Array { .. } => None,
@@ -313,7 +304,6 @@ impl ParamKind {
                 Some(ParamValue::Float(value.clamp(min, max)))
             }
             (ParamKind::Bool { .. }, ParamValue::Bool(value)) => Some(ParamValue::Bool(value)),
-            (ParamKind::Field, ParamValue::Text(value)) => Some(ParamValue::Text(value)),
             // An option outside the declared set is rejected rather than
             // clamped: there is no nearest valid choice to fall back to.
             (ParamKind::Choice { options, .. }, ParamValue::Text(value)) => options

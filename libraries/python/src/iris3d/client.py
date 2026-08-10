@@ -245,7 +245,7 @@ class ParamInfo:
 
     id: str
     label: str
-    #: "float", "bool", "field", "choice" or "array".
+    #: "float", "bool", "choice", "array" or "vector".
     type: str
     #: Absent for an array input: there is no default array, so it starts unbound.
     default: float | bool | str | None
@@ -261,6 +261,10 @@ class ParamInfo:
     shape: tuple[int, ...] = ()
     #: Whether the kind can draw without it, for arrays only.
     required: bool = False
+    #: How many numbers it takes, for vectors only.
+    components: int = 0
+    #: Whole numbers only, for vectors only. True for counts such as grid dims.
+    integral: bool = False
 
 
 @dataclass(frozen=True)
@@ -452,9 +456,18 @@ def _kind(info: ActorKindInfo) -> ActorKindSummary:
                     default=spec.flag.default_value,
                 )
             )
-        elif kind == "field":
-            # The empty default means "choose one for me".
-            params.append(ParamInfo(id=spec.id, label=spec.label, type="field", default=""))
+        elif kind == "vector":
+            params.append(
+                ParamInfo(
+                    id=spec.id,
+                    label=spec.label,
+                    type="vector",
+                    default=tuple(spec.vector.default_value),
+                    range=(spec.vector.min, spec.vector.max),
+                    components=spec.vector.components,
+                    integral=spec.vector.integral,
+                )
+            )
         elif kind == "choice":
             params.append(
                 ParamInfo(

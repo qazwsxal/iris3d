@@ -253,37 +253,6 @@ fn controls(
                         });
                 });
             }
-            ParamKind::Field => {
-                // The fields are the source object's, which is why the row this
-                // actor was found under comes back with it.
-                let chosen = text(&current.params, spec.id, "");
-                ui.horizontal(|ui| {
-                    ui.label(spec.label);
-                    egui::ComboBox::from_id_salt((current.entity, spec.id))
-                        .selected_text(if chosen.is_empty() { "auto" } else { chosen })
-                        .show_ui(ui, |ui| {
-                            // Empty means "pick one for me", which is what an
-                            // actor starts with.
-                            if ui.selectable_label(chosen.is_empty(), "auto").clicked() {
-                                actions.0.push(UiAction::SetParam(
-                                    current.entity,
-                                    spec.id,
-                                    ParamValue::Text(String::new()),
-                                ));
-                            }
-                            for field in &row.fields {
-                                let picked = chosen == field.name;
-                                if ui.selectable_label(picked, &field.name).clicked() && !picked {
-                                    actions.0.push(UiAction::SetParam(
-                                        current.entity,
-                                        spec.id,
-                                        ParamValue::Text(field.name.clone()),
-                                    ));
-                                }
-                            }
-                        });
-                });
-            }
             ParamKind::Choice { options, default } => {
                 let chosen = text(&current.params, spec.id, default);
                 ui.horizontal(|ui| {

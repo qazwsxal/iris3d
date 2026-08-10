@@ -22,7 +22,7 @@ use super::proto::{
     ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, ArrayParam,
     BoolParam, BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest,
     CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest, DeleteObjectResponse,
-    Dtype as ProtoDtype, FieldParam, FloatParam, Grid as ProtoGrid, ListActorKindsRequest,
+    Dtype as ProtoDtype, FloatParam, Grid as ProtoGrid, ListActorKindsRequest,
     ListActorKindsResponse, ListActorsRequest, ListActorsResponse, ListDataRequest,
     ListDataResponse, ListObjectsRequest, ListObjectsResponse, ObjectHandle, ObjectHeader,
     ObjectInfo, ParamSpec as ProtoSpec, ParamValue as ProtoParam, Range, ReleaseDataRequest,
@@ -481,9 +481,7 @@ fn scene_error(error: SceneError) -> Status {
         SceneError::UnknownKind(_) => Status::invalid_argument(error.to_string()),
         // The request was well-formed but the scene is not in a state where it
         // can be honoured.
-        SceneError::WouldCycle { .. } | SceneError::KindNotSupported { .. } => {
-            Status::failed_precondition(error.to_string())
-        }
+        SceneError::WouldCycle { .. } => Status::failed_precondition(error.to_string()),
     }
 }
 
@@ -668,7 +666,6 @@ fn kind_info(summary: &KindSummary) -> ActorKindInfo {
                     ParamKind::Bool { default } => param_spec::Kind::Flag(BoolParam {
                         default_value: default,
                     }),
-                    ParamKind::Field => param_spec::Kind::Field(FieldParam {}),
                     ParamKind::Choice { options, default } => {
                         param_spec::Kind::Choice(ChoiceParam {
                             options: options.iter().map(|option| option.to_string()).collect(),

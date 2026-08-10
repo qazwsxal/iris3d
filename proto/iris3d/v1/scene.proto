@@ -413,13 +413,6 @@ message BoolParam {
   bool default_value = 1;
 }
 
-// FieldParam takes the name of a field on the source object.
-//
-// The empty string means "choose one", and what that resolves to is the
-// renderer's business. Nothing validates the name when it is set: the object it
-// must exist on is not known until draw time, and a field can appear or vanish
-// after the fact.
-message FieldParam {}
 
 // ChoiceParam takes one option out of a fixed set. A value outside the set is
 // rejected rather than corrected, because there is no nearest valid choice.
@@ -437,10 +430,13 @@ message ParamSpec {
   // Human-readable name.
   string label = 2;
 
+  // Field 5 was `field`, naming a field on the object an actor drew. An actor
+  // binds its arrays directly now, so there is nothing to name.
+  reserved 5;
+
   oneof kind {
     FloatParam number = 3;
     BoolParam flag = 4;
-    FieldParam field = 5;
     ChoiceParam choice = 6;
     ArrayParam array = 7;
     VectorParam vector = 8;
