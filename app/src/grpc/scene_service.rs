@@ -287,10 +287,10 @@ impl SceneService for SceneBridgeService {
             ));
         }
         let kind = request.kind;
-        let parent = request
-            .parent
-            .ok_or_else(|| Status::invalid_argument("parent is required"))?
-            .id;
+        // Optional, unlike the kind: an absent one is made rather than
+        // refused, because there is a sensible object to create and no
+        // sensible way to draw.
+        let parent = request.parent.map(|handle| handle.id);
         let params = params_from_proto(request.params)?;
         let colour = request.color.map(colour_from_proto).transpose()?;
         let subset = request.subset.map(subset_from_proto).transpose()?;

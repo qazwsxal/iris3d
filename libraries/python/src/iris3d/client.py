@@ -724,32 +724,38 @@ class Client:
 
     def add_actor(
         self,
-        parent: int,
         kind: str,
         *,
+        parent: int | None = None,
         params: Mapping[str, float | bool | str] | None = None,
         coloring: Coloring | None = None,
         subset: np.ndarray | None = None,
         per_cell: bool = False,
     ) -> ActorSummary:
-        """Draws something under an object.
+        """Draws something, under an object or under one made for it.
 
         Adds rather than replaces: an object may carry several actors at once,
         each configured on its own.
 
-        ``parent`` is where it appears — whose transform it inherits, and whose
-        lifetime it shares. *What* it draws is in ``params``, as
-        :class:`Bind` values against the inputs its kind declares.
-
-        Showing one array in two places is two actors binding it under two
-        parents::
+        ``parent`` is where it appears — whose transform it inherits. Leave it
+        out and an object is created to hold this actor, named after its kind;
+        the handle comes back as ``.parent``. An actor has no place of its own,
+        so it always ends up under something::
 
             data = client.upload_data({"xyz": positions})
+            actor = client.add_actor("points",
+                                     params={"positions": Bind(data["xyz"])})
+            client.set_transform(actor.parent, translation=(10, 0, 0))
+
+        *What* it draws is in ``params``, as :class:`Bind` values against the
+        inputs its kind declares. Showing one array in two places is two actors
+        binding it under two parents::
+
             here = client.create_object("here")
             there = client.create_object("there")
             client.set_transform(there, translation=(10, 0, 0))
             for where in (here, there):
-                client.add_actor(where, "points",
+                client.add_actor("points", parent=where,
                                  params={"positions": Bind(data["xyz"])})
 
         Parameters left out take the kind's default, not the value some other
@@ -762,17 +768,16 @@ class Client:
         subsets. Selections are computed here rather than described to the
         server, so anything numpy can express works::
 
-            client.add_actor(node, "surface", subset=positions[:, 2] > 0, ...)
+            client.add_actor("surface", parent=node,
+                             subset=positions[:, 2] > 0, ...)
 
         A mesh cell survives only when all of its corners do, and a bond only
         when both its atoms do, so a cut leaves a clean boundary rather than
         stretched or dangling geometry.
         """
-        request = AddActorRequest(
-            parent=ObjectHandle(id=parent),
-            kind=kind,
-            params=_params(params),
-        )
+        request = AddActorRequest(kind=kind, params=_params(params))
+        if parent is not None:
+            request.parent.CopyFrom(ObjectHandle(id=parent))
         if coloring is not None:
             request.color.CopyFrom(_color_spec(coloring))
         if subset is not None:

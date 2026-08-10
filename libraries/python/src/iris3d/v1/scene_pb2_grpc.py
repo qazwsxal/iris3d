@@ -257,9 +257,10 @@ class SceneServiceServicer(object):
         once — a protein as cartoon and as licorice, a mesh as surface and as
         wireframe — and each is configured independently.
 
-        `parent` says where it appears. *What* it draws is in `params`, as arrays
-        bound to the inputs its kind declares, so showing one array in two places
-        is two actors binding it under two parents.
+        `parent` says where it appears, and an absent one is created for you.
+        *What* it draws is in `params`, as arrays bound to the inputs its kind
+        declares, so showing one array in two places is two actors binding it
+        under two parents.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

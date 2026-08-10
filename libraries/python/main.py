@@ -95,8 +95,8 @@ def hydrogen(client, root, cursor, gap=3.0):
     # default framing. Orbit round it rather than judging it from where the
     # camera lands.
     client.add_actor(
-        handle,
         "volume",
+        parent=handle,
         params={
             "density": iris3d.Bind(held["probability"]),
             "colour": iris3d.Bind(held["amplitude"]),
@@ -205,8 +205,8 @@ def main():
                 print(f"skipping {summary.name}: this build cannot draw {wanted}")
                 continue
             client.add_actor(
-                summary.handle,
                 wanted,
+                parent=summary.handle,
                 params=bind(client, wanted, everything[summary.name]),
             )
 

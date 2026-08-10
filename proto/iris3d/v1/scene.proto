@@ -105,9 +105,10 @@ service SceneService {
   // once — a protein as cartoon and as licorice, a mesh as surface and as
   // wireframe — and each is configured independently.
   //
-  // `parent` says where it appears. *What* it draws is in `params`, as arrays
-  // bound to the inputs its kind declares, so showing one array in two places
-  // is two actors binding it under two parents.
+  // `parent` says where it appears, and an absent one is created for you.
+  // *What* it draws is in `params`, as arrays bound to the inputs its kind
+  // declares, so showing one array in two places is two actors binding it
+  // under two parents.
   rpc AddActor(AddActorRequest) returns (AddActorResponse);
 
   // Changes an existing actor. Only what is named is altered.
@@ -568,9 +569,12 @@ message AddActorRequest {
   // server's only basis for guessing was the order its backends registered in.
   string kind = 2;
 
-  // The object to draw under: whose transform it inherits, and whose lifetime
-  // it shares. REQUIRED — an actor is a child of a node, not a free-floating
-  // thing.
+  // The object to draw under: whose transform it inherits, and where it sits.
+  //
+  // Absent creates one, named after the kind and placed at the origin. An actor
+  // has to be under something — it has no place of its own — and a caller with
+  // nothing to group it under would otherwise have to call CreateObject first
+  // every single time. The new object's handle comes back as `actor.parent`.
   ObjectHandle parent = 3;
 
   // Settings to override. Anything not named takes the kind's default — this

@@ -286,9 +286,10 @@ pub enum SceneCommand {
 
     /// Draws something under an object. Adds; never replaces.
     AddActor {
-        /// The object to draw under, whose transform it inherits and whose
-        /// lifetime it shares. *What* it draws is in `params`, as bindings.
-        parent: u64,
+        /// The object to draw under, whose transform it inherits. `None` makes
+        /// one, since an actor has no place of its own. *What* it draws is in
+        /// `params`, as bindings.
+        parent: Option<u64>,
         /// Which registered kind draws it. Named by the caller, always: the
         /// server has no opinion on how a dataset should look.
         kind: String,
@@ -591,7 +592,7 @@ pub fn apply_scene_commands(
                     &mut commands,
                     &mut counter,
                     &registry,
-                    &index,
+                    &mut index,
                     &mut drawn,
                     parent,
                     kind,
@@ -729,14 +730,19 @@ fn check_bindings(
 }
 
 /// Adds a way of drawing, at a place in the tree.
+///
+/// `parent` may be `None`, in which case an object is made to hold this actor.
+/// An actor has no place of its own, so it always ends up under one — and a
+/// caller with nothing to group it under would otherwise open every single
+/// drawing with the same `CreateObject` call.
 #[allow(clippy::too_many_arguments)]
 fn add_actor(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
     registry: &ActorRegistry,
-    index: &HashMap<u64, Entity>,
+    index: &mut HashMap<u64, Entity>,
     drawn: &mut HashMap<u64, Entity>,
-    parent: u64,
+    parent: Option<u64>,
     kind: String,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
@@ -744,7 +750,10 @@ fn add_actor(
     arrays: &mut Assets<DataArray>,
     store: &DataStore,
 ) -> Result<ActorSummary, SceneError> {
-    let parent_entity = *index.get(&parent).ok_or(SceneError::NoSuchObject(parent))?;
+    // Resolved before anything is created, so a bad handle builds nothing.
+    let named_parent = parent
+        .map(|id| index.get(&id).copied().ok_or(SceneError::NoSuchObject(id)))
+        .transpose()?;
 
     // The caller names the kind. There is no default to fall back on: which
     // representation suits some data is a judgement, and the server has no
@@ -778,6 +787,17 @@ fn add_actor(
             association: *association,
             selected,
         }),
+    };
+
+    // Only now, with every reason to refuse behind us. Creating the object any
+    // earlier would leave an empty one behind whenever an actor is rejected.
+    let (parent, parent_entity) = match named_parent {
+        Some(entity) => (parent.expect("a named parent came from a handle"), entity),
+        None => {
+            let name = registered.label.to_string();
+            let (id, _) = spawn_object(commands, counter, index, SceneObject { name });
+            (id, index[&id])
+        }
     };
 
     let (id, entity) = link::spawn_actor(
@@ -1361,6 +1381,79 @@ mod tests {
         );
     }
 
+    /// An actor with no parent named gets an object made for it, named after
+    /// its kind.
+    ///
+    /// An actor has no place of its own, so it has to end up under something.
+    /// Refusing instead would make `CreateObject` the opening line of every
+    /// drawing a client does, to make a node it has no other use for.
+    #[test]
+    fn an_actor_with_no_parent_is_given_an_object() {
+        let mut app = app();
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(registry::ActorKind {
+                id: "marker",
+                label: "Marker",
+                params: &[],
+                apply: |_, _| {},
+            });
+
+        let mut added = send(&app, |reply| SceneCommand::AddActor {
+            parent: None,
+            kind: "marker".into(),
+            params: registry::ParamMap::default(),
+            colour: None,
+            subset: None,
+            reply,
+        });
+        app.update();
+        let actor = added.try_recv().expect("a reply").expect("an actor");
+
+        let mut listed = send(&app, |reply| SceneCommand::ListObjects { reply });
+        app.update();
+        let objects = listed.try_recv().expect("a reply");
+        assert_eq!(
+            objects
+                .iter()
+                .map(|o| (o.id, o.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(actor.parent.expect("a parent"), "Marker")],
+            "exactly one object, named after the kind, holding the actor"
+        );
+    }
+
+    /// A refused actor leaves no object behind.
+    ///
+    /// The object is created last, after every check. Creating it up front
+    /// would litter the scene with empty nodes whenever a client got a binding
+    /// or a kind name wrong.
+    #[test]
+    fn an_actor_that_cannot_be_added_creates_nothing() {
+        let mut app = app();
+
+        let mut added = send(&app, |reply| SceneCommand::AddActor {
+            parent: None,
+            kind: "no-such-kind".into(),
+            params: registry::ParamMap::default(),
+            colour: None,
+            subset: None,
+            reply,
+        });
+        app.update();
+        assert_eq!(
+            added.try_recv().expect("a reply").err(),
+            Some(SceneError::UnknownKind("no-such-kind".into()))
+        );
+
+        let mut listed = send(&app, |reply| SceneCommand::ListObjects { reply });
+        app.update();
+        assert!(
+            listed.try_recv().expect("a reply").is_empty(),
+            "a refusal must not leave an empty object behind"
+        );
+    }
+
     /// Deleting an object detaches the actors drawn under it, parks them where
     /// they cannot draw, and lets one be drawn under some other object.
     ///
@@ -1389,7 +1482,7 @@ mod tests {
         let second = second.try_recv().expect("a reply").id;
 
         let mut added = send(&app, |reply| SceneCommand::AddActor {
-            parent: first,
+            parent: Some(first),
             kind: "marker".into(),
             params: registry::ParamMap::default(),
             colour: None,
