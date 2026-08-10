@@ -154,6 +154,7 @@ fn draw_ui(
     actor_data: ActorData,
     registry: Res<ActorRegistry>,
     arrays: Res<Assets<DataArray>>,
+    store: Res<crate::scene::DataStore>,
     mut captured: ResMut<PointerCaptured>,
     mut overlays: ResMut<crate::viewport::OverlaySettings>,
     // Filtered on Camera3d, not `Without<EguiContext>` as bevy_egui's own
@@ -178,7 +179,7 @@ fn draw_ui(
     );
 
     // Gather first, draw second.
-    let world = gather::gather(&objects, &actor_data, &registry);
+    let world = gather::gather(&objects, &actor_data, &registry, &store);
 
     // How much the panels took, so the 3D camera can be inset to what is left.
     // Without this the scene renders across the whole window and hides behind

@@ -84,6 +84,64 @@ class Chunk(_message.Message):
     data: bytes
     def __init__(self, buffer_index: _Optional[int] = ..., offset: _Optional[int] = ..., data: _Optional[bytes] = ...) -> None: ...
 
+class DataHandle(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    def __init__(self, id: _Optional[int] = ...) -> None: ...
+
+class UploadDataRequest(_message.Message):
+    __slots__ = ("header", "chunk")
+    HEADER_FIELD_NUMBER: _ClassVar[int]
+    CHUNK_FIELD_NUMBER: _ClassVar[int]
+    header: DataHeader
+    chunk: Chunk
+    def __init__(self, header: _Optional[_Union[DataHeader, _Mapping]] = ..., chunk: _Optional[_Union[Chunk, _Mapping]] = ...) -> None: ...
+
+class DataHeader(_message.Message):
+    __slots__ = ("arrays",)
+    ARRAYS_FIELD_NUMBER: _ClassVar[int]
+    arrays: _containers.RepeatedCompositeFieldContainer[BufferSpec]
+    def __init__(self, arrays: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ...) -> None: ...
+
+class UploadDataResponse(_message.Message):
+    __slots__ = ("arrays", "total_bytes")
+    ARRAYS_FIELD_NUMBER: _ClassVar[int]
+    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
+    arrays: _containers.RepeatedCompositeFieldContainer[DataInfo]
+    total_bytes: int
+    def __init__(self, arrays: _Optional[_Iterable[_Union[DataInfo, _Mapping]]] = ..., total_bytes: _Optional[int] = ...) -> None: ...
+
+class DataInfo(_message.Message):
+    __slots__ = ("handle", "spec")
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    SPEC_FIELD_NUMBER: _ClassVar[int]
+    handle: DataHandle
+    spec: BufferSpec
+    def __init__(self, handle: _Optional[_Union[DataHandle, _Mapping]] = ..., spec: _Optional[_Union[BufferSpec, _Mapping]] = ...) -> None: ...
+
+class ListDataRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ListDataResponse(_message.Message):
+    __slots__ = ("arrays",)
+    ARRAYS_FIELD_NUMBER: _ClassVar[int]
+    arrays: _containers.RepeatedCompositeFieldContainer[DataInfo]
+    def __init__(self, arrays: _Optional[_Iterable[_Union[DataInfo, _Mapping]]] = ...) -> None: ...
+
+class ReleaseDataRequest(_message.Message):
+    __slots__ = ("handles",)
+    HANDLES_FIELD_NUMBER: _ClassVar[int]
+    handles: _containers.RepeatedCompositeFieldContainer[DataHandle]
+    def __init__(self, handles: _Optional[_Iterable[_Union[DataHandle, _Mapping]]] = ...) -> None: ...
+
+class ReleaseDataResponse(_message.Message):
+    __slots__ = ("released",)
+    RELEASED_FIELD_NUMBER: _ClassVar[int]
+    released: _containers.RepeatedCompositeFieldContainer[DataHandle]
+    def __init__(self, released: _Optional[_Iterable[_Union[DataHandle, _Mapping]]] = ...) -> None: ...
+
 class UploadObjectRequest(_message.Message):
     __slots__ = ("header", "chunk")
     HEADER_FIELD_NUMBER: _ClassVar[int]

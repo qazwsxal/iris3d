@@ -96,6 +96,57 @@ pub struct NamedBuffer {
     pub data: Vec<u8>,
 }
 
+/// Every array uploaded on its own, by handle.
+///
+/// Data used to arrive only as part of an object, which made "get these numbers
+/// into the scene" and "put a node in the tree" the same operation. They are not
+/// the same thing: one array may feed several representations, and a
+/// representation may read arrays that arrived at different times. So arrays are
+/// held here, flat, and an actor names the ones it wants.
+///
+/// The store owns a strong `Handle`, which is what keeps the asset alive. Drop
+/// the entry and the bytes go once nothing else still refers to them — an actor
+/// holding the same handle keeps it loaded, which is why releasing is described
+/// as forgetting rather than freeing.
+#[derive(Resource, Default)]
+pub struct DataStore(HashMap<u64, StoredArray>);
+
+/// One held array: what it is, and where its bytes live.
+pub struct StoredArray {
+    pub meta: BufferMeta,
+    /// Never read — held for what dropping it does. This is the strong
+    /// reference that keeps the asset loaded, so the store's `HashMap` entry is
+    /// the array's lifetime.
+    #[allow(dead_code)]
+    pub handle: Handle<DataArray>,
+}
+
+impl DataStore {
+    pub fn insert(&mut self, id: u64, meta: BufferMeta, handle: Handle<DataArray>) {
+        self.0.insert(id, StoredArray { meta, handle });
+    }
+
+    // Wanted by actor binding, which resolves a handle a client named into the
+    // asset a backend reads.
+    #[allow(dead_code)]
+    pub fn get(&self, id: u64) -> Option<&StoredArray> {
+        self.0.get(&id)
+    }
+
+    /// Forgets an array, reporting whether it was held at all.
+    pub fn remove(&mut self, id: u64) -> bool {
+        self.0.remove(&id).is_some()
+    }
+
+    /// Everything held, in handle order so a listing is stable between calls.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &StoredArray)> {
+        let mut ids: Vec<u64> = self.0.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| self.0.get(&id).map(|array| (id, array)))
+    }
+}
+
 /// Raw array bytes, shared by handle.
 #[derive(Asset, TypePath, Debug)]
 pub struct DataArray {

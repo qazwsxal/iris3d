@@ -5,8 +5,14 @@ package iris3d.v1;
 // SceneService is the whole surface of the iris3d scene: what is in it, where
 // it sits, and how it is drawn.
 //
-// Three things are kept apart, and the split is the reason the API looks the
-// way it does.
+// Things are kept apart, and the splits are the reason the API looks the way it
+// does.
+//
+// **Data** is arrays and nothing more. UploadData takes them in and hands back a
+// handle each; no object appears, nothing is drawn, and the name on an array is
+// a label rather than a role. One array can feed several representations, and a
+// representation can read arrays that arrived at different times, so tying data
+// to the thing that draws it would be the wrong shape.
 //
 // An **object** holds data and a place in a tree. An **actor** is one way of
 // drawing an object, and is a thing in its own right with its own handle: an
@@ -35,6 +41,34 @@ package iris3d.v1;
 // whichever rendering backends the server was built with, so ask
 // ListActorKinds rather than carrying a table that will go stale.
 service SceneService {
+  // Uploads arrays and nothing else.
+  //
+  // No object, no place in the tree, nothing drawn. Each array comes back with
+  // a handle, and an actor is built by binding those handles to the inputs its
+  // kind declares — see ListActorKinds for what each one accepts.
+  //
+  // A name in the header is a label, for the inventory and for a person reading
+  // it. It is not a role: what an array *is* to a representation is settled when
+  // it is bound, not guessed from what it was called. Upload the same array once
+  // and bind it to as many actors as you like.
+  //
+  // Framing is the same as UploadObject. The first message MUST carry `header`;
+  // every later one MUST carry `chunk`, addressing an array by its index in the
+  // header. Nothing is committed until every declared array has received
+  // exactly its `byte_length` bytes, so a stream that ends early, overruns, or
+  // arrives out of order leaves the scene untouched.
+  rpc UploadData(stream UploadDataRequest) returns (UploadDataResponse);
+
+  // Lists the arrays currently held, whether or not anything draws them.
+  rpc ListData(ListDataRequest) returns (ListDataResponse);
+
+  // Forgets arrays.
+  //
+  // The bytes go when nothing refers to them any more, so releasing a handle an
+  // actor still uses frees nothing until that actor goes too. A handle that was
+  // already gone is not an error; the response says what was actually held.
+  rpc ReleaseData(ReleaseDataRequest) returns (ReleaseDataResponse);
+
   // Uploads a single object as a stream of chunks.
   //
   // The object holds data and a place in the tree. Nothing draws it: call
@@ -229,6 +263,55 @@ message Chunk {
   // The bytes themselves. Keep messages comfortably under the transport's
   // maximum message size; 1-4 MiB per chunk is a reasonable default.
   bytes data = 3;
+}
+
+// DataHandle identifies one uploaded array for the lifetime of the running
+// scene. Drawn from the same sequence as ObjectHandle and ActorHandle, so no id
+// ever names two different things, and never reused after release.
+message DataHandle {
+  uint64 id = 1;
+}
+
+message UploadDataRequest {
+  oneof payload {
+    DataHeader header = 1;
+    Chunk chunk = 2;
+  }
+}
+
+// DataHeader declares every array in one upload. Chunks address them by the
+// index they appear at here.
+message DataHeader {
+  repeated BufferSpec arrays = 1;
+}
+
+message UploadDataResponse {
+  // One entry per declared array, in declaration order.
+  repeated DataInfo arrays = 1;
+
+  // Total bytes accepted, summed across every array in this upload.
+  uint64 total_bytes = 2;
+}
+
+// DataInfo describes one held array without transferring its contents.
+message DataInfo {
+  DataHandle handle = 1;
+  BufferSpec spec = 2;
+}
+
+message ListDataRequest {}
+
+message ListDataResponse {
+  repeated DataInfo arrays = 1;
+}
+
+message ReleaseDataRequest {
+  repeated DataHandle handles = 1;
+}
+
+message ReleaseDataResponse {
+  // The subset of `handles` that was actually held.
+  repeated DataHandle released = 1;
 }
 
 message UploadObjectRequest {

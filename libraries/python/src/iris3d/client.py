@@ -24,12 +24,16 @@ from .v1.scene_pb2 import (
     Color,
     ColorSpec,
     CreateObjectRequest,
+    DataHandle,
+    DataHeader,
+    DataInfo,
     DeleteObjectRequest,
     Dimensions,
     Dtype,
     Grid as ProtoGrid,
     ListActorKindsRequest,
     ListActorsRequest,
+    ListDataRequest,
     ListObjectsRequest,
     ObjectHandle,
     ObjectHeader,
@@ -37,11 +41,13 @@ from .v1.scene_pb2 import (
     ParamValue,
     Quaternion,
     Range,
+    ReleaseDataRequest,
     RemoveActorRequest,
     SetActorRequest,
     SetParentRequest,
     Subset,
     SetTransformRequest,
+    UploadDataRequest,
     UploadObjectRequest,
     Vector3,
 )
@@ -249,6 +255,18 @@ class ParamInfo:
 
 
 @dataclass(frozen=True)
+class DataSummary:
+    """One array the scene holds, described without its contents."""
+
+    handle: int
+    #: The label it was uploaded under. Not a role — see :meth:`Client.upload_data`.
+    name: str
+    dtype: np.dtype
+    shape: tuple[int, ...]
+    byte_length: int
+
+
+@dataclass(frozen=True)
 class ActorKindSummary:
     """A way of drawing that the running server supports."""
 
@@ -376,6 +394,16 @@ def _actor(info: ActorInfo) -> ActorSummary:
     )
 
 
+def _data(info: DataInfo) -> DataSummary:
+    return DataSummary(
+        handle=info.handle.id,
+        name=info.spec.name,
+        dtype=from_proto_dtype(info.spec.dtype),
+        shape=tuple(info.spec.shape),
+        byte_length=info.spec.byte_length,
+    )
+
+
 def _kind(info: ActorKindInfo) -> ActorKindSummary:
     params = []
     for spec in info.params:
@@ -441,6 +469,67 @@ def _summary(info: ObjectInfo) -> ObjectSummary:
     )
 
 
+def _declare(
+    arrays: Mapping[str, np.ndarray], chunk_bytes: int
+) -> tuple[list[np.ndarray], list[BufferSpec]]:
+    """Validates arrays and describes them for a header.
+
+    Shared by both upload streams, so an object upload and a bare data upload
+    cannot disagree about what a well-formed declaration is.
+    """
+    if not arrays:
+        raise ValueError("an upload needs at least one array")
+    if chunk_bytes <= 0:
+        raise ValueError("chunk_bytes must be positive")
+
+    prepared: list[np.ndarray] = []
+    specs: list[BufferSpec] = []
+    for buffer_name, array in arrays.items():
+        array = _wire_ready(np.asarray(array))
+        if array.size == 0:
+            raise ValueError(f"array {buffer_name!r} is empty")
+        prepared.append(array)
+        specs.append(
+            BufferSpec(
+                name=buffer_name,
+                dtype=to_proto_dtype(array.dtype),
+                shape=list(array.shape),
+                byte_length=array.nbytes,
+            )
+        )
+    return prepared, specs
+
+
+def _payload_chunks(
+    prepared: list[np.ndarray], chunk_bytes: int
+) -> Iterator[Chunk]:
+    """Slices every array into wire-sized chunks, in declaration order."""
+    for index, array in enumerate(prepared):
+        payload = memoryview(array).cast("B")
+        for offset in range(0, len(payload), chunk_bytes):
+            yield Chunk(
+                buffer_index=index,
+                offset=offset,
+                data=bytes(payload[offset : offset + chunk_bytes]),
+            )
+
+
+def data_messages(
+    arrays: Mapping[str, np.ndarray],
+    chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+) -> Iterator[UploadDataRequest]:
+    """Builds the request stream for a bare data upload.
+
+    No object, no name, no grid — just arrays. Names here are labels for the
+    inventory, not roles: what an array means to a representation is settled
+    when it is bound to one, not guessed from what it was called.
+    """
+    prepared, specs = _declare(arrays, chunk_bytes)
+    yield UploadDataRequest(header=DataHeader(arrays=specs))
+    for chunk in _payload_chunks(prepared, chunk_bytes):
+        yield UploadDataRequest(chunk=chunk)
+
+
 def upload_messages(
     name: str,
     arrays: Mapping[str, np.ndarray],
@@ -457,42 +546,13 @@ def upload_messages(
     is the one structure the server cannot infer, because a grid's sample
     positions are implicit and no array gives it away.
     """
-    if not arrays:
-        raise ValueError("an object needs at least one buffer")
-    if chunk_bytes <= 0:
-        raise ValueError("chunk_bytes must be positive")
-
-    prepared = []
-    specs = []
-    for buffer_name, array in arrays.items():
-        array = _wire_ready(np.asarray(array))
-        if array.size == 0:
-            raise ValueError(f"buffer {buffer_name!r} is empty")
-        prepared.append(array)
-        specs.append(
-            BufferSpec(
-                name=buffer_name,
-                dtype=to_proto_dtype(array.dtype),
-                shape=list(array.shape),
-                byte_length=array.nbytes,
-            )
-        )
-
+    prepared, specs = _declare(arrays, chunk_bytes)
     header = ObjectHeader(name=name, buffers=specs)
     if grid is not None:
         header.grid.CopyFrom(grid.to_proto())
     yield UploadObjectRequest(header=header)
-
-    for index, array in enumerate(prepared):
-        payload = memoryview(array).cast("B")
-        for offset in range(0, len(payload), chunk_bytes):
-            yield UploadObjectRequest(
-                chunk=Chunk(
-                    buffer_index=index,
-                    offset=offset,
-                    data=bytes(payload[offset : offset + chunk_bytes]),
-                )
-            )
+    for chunk in _payload_chunks(prepared, chunk_bytes):
+        yield UploadObjectRequest(chunk=chunk)
 
 
 class Client:
@@ -573,6 +633,46 @@ class Client:
             upload_messages(name, arrays, chunk_bytes, grid=grid)
         )
         return response.handle.id
+
+    def upload_data(
+        self,
+        arrays: Mapping[str, np.ndarray],
+        chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    ) -> dict[str, int]:
+        """Uploads arrays on their own, returning a handle for each by name.
+
+        Nothing is created and nothing is drawn — this puts numbers in the
+        scene and stops there. Bind the handles to an actor's inputs to see
+        them, and upload an array once to feed as many actors as you like.
+
+        The names are labels, not roles::
+
+            data = client.upload_data({"xyz": positions, "t": temperature})
+            # data == {"xyz": 7, "t": 8}
+
+        Use :meth:`release_data` when you are done with them. Nothing else
+        will: an array that no actor reads is still held until you say so.
+        """
+        response = self._scene.UploadData(data_messages(arrays, chunk_bytes))
+        return {
+            info.spec.name: info.handle.id for info in response.arrays
+        }
+
+    def list_data(self) -> list[DataSummary]:
+        """Every array currently held, whether or not anything draws it."""
+        response = self._scene.ListData(ListDataRequest())
+        return [_data(info) for info in response.arrays]
+
+    def release_data(self, *handles: int) -> tuple[int, ...]:
+        """Forgets arrays, returning the handles that were actually held.
+
+        The bytes go once nothing refers to them, so releasing an array an
+        actor still reads frees nothing until that actor goes too.
+        """
+        response = self._scene.ReleaseData(
+            ReleaseDataRequest(handles=[DataHandle(id=h) for h in handles])
+        )
+        return tuple(h.id for h in response.released)
 
     def create_object(self, name: str) -> int:
         """Creates an object holding no data and returns its handle.

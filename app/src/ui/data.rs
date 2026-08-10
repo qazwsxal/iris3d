@@ -49,17 +49,26 @@ pub fn list(
 
             for (id, array) in listing {
                 let owner = scene.owners.get(&id);
-                match owner {
-                    Some(owner) => {
+                let held = scene.held.get(&id);
+                // Three states, and they are genuinely different: an array an
+                // object holds, an array uploaded on its own and waiting to be
+                // bound, and an array nothing refers to at all.
+                match (owner, held) {
+                    (Some(owner), _) => {
                         ui.monospace(format!("{}", owner.object));
                     }
-                    None => {
+                    (None, Some((handle, _))) => {
+                        ui.monospace(format!("d{handle}"));
+                    }
+                    (None, None) => {
                         ui.weak("—");
                     }
                 }
                 // The name is the click target: a whole grid row is not one
                 // widget in egui, so something in it has to carry the click.
-                let name = owner.map(|owner| owner.name.as_str());
+                let name = owner
+                    .map(|owner| owner.name.as_str())
+                    .or_else(|| held.map(|(_, name)| name.as_str()));
                 if ui
                     .selectable_label(
                         state.selected_array == Some(id),

@@ -39,7 +39,7 @@ pub mod subset;
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
 pub use actor::ColorBy;
-pub use data::{BufferMeta, DataArray, Dtype, NamedArray, NamedBuffer};
+pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedArray, NamedBuffer};
 pub use dataset::{DatasetKind, MeshData, MoleculeData, PointCloud};
 pub use link::{ActorOf, Actors};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
@@ -53,7 +53,9 @@ pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<DataArray>().add_systems(
+        app.init_asset::<DataArray>()
+            .init_resource::<DataStore>()
+            .add_systems(
             Update,
             // Order matters throughout: the drain creates actors, the reaper
             // removes any a deletion orphaned before a backend can look at
@@ -65,7 +67,7 @@ impl Plugin for ScenePlugin {
                 registry::apply_actor_params,
             )
                 .chain(),
-        );
+            );
     }
 }
 
@@ -87,6 +89,13 @@ impl SceneObject {
             .filter_map(|array| array.meta.byte_length())
             .sum()
     }
+}
+
+/// A held array, described without its contents.
+#[derive(Debug, Clone)]
+pub struct DataSummary {
+    pub id: u64,
+    pub meta: BufferMeta,
 }
 
 /// A description of an object in the scene, without its contents.
@@ -208,6 +217,21 @@ pub enum SceneCommand {
         /// grid. `None` leaves the structure to be inferred from their names.
         grid: Option<dataset::GridData>,
         reply: oneshot::Sender<ObjectSummary>,
+    },
+    /// Takes in arrays on their own. No object, no actor — the reply hands back
+    /// a handle per array, and something else decides what they are for.
+    UploadData {
+        arrays: Vec<NamedBuffer>,
+        reply: oneshot::Sender<Vec<DataSummary>>,
+    },
+    ListData {
+        reply: oneshot::Sender<Vec<DataSummary>>,
+    },
+    /// Forgets arrays. Reports the handles that were held, so a caller learns
+    /// which of them it was wrong about.
+    ReleaseData {
+        ids: Vec<u64>,
+        reply: oneshot::Sender<Vec<u64>>,
     },
     /// Creates an object holding no data, for use as a grouping node.
     CreateObject {
@@ -365,6 +389,7 @@ pub fn apply_scene_commands(
     mut counter: ResMut<GlobalIDCounter>,
     registry: Res<ActorRegistry>,
     mut arrays: ResMut<Assets<DataArray>>,
+    mut store: ResMut<DataStore>,
     mut transforms: Query<&mut Transform>,
     objects: Objects,
     ids: Query<&UniqueID>,
@@ -433,6 +458,57 @@ pub fn apply_scene_commands(
                     ingest::Dataset::Raw => {}
                 }
                 let _ = reply.send(summary);
+            }
+
+            // Arrays with no object around them. The bytes become assets exactly
+            // as an object's would; the only difference is who holds the handle.
+            SceneCommand::UploadData {
+                arrays: uploaded,
+                reply,
+            } => {
+                let summaries: Vec<DataSummary> = uploaded
+                    .into_iter()
+                    .map(|buffer| {
+                        let id = counter.next();
+                        let meta = buffer.meta;
+                        let handle = arrays.add(DataArray {
+                            dtype: meta.dtype,
+                            shape: meta.shape.clone(),
+                            data: buffer.data,
+                        });
+                        store.insert(id, meta.clone(), handle);
+                        DataSummary { id, meta }
+                    })
+                    .collect();
+                info!(
+                    "scene: took in {} array(s): {}",
+                    summaries.len(),
+                    summaries
+                        .iter()
+                        .map(|array| format!("{}={}", array.id, array.meta.name))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                let _ = reply.send(summaries);
+            }
+
+            SceneCommand::ListData { reply } => {
+                let listing = store
+                    .iter()
+                    .map(|(id, array)| DataSummary {
+                        id,
+                        meta: array.meta.clone(),
+                    })
+                    .collect();
+                let _ = reply.send(listing);
+            }
+
+            SceneCommand::ReleaseData { ids, reply } => {
+                let released: Vec<u64> = ids
+                    .into_iter()
+                    .filter(|id| store.remove(*id))
+                    .collect();
+                let _ = reply.send(released);
             }
 
             SceneCommand::CreateObject { name, reply } => {
@@ -1166,6 +1242,7 @@ mod tests {
         app.add_plugins(TransformPlugin);
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
+        app.init_resource::<DataStore>();
         app.init_resource::<GlobalIDCounter>();
         app.init_resource::<ActorRegistry>();
         app.init_resource::<KeepAwake>();
@@ -1216,6 +1293,60 @@ mod tests {
             keep_world_transform: true,
             reply,
         })
+    }
+
+    fn array(name: &str, bytes: usize) -> NamedBuffer {
+        NamedBuffer {
+            meta: BufferMeta {
+                name: name.into(),
+                dtype: Dtype::Uint8,
+                shape: vec![bytes as u64],
+            },
+            data: vec![0; bytes],
+        }
+    }
+
+    /// Arrays arrive on their own: a handle each, no object, no actor. Data used
+    /// to be reachable only by making an object out of it, which conflated
+    /// "hold these numbers" with "put a node in the tree".
+    #[test]
+    fn uploaded_arrays_are_held_without_an_object() {
+        let mut app = app();
+        let mut uploaded = send(&app, |reply| SceneCommand::UploadData {
+            arrays: vec![array("xyz", 12), array("t", 4)],
+            reply,
+        });
+        app.update();
+
+        let summaries = uploaded.try_recv().expect("a reply");
+        let handles: Vec<u64> = summaries.iter().map(|array| array.id).collect();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries.iter().map(|a| a.meta.name.as_str()).collect::<Vec<_>>(),
+            ["xyz", "t"],
+            "handles come back in declaration order"
+        );
+        assert_eq!(
+            app.world().resource::<DataStore>().iter().count(),
+            2,
+            "the store keeps the bytes alive"
+        );
+        let objects = app
+            .world_mut()
+            .query::<&SceneObject>()
+            .iter(app.world())
+            .count();
+        assert_eq!(objects, 0, "an upload of arrays creates no object");
+
+        // Forgetting reports what was actually held, so a caller learns which
+        // of its handles it was wrong about.
+        let mut released = send(&app, |reply| SceneCommand::ReleaseData {
+            ids: vec![handles[0], 9_999],
+            reply,
+        });
+        app.update();
+        assert_eq!(released.try_recv().expect("a reply"), vec![handles[0]]);
+        assert_eq!(app.world().resource::<DataStore>().iter().count(), 1);
     }
 
     /// The ordinary case: both objects are really in the world, so the child's

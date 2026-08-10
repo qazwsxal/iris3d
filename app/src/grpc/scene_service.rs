@@ -13,7 +13,7 @@ use crate::scene::dataset::GridData;
 use crate::scene::registry::{ParamKind, ParamMap, ParamValue};
 use crate::scene::subset::SubsetRequest;
 use crate::scene::{
-    ActorSummary, BufferMeta, ColorBy, Dtype, KindSummary, NamedBuffer, ObjectSummary,
+    ActorSummary, BufferMeta, ColorBy, DataSummary, Dtype, KindSummary, NamedBuffer, ObjectSummary,
     SceneCommand, SceneError, SubsetEncoding,
 };
 
@@ -21,14 +21,16 @@ use super::SceneSender;
 use super::proto::{
     ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, BoolParam,
     BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest, CreateObjectResponse,
-    DeleteObjectRequest, DeleteObjectResponse, Dtype as ProtoDtype, FieldParam, FloatParam,
-    Grid as ProtoGrid, ListActorKindsRequest, ListActorKindsResponse, ListActorsRequest,
-    ListActorsResponse, ListObjectsRequest, ListObjectsResponse, ObjectHandle, ObjectHeader,
-    ObjectInfo, ParamSpec as ProtoSpec, ParamValue as ProtoParam, Range, RemoveActorRequest,
+    DataHandle, DataInfo, DeleteObjectRequest, DeleteObjectResponse, Dtype as ProtoDtype,
+    FieldParam, FloatParam, Grid as ProtoGrid, ListActorKindsRequest, ListActorKindsResponse,
+    ListActorsRequest, ListActorsResponse, ListDataRequest, ListDataResponse, ListObjectsRequest,
+    ListObjectsResponse, ObjectHandle, ObjectHeader, ObjectInfo, ParamSpec as ProtoSpec,
+    ParamValue as ProtoParam, Range, ReleaseDataRequest, ReleaseDataResponse, RemoveActorRequest,
     RemoveActorResponse, SetActorRequest, SetActorResponse, SetParentRequest, SetParentResponse,
-    SetTransformRequest, SetTransformResponse, Subset as ProtoSubset, SubsetInfo,
-    UploadObjectRequest, UploadObjectResponse, Vector3, param_spec, param_value::Value,
-    scene_service_server::SceneService, subset as subset_proto, upload_object_request::Payload,
+    SetTransformRequest, SetTransformResponse, Subset as ProtoSubset, SubsetInfo, UploadDataRequest,
+    UploadDataResponse, UploadObjectRequest, UploadObjectResponse, Vector3, param_spec,
+    param_value::Value, scene_service_server::SceneService, subset as subset_proto,
+    upload_data_request::Payload as DataPayload, upload_object_request::Payload,
 };
 use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
 use bevy::math::{Quat, UVec3, Vec3};
@@ -73,6 +75,89 @@ impl SceneBridgeService {
 
 #[tonic::async_trait]
 impl SceneService for SceneBridgeService {
+    /// Arrays with nothing attached: no object, no place in the tree, nothing
+    /// drawn. Assembled and validated here exactly as an object's buffers are,
+    /// then handed over as handles for an actor to bind.
+    async fn upload_data(
+        &self,
+        request: Request<Streaming<UploadDataRequest>>,
+    ) -> Result<Response<UploadDataResponse>, Status> {
+        let mut stream = request.into_inner();
+        let mut upload: Option<Upload> = None;
+
+        while let Some(message) = stream.next().await {
+            match message?.payload {
+                Some(DataPayload::Header(header)) => {
+                    if upload.is_some() {
+                        return Err(Status::invalid_argument(
+                            "received a second header; one header per stream",
+                        ));
+                    }
+                    // No name and no grid: a grid is a property of a dataset,
+                    // and this call knows nothing about datasets.
+                    upload = Some(Upload::open_arrays(header.arrays, String::new(), None)?);
+                }
+                Some(DataPayload::Chunk(chunk)) => match upload.as_mut() {
+                    Some(upload) => upload.write(chunk)?,
+                    None => {
+                        return Err(Status::invalid_argument(
+                            "first message on the stream must be a header",
+                        ));
+                    }
+                },
+                None => return Err(Status::invalid_argument("message carried no payload")),
+            }
+        }
+
+        let upload =
+            upload.ok_or_else(|| Status::invalid_argument("stream closed before the header"))?;
+        let (_, buffers, _) = upload.finish()?;
+        let total_bytes = buffers.iter().map(|b| b.data.len() as u64).sum();
+
+        let summaries = self
+            .submit(|reply| SceneCommand::UploadData {
+                arrays: buffers,
+                reply,
+            })
+            .await?;
+
+        Ok(Response::new(UploadDataResponse {
+            arrays: summaries.iter().map(data_info).collect(),
+            total_bytes,
+        }))
+    }
+
+    async fn list_data(
+        &self,
+        _request: Request<ListDataRequest>,
+    ) -> Result<Response<ListDataResponse>, Status> {
+        let held = self.submit(|reply| SceneCommand::ListData { reply }).await?;
+        Ok(Response::new(ListDataResponse {
+            arrays: held.iter().map(data_info).collect(),
+        }))
+    }
+
+    async fn release_data(
+        &self,
+        request: Request<ReleaseDataRequest>,
+    ) -> Result<Response<ReleaseDataResponse>, Status> {
+        let ids = request
+            .into_inner()
+            .handles
+            .into_iter()
+            .map(|handle| handle.id)
+            .collect();
+        let released = self
+            .submit(|reply| SceneCommand::ReleaseData { ids, reply })
+            .await?;
+        Ok(Response::new(ReleaseDataResponse {
+            released: released
+                .into_iter()
+                .map(|id| DataHandle { id })
+                .collect(),
+        }))
+    }
+
     async fn upload_object(
         &self,
         request: Request<Streaming<UploadObjectRequest>>,
@@ -595,24 +680,35 @@ struct Upload {
 }
 
 impl Upload {
-    /// Validates a header and allocates the buffers it declares.
+    /// Validates an object header and allocates the buffers it declares.
     fn open(header: ObjectHeader) -> Result<Self, Status> {
-        if header.buffers.is_empty() {
+        Self::open_arrays(header.buffers, header.name, header.grid)
+    }
+
+    /// Validates a bare list of arrays: the same checks, with no object around
+    /// them. Shared so `UploadData` and `UploadObject` cannot drift apart on
+    /// what counts as a well-formed declaration.
+    fn open_arrays(
+        specs: Vec<BufferSpec>,
+        name: String,
+        grid: Option<ProtoGrid>,
+    ) -> Result<Self, Status> {
+        if specs.is_empty() {
             return Err(Status::invalid_argument("header declared no buffers"));
         }
-        if header.buffers.len() > MAX_BUFFERS_PER_OBJECT {
+        if specs.len() > MAX_BUFFERS_PER_OBJECT {
             return Err(Status::invalid_argument(format!(
                 "header declared {} buffers, limit is {MAX_BUFFERS_PER_OBJECT}",
-                header.buffers.len()
+                specs.len()
             )));
         }
 
-        let mut metas = Vec::with_capacity(header.buffers.len());
-        let mut declared = Vec::with_capacity(header.buffers.len());
-        let mut data = Vec::with_capacity(header.buffers.len());
+        let mut metas = Vec::with_capacity(specs.len());
+        let mut declared = Vec::with_capacity(specs.len());
+        let mut data = Vec::with_capacity(specs.len());
         let mut total: u64 = 0;
 
-        for (index, spec) in header.buffers.iter().enumerate() {
+        for (index, spec) in specs.iter().enumerate() {
             let meta = buffer_meta(index, spec)?;
 
             let expected = meta.byte_length().ok_or_else(|| {
@@ -652,7 +748,7 @@ impl Upload {
             data.push(Vec::with_capacity(expected.min(MAX_EAGER_RESERVE) as usize));
         }
 
-        let grid = header.grid.map(grid_data).transpose()?;
+        let grid = grid.map(grid_data).transpose()?;
         if let Some(grid) = grid {
             // A grid's geometry is entirely in the header, so a buffer claiming
             // to be geometry is a contradiction, not a harmless extra. Saying so
@@ -687,7 +783,7 @@ impl Upload {
         }
 
         Ok(Self {
-            name: header.name,
+            name,
             metas,
             declared,
             data,
@@ -882,6 +978,13 @@ fn object_info(summary: &ObjectSummary) -> ObjectInfo {
         dataset_kind: summary.kind.as_str().to_string(),
         actors: summary.actors.iter().map(actor_info).collect(),
         parent: summary.parent.map(|id| ObjectHandle { id }),
+    }
+}
+
+fn data_info(array: &DataSummary) -> DataInfo {
+    DataInfo {
+        handle: Some(DataHandle { id: array.id }),
+        spec: Some(buffer_spec(&array.meta)),
     }
 }
 

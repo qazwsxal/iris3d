@@ -15,6 +15,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::counter::UniqueID;
+use crate::scene::DataStore;
 use crate::scene::data::{FieldKind, Fields};
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
 use crate::scene::{Actors, ColorBy, DataArray, DatasetKind, SceneObject, Subset};
@@ -108,6 +109,11 @@ pub struct Gathered {
     /// group their listings.
     pub ordered: Vec<Entity>,
     pub owners: HashMap<AssetId<DataArray>, Owner>,
+    /// Arrays uploaded on their own, as the handle a client knows them by and
+    /// the label it sent. No object holds these, so `owners` says nothing about
+    /// them — without this they would be listed as unreferenced, which is the
+    /// opposite of true.
+    pub held: HashMap<AssetId<DataArray>, (u64, String)>,
     pub total_bytes: u64,
 }
 
@@ -128,10 +134,19 @@ impl Gathered {
     }
 }
 
-pub fn gather(objects: &ObjectData, actors: &ActorData, registry: &ActorRegistry) -> Gathered {
+pub fn gather(
+    objects: &ObjectData,
+    actors: &ActorData,
+    registry: &ActorRegistry,
+    store: &DataStore,
+) -> Gathered {
     let mut rows: HashMap<Entity, Row> = HashMap::new();
     let mut roots: Vec<Entity> = Vec::new();
     let mut owners: HashMap<AssetId<DataArray>, Owner> = HashMap::new();
+    let held: HashMap<AssetId<DataArray>, (u64, String)> = store
+        .iter()
+        .map(|(id, array)| (array.handle.id(), (id, array.meta.name.clone())))
+        .collect();
 
     for (entity, id, object, kind, visibility, fields, children, drawn_by, parent) in objects {
         let child_objects: Vec<Entity> = children
@@ -259,13 +274,21 @@ pub fn gather(objects: &ObjectData, actors: &ActorData, registry: &ActorRegistry
     let mut ordered: Vec<Entity> = rows.keys().copied().collect();
     ordered.sort_by_key(handle);
 
-    let total_bytes = rows.values().map(|row| row.bytes).sum();
+    // Objects and loose arrays both, or the count and the size would disagree:
+    // the listing shows every array in memory, so the total has to cover them.
+    let object_bytes: u64 = rows.values().map(|row| row.bytes).sum();
+    let held_bytes: u64 = store
+        .iter()
+        .filter_map(|(_, array)| array.meta.byte_length())
+        .sum();
+    let total_bytes = object_bytes + held_bytes;
 
     Gathered {
         rows,
         roots,
         ordered,
         owners,
+        held,
         total_bytes,
     }
 }

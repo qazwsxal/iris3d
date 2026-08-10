@@ -46,6 +46,21 @@ class SceneServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.UploadData = channel.stream_unary(
+                '/iris3d.v1.SceneService/UploadData',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.UploadDataRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.UploadDataResponse.FromString,
+                _registered_method=True)
+        self.ListData = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListData',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListDataRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListDataResponse.FromString,
+                _registered_method=True)
+        self.ReleaseData = channel.unary_unary(
+                '/iris3d.v1.SceneService/ReleaseData',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataResponse.FromString,
+                _registered_method=True)
         self.UploadObject = channel.stream_unary(
                 '/iris3d.v1.SceneService/UploadObject',
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.UploadObjectRequest.SerializeToString,
@@ -138,8 +153,53 @@ class SceneServiceServicer(object):
     ListActorKinds rather than carrying a table that will go stale.
     """
 
+    def UploadData(self, request_iterator, context):
+        """Uploads arrays and nothing else.
+
+        No object, no place in the tree, nothing drawn. Each array comes back with
+        a handle, and an actor is built by binding those handles to the inputs its
+        kind declares — see ListActorKinds for what each one accepts.
+
+        A name in the header is a label, for the inventory and for a person reading
+        it. It is not a role: what an array *is* to a representation is settled when
+        it is bound, not guessed from what it was called. Upload the same array once
+        and bind it to as many actors as you like.
+
+        Framing is the same as UploadObject. The first message MUST carry `header`;
+        every later one MUST carry `chunk`, addressing an array by its index in the
+        header. Nothing is committed until every declared array has received
+        exactly its `byte_length` bytes, so a stream that ends early, overruns, or
+        arrives out of order leaves the scene untouched.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListData(self, request, context):
+        """Lists the arrays currently held, whether or not anything draws them.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReleaseData(self, request, context):
+        """Forgets arrays.
+
+        The bytes go when nothing refers to them any more, so releasing a handle an
+        actor still uses frees nothing until that actor goes too. A handle that was
+        already gone is not an error; the response says what was actually held.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def UploadObject(self, request_iterator, context):
         """Uploads a single object as a stream of chunks.
+
+        The object holds data and a place in the tree. Nothing draws it: call
+        AddActor to say how it should look. The server does not choose a
+        representation on a client's behalf, so an upload alone changes what is in
+        the scene without changing what is on screen.
 
         The first message on the stream MUST carry `header`; every subsequent
         message MUST carry `chunk`. Chunks are written into the buffers declared
@@ -244,6 +304,21 @@ class SceneServiceServicer(object):
 
 def add_SceneServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'UploadData': grpc.stream_unary_rpc_method_handler(
+                    servicer.UploadData,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.UploadDataRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.UploadDataResponse.SerializeToString,
+            ),
+            'ListData': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListData,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListDataRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListDataResponse.SerializeToString,
+            ),
+            'ReleaseData': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReleaseData,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataResponse.SerializeToString,
+            ),
             'UploadObject': grpc.stream_unary_rpc_method_handler(
                     servicer.UploadObject,
                     request_deserializer=iris3d_dot_v1_dot_scene__pb2.UploadObjectRequest.FromString,
@@ -341,6 +416,87 @@ class SceneService(object):
     whichever rendering backends the server was built with, so ask
     ListActorKinds rather than carrying a table that will go stale.
     """
+
+    @staticmethod
+    def UploadData(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/iris3d.v1.SceneService/UploadData',
+            iris3d_dot_v1_dot_scene__pb2.UploadDataRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.UploadDataResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/ListData',
+            iris3d_dot_v1_dot_scene__pb2.ListDataRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListDataResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReleaseData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/ReleaseData',
+            iris3d_dot_v1_dot_scene__pb2.ReleaseDataRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ReleaseDataResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def UploadObject(request_iterator,
