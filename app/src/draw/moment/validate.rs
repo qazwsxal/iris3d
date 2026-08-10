@@ -44,10 +44,12 @@ pub fn sphere_transmittance(radius: f32, offset: f32, sigma: f32, tint: f32) -> 
 
 /// Turns the moment passes on for every 3D camera.
 ///
-/// Temporary. Which views want moment transparency is properly a question for
-/// whatever configures a view, and the answer will come from the actor registry
-/// once it has settled. Until then the component has to arrive from somewhere,
-/// and putting it here keeps the whole backend inside one directory.
+/// Temporary, and living in the test module rather than beside the plugin
+/// because it is not a small version of the real thing. Selecting the moment
+/// pathway is a startup decision for the whole app — see
+/// [`MomentTransparency`] — so the real wiring adds this backend's plugins or
+/// does not, and never asks per camera. This exists only so the render half can
+/// be run and measured before that decision has anywhere to live.
 pub fn enable_on_cameras(
     mut commands: Commands,
     cameras: Query<Entity, (With<Camera3d>, Without<MomentTransparency>)>,
