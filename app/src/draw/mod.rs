@@ -25,6 +25,7 @@ use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
 mod molecule;
+pub mod moment;
 mod points;
 mod surface;
 mod volume;
@@ -227,6 +228,11 @@ impl Plugin for DrawPlugin {
             molecule::register(&mut registry);
             volume::register(&mut registry);
         }
+
+        // No representation kind yet, on purpose: the moment backend's
+        // render-world half is independent of the registry, and the registry is
+        // being reshaped. Registering a kind is the last step, not the first.
+        app.add_plugins(moment::MomentPlugin);
 
         app.add_plugins((
             MaterialPlugin::<PointQuadMaterial>::default(),
