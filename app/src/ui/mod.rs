@@ -301,7 +301,7 @@ fn draw_ui(
 ///
 /// Deletion goes through [`SceneCommand`] rather than despawning directly, so
 /// the UI takes exactly the same path a scripted client does — including the
-/// non-recursive default that detaches children rather than destroying them.
+/// detaching of child objects rather than destroying them.
 #[allow(clippy::too_many_arguments)]
 fn apply_actions(
     mut commands: Commands,
@@ -350,11 +350,9 @@ fn apply_actions(
             }
             UiAction::Delete(id) => {
                 let (reply, _) = tokio::sync::oneshot::channel();
-                let _ = bridge.sender().send(SceneCommand::DeleteObject {
-                    id,
-                    recursive: false,
-                    reply,
-                });
+                let _ = bridge
+                    .sender()
+                    .send(SceneCommand::DeleteObject { id, reply });
             }
             UiAction::Frame(entity) => frame.0 = Some(FrameTarget::Subtree(entity)),
             UiAction::FrameAll => frame.0 = Some(FrameTarget::All),

@@ -14,14 +14,15 @@ package iris3d.v1;
 // representation can read arrays that arrived at different times, so tying data
 // to the thing that draws it would be the wrong shape.
 //
-// An **object** holds data and a place in a tree. An **actor** is one way of
-// drawing an object, and is a thing in its own right with its own handle: an
-// object may have several at once, each with its own settings, and each says
-// separately whose data it draws and whose transform it follows. Point those
-// at different objects and one dataset appears in two places without being
-// uploaded twice. A **subset** narrows an actor to part of its data, which is
-// what makes several of them worth having — one structure drawn as cartoon
-// over its protein and as sticks over its ligand.
+// An **object** is a place in the tree and a name. It holds no data at all.
+//
+// An **actor** is one way of drawing something, a thing in its own right with
+// its own handle. It is a child of the object it appears under, and it binds the
+// arrays it reads to the inputs its kind declares. Showing one array in two
+// places is two actors binding it under two parents. A **subset** narrows an
+// actor to part of what it binds, which is what makes several worth having —
+// one structure drawn as cartoon over its protein and as sticks over its
+// ligand.
 //
 // Data is described in the style of a numpy array — a raw little-endian byte
 // buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -32,10 +33,9 @@ package iris3d.v1;
 // The same position is taken wherever a question could be answered on either
 // side. Selections arrive as index or mask arrays rather than as a query
 // language, because a client already holds the structure needed to express
-// "chain A" far better than a grammar invented here could. Structure is
-// inferred from buffer names, with grids the one exception — a grid's sample
-// positions are implicit, so nothing about the arrays reveals it and it must
-// be declared.
+// "chain A" far better than a grammar invented here could. And nothing is
+// inferred from what an array is called: a representation declares the element
+// types and shapes it accepts, and a client binds whatever it uploaded.
 //
 // What can be drawn is not fixed by this schema. Actor kinds come from
 // whichever rendering backends the server was built with, so ask
@@ -52,11 +52,11 @@ service SceneService {
   // it is bound, not guessed from what it was called. Upload the same array once
   // and bind it to as many actors as you like.
   //
-  // Framing is the same as UploadObject. The first message MUST carry `header`;
-  // every later one MUST carry `chunk`, addressing an array by its index in the
-  // header. Nothing is committed until every declared array has received
-  // exactly its `byte_length` bytes, so a stream that ends early, overruns, or
-  // arrives out of order leaves the scene untouched.
+  // The first message MUST carry `header`; every later one MUST carry `chunk`,
+  // addressing an array by its index in the header. Nothing is committed until
+  // every declared array has received exactly its `byte_length` bytes, so a
+  // stream that ends early, overruns, or arrives out of order leaves the scene
+  // untouched.
   rpc UploadData(stream UploadDataRequest) returns (UploadDataResponse);
 
   // Lists the arrays currently held, whether or not anything draws them.
@@ -86,28 +86,31 @@ service SceneService {
   // Lists the objects currently present in the scene.
   rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
 
-  // Removes an object from the scene, releasing its buffers.
+  // Removes one object from the scene.
+  //
+  // Deletes exactly what is named. Child objects are detached and become roots;
+  // the actors drawn under it go with it. No arrays are freed — ReleaseData is
+  // what does that.
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
 
-  // Draws an object an additional way.
+  // Draws something under an object.
   //
   // Adds; it does not replace. An object may carry any number of actors at
   // once — a protein as cartoon and as licorice, a mesh as surface and as
   // wireframe — and each is configured independently.
   //
-  // The data drawn and the placement it is drawn at are separate: `source`
-  // says whose arrays to read, `parent` says whose transform to inherit. Give
-  // them different objects and one dataset appears in two places without being
-  // uploaded twice.
+  // `parent` says where it appears. *What* it draws is in `params`, as arrays
+  // bound to the inputs its kind declares, so showing one array in two places
+  // is two actors binding it under two parents.
   rpc AddActor(AddActorRequest) returns (AddActorResponse);
 
   // Changes an existing actor. Only what is named is altered.
   rpc SetActor(SetActorRequest) returns (SetActorResponse);
 
-  // Removes one actor, leaving the object and its data alone.
+  // Removes one actor, leaving the object it was drawn under alone.
   rpc RemoveActor(RemoveActorRequest) returns (RemoveActorResponse);
 
-  // Lists actors, optionally only those drawing one object.
+  // Lists actors, optionally only those drawn under one object.
   rpc ListActors(ListActorsRequest) returns (ListActorsResponse);
 
   // Lists the ways of drawing this build actually supports.
@@ -135,33 +138,27 @@ enum Dtype {
   DTYPE_FLOAT64 = 10;
 }
 
-// BufferSpec declares one named array belonging to an object.
+// BufferSpec declares one array in an upload.
 //
-// Names are conventional rather than enforced, so that new attributes do not
-// require a schema change. Recognised names today:
+// The name is a label — for the inventory, and for whoever reads it later. It
+// carries no meaning to the server: an array called "xyz" binds to a
+// representation's `positions` input exactly as one called "positions" does.
+// There was a table of conventional names here once, and recognising them was
+// how the server guessed what an upload was; a representation declares what it
+// accepts instead, and the caller binds.
 //
-//   "positions"   float32 [n, 3]              point, vertex or atom centres
-//   "colors"      uint8   [n, 3] or [n, 4]
-//   "indices"     uint32  [m, k]              mesh cells; k = 2/3/4 for
-//                                             lines/triangles/tetrahedra
-//   "normals"     float32 [n, 3]
-//   "elements"    uint8   [n]                 atomic numbers; marks a molecule
-//   "bonds"       uint32  [m, 2]              atom index pairs
-//   "bond_orders" uint8   [m]                 see below
-//
-// Bond types follow biotite's BondType enum, adopted rather than reinvented:
+// Bond orders, where a representation reads them, follow biotite's BondType
+// enum — adopted rather than reinvented:
 //
 //   0 any            1 single            2 double             3 triple
 //   4 quadruple      5 aromatic single   6 aromatic double    7 aromatic triple
 //   8 coordination   9 aromatic
 //
-// Any other name is treated as a field over the object, with its kind inferred
-// from the component count.
-//
-// None of these names apply to a grid upload, which declares its geometry in
-// `ObjectHeader.grid` and carries nothing but fields. See [Grid].
+// A grid's geometry is not an array and never arrives as one: a volume takes its
+// dims, origin and spacing as VectorParam values, which is the whole reason the
+// grid type is worth having.
 message BufferSpec {
-  // Identifier for this buffer, unique within the object.
+  // Label for this array. Unique within one upload.
   string name = 1;
 
   // Element type of the raw bytes.
@@ -179,7 +176,7 @@ message BufferSpec {
 
 // Chunk carries a contiguous slice of one buffer's bytes.
 message Chunk {
-  // Index into `ObjectHeader.buffers`.
+  // Index into the header's array list.
   uint32 buffer_index = 1;
 
   // Byte offset within that buffer. Must equal the number of bytes already
@@ -441,16 +438,16 @@ message Range {
   float high = 2;
 }
 
-// Subset restricts an actor to part of its source dataset.
+// Subset restricts an actor to part of what it binds.
 //
-// This is what several actors of one object are for: chain A as cartoon and
+// This is what several actors under one object are for: chain A as cartoon and
 // the ligand as ball-and-stick is one structure drawn twice over different
 // parts of it.
 //
-// The selection is carried inline rather than by naming an uploaded buffer,
-// because UploadObject creates an object and there is no way to add an array to
-// an existing one — the buffer-name form would silently require a second
-// streaming RPC. Selections are small: a mask over 250k points is 250 KB.
+// The selection is carried inline rather than as a bound array. It could be one
+// now — UploadData would take it — but it is a property of this actor rather
+// than data anyone else would bind, and selections are small: a mask over 250k
+// points is 250 KB.
 //
 // There is no selection language. iris3d's position throughout is that clients
 // parse their own formats and push arrays, and a client already holds the
@@ -514,7 +511,7 @@ message ActorInfo {
   // does not show up here.
   bool visible = 7;
 
-  // How much of the source is drawn. Absent means all of it.
+  // How much of the bound data is drawn. Absent means all of it.
   //
   // The selection values themselves are not echoed back — they can be large and
   // the client sent them — so `data` is empty here and only the encoding,
@@ -565,7 +562,8 @@ message AddActorRequest {
   // is a new actor, so there is no previous value to keep.
   map<string, ParamValue> params = 4;
 
-  // Absent colours by the first scalar field the source object carries.
+  // Absent takes the default ramp. What is coloured is the array bound to the
+  // kind's colour input, if it declares one.
   optional ColorSpec color = 5;
 
   // Absent draws the whole dataset.
@@ -689,10 +687,13 @@ message SetTransformResponse {}
 message DeleteObjectRequest {
   ObjectHandle handle = 1;
 
-  // Also delete every descendant. By default descendants are detached and
-  // become roots, so deleting an object never destroys data the caller did not
-  // name.
-  bool recursive = 2;
+  // Field 2 was `recursive`, asking for the whole subtree. It guarded against
+  // destroying uploaded data the caller had not named, back when an object held
+  // its arrays. An object holds none now — a deletion costs nodes and the actors
+  // drawn under them, never data — so the flag was a choice with no consequence
+  // attached. Deleting names one node: its child objects are detached and become
+  // roots, and ReleaseData is what frees arrays.
+  reserved 2;
 }
 
 message DeleteObjectResponse {

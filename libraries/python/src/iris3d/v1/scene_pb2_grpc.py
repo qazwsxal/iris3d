@@ -18,14 +18,15 @@ class SceneServiceStub(object):
     representation can read arrays that arrived at different times, so tying data
     to the thing that draws it would be the wrong shape.
 
-    An **object** holds data and a place in a tree. An **actor** is one way of
-    drawing an object, and is a thing in its own right with its own handle: an
-    object may have several at once, each with its own settings, and each says
-    separately whose data it draws and whose transform it follows. Point those
-    at different objects and one dataset appears in two places without being
-    uploaded twice. A **subset** narrows an actor to part of its data, which is
-    what makes several of them worth having — one structure drawn as cartoon
-    over its protein and as sticks over its ligand.
+    An **object** is a place in the tree and a name. It holds no data at all.
+
+    An **actor** is one way of drawing something, a thing in its own right with
+    its own handle. It is a child of the object it appears under, and it binds the
+    arrays it reads to the inputs its kind declares. Showing one array in two
+    places is two actors binding it under two parents. A **subset** narrows an
+    actor to part of what it binds, which is what makes several worth having —
+    one structure drawn as cartoon over its protein and as sticks over its
+    ligand.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -36,10 +37,9 @@ class SceneServiceStub(object):
     The same position is taken wherever a question could be answered on either
     side. Selections arrive as index or mask arrays rather than as a query
     language, because a client already holds the structure needed to express
-    "chain A" far better than a grammar invented here could. Structure is
-    inferred from buffer names, with grids the one exception — a grid's sample
-    positions are implicit, so nothing about the arrays reveals it and it must
-    be declared.
+    "chain A" far better than a grammar invented here could. And nothing is
+    inferred from what an array is called: a representation declares the element
+    types and shapes it accepts, and a client binds whatever it uploaded.
 
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
@@ -132,14 +132,15 @@ class SceneServiceServicer(object):
     representation can read arrays that arrived at different times, so tying data
     to the thing that draws it would be the wrong shape.
 
-    An **object** holds data and a place in a tree. An **actor** is one way of
-    drawing an object, and is a thing in its own right with its own handle: an
-    object may have several at once, each with its own settings, and each says
-    separately whose data it draws and whose transform it follows. Point those
-    at different objects and one dataset appears in two places without being
-    uploaded twice. A **subset** narrows an actor to part of its data, which is
-    what makes several of them worth having — one structure drawn as cartoon
-    over its protein and as sticks over its ligand.
+    An **object** is a place in the tree and a name. It holds no data at all.
+
+    An **actor** is one way of drawing something, a thing in its own right with
+    its own handle. It is a child of the object it appears under, and it binds the
+    arrays it reads to the inputs its kind declares. Showing one array in two
+    places is two actors binding it under two parents. A **subset** narrows an
+    actor to part of what it binds, which is what makes several worth having —
+    one structure drawn as cartoon over its protein and as sticks over its
+    ligand.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -150,10 +151,9 @@ class SceneServiceServicer(object):
     The same position is taken wherever a question could be answered on either
     side. Selections arrive as index or mask arrays rather than as a query
     language, because a client already holds the structure needed to express
-    "chain A" far better than a grammar invented here could. Structure is
-    inferred from buffer names, with grids the one exception — a grid's sample
-    positions are implicit, so nothing about the arrays reveals it and it must
-    be declared.
+    "chain A" far better than a grammar invented here could. And nothing is
+    inferred from what an array is called: a representation declares the element
+    types and shapes it accepts, and a client binds whatever it uploaded.
 
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
@@ -172,11 +172,11 @@ class SceneServiceServicer(object):
         it is bound, not guessed from what it was called. Upload the same array once
         and bind it to as many actors as you like.
 
-        Framing is the same as UploadObject. The first message MUST carry `header`;
-        every later one MUST carry `chunk`, addressing an array by its index in the
-        header. Nothing is committed until every declared array has received
-        exactly its `byte_length` bytes, so a stream that ends early, overruns, or
-        arrives out of order leaves the scene untouched.
+        The first message MUST carry `header`; every later one MUST carry `chunk`,
+        addressing an array by its index in the header. Nothing is committed until
+        every declared array has received exactly its `byte_length` bytes, so a
+        stream that ends early, overruns, or arrives out of order leaves the scene
+        untouched.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -234,23 +234,26 @@ class SceneServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def DeleteObject(self, request, context):
-        """Removes an object from the scene, releasing its buffers.
+        """Removes one object from the scene.
+
+        Deletes exactly what is named. Child objects are detached and become roots;
+        the actors drawn under it go with it. No arrays are freed — ReleaseData is
+        what does that.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def AddActor(self, request, context):
-        """Draws an object an additional way.
+        """Draws something under an object.
 
         Adds; it does not replace. An object may carry any number of actors at
         once — a protein as cartoon and as licorice, a mesh as surface and as
         wireframe — and each is configured independently.
 
-        The data drawn and the placement it is drawn at are separate: `source`
-        says whose arrays to read, `parent` says whose transform to inherit. Give
-        them different objects and one dataset appears in two places without being
-        uploaded twice.
+        `parent` says where it appears. *What* it draws is in `params`, as arrays
+        bound to the inputs its kind declares, so showing one array in two places
+        is two actors binding it under two parents.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -264,14 +267,14 @@ class SceneServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def RemoveActor(self, request, context):
-        """Removes one actor, leaving the object and its data alone.
+        """Removes one actor, leaving the object it was drawn under alone.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def ListActors(self, request, context):
-        """Lists actors, optionally only those drawing one object.
+        """Lists actors, optionally only those drawn under one object.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -378,14 +381,15 @@ class SceneService(object):
     representation can read arrays that arrived at different times, so tying data
     to the thing that draws it would be the wrong shape.
 
-    An **object** holds data and a place in a tree. An **actor** is one way of
-    drawing an object, and is a thing in its own right with its own handle: an
-    object may have several at once, each with its own settings, and each says
-    separately whose data it draws and whose transform it follows. Point those
-    at different objects and one dataset appears in two places without being
-    uploaded twice. A **subset** narrows an actor to part of its data, which is
-    what makes several of them worth having — one structure drawn as cartoon
-    over its protein and as sticks over its ligand.
+    An **object** is a place in the tree and a name. It holds no data at all.
+
+    An **actor** is one way of drawing something, a thing in its own right with
+    its own handle. It is a child of the object it appears under, and it binds the
+    arrays it reads to the inputs its kind declares. Showing one array in two
+    places is two actors binding it under two parents. A **subset** narrows an
+    actor to part of what it binds, which is what makes several worth having —
+    one structure drawn as cartoon over its protein and as sticks over its
+    ligand.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -396,10 +400,9 @@ class SceneService(object):
     The same position is taken wherever a question could be answered on either
     side. Selections arrive as index or mask arrays rather than as a query
     language, because a client already holds the structure needed to express
-    "chain A" far better than a grammar invented here could. Structure is
-    inferred from buffer names, with grids the one exception — a grid's sample
-    positions are implicit, so nothing about the arrays reveals it and it must
-    be declared.
+    "chain A" far better than a grammar invented here could. And nothing is
+    inferred from what an array is called: a representation declares the element
+    types and shapes it accepts, and a client binds whatever it uploaded.
 
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask

@@ -497,12 +497,10 @@ class SetTransformResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class DeleteObjectRequest(_message.Message):
-    __slots__ = ("handle", "recursive")
+    __slots__ = ("handle",)
     HANDLE_FIELD_NUMBER: _ClassVar[int]
-    RECURSIVE_FIELD_NUMBER: _ClassVar[int]
     handle: ObjectHandle
-    recursive: bool
-    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., recursive: _Optional[bool] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
 class DeleteObjectResponse(_message.Message):
     __slots__ = ("deleted", "removed", "removed_actors")

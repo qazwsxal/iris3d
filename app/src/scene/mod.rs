@@ -247,8 +247,8 @@ pub enum SceneCommand {
     },
     DeleteObject {
         id: u64,
-        /// When false, descendants are detached and become roots.
-        recursive: bool,
+        /// Deletes exactly this node. Child objects are detached and become
+        /// roots; the actors drawn under it go with it.
         reply: oneshot::Sender<Deleted>,
     },
 
@@ -523,11 +523,7 @@ pub fn apply_scene_commands(
                 let _ = reply.send(listing);
             }
 
-            SceneCommand::DeleteObject {
-                id,
-                recursive,
-                reply,
-            } => {
+            SceneCommand::DeleteObject { id, reply } => {
                 let removed = delete_object(
                     &mut commands,
                     &mut index,
@@ -536,7 +532,6 @@ pub fn apply_scene_commands(
                     &children,
                     &ids,
                     id,
-                    recursive,
                 );
                 let _ = reply.send(removed);
             }
@@ -978,18 +973,17 @@ fn effective_parent(
     }
 }
 
-/// Removes an object, returning the handles actually removed.
+/// Removes one object, returning the handles actually removed.
 ///
-/// Non-recursive is the default because `Children` is a `linked_spawn`
-/// relationship: despawning an object would otherwise take every object
-/// parented to it as well. Child *objects* are detached first; child *actors*
-/// are left alone so they are despawned along with their object.
+/// Deletes exactly what was named, never a subtree. Child *objects* are
+/// detached first and become roots; child *actors* are left attached so Bevy's
+/// recursive despawn takes them with the node they were drawn under.
 ///
-/// Actors *sourced* from a doomed object are taken down explicitly, because
-/// they need not be parented to it. One parented elsewhere would survive the
-/// despawn with its `Mesh3d` intact and go on drawing data that no longer
-/// exists.
-#[allow(clippy::too_many_arguments)]
+/// There used to be a `recursive` flag. It guarded against destroying uploaded
+/// data the caller had not named, back when an object held its arrays — and an
+/// object holds none now, so a deletion costs nodes and actors and never any
+/// data. What was left was a choice with no consequence attached, and this is
+/// the half that keeps a deletion to what was asked for.
 fn delete_object(
     commands: &mut Commands,
     index: &mut HashMap<u64, Entity>,
@@ -998,43 +992,28 @@ fn delete_object(
     children: &Query<&Children>,
     ids: &Query<&UniqueID>,
     id: u64,
-    recursive: bool,
 ) -> Deleted {
     let Some(entity) = index.get(&id).copied() else {
         return Deleted::default();
     };
 
-    let mut doomed = vec![entity];
-
-    if recursive {
-        collect_descendants(entity, objects, children, &mut doomed);
-    } else if let Ok(list) = children.get(entity) {
-        for child in list.iter() {
-            // Only detach objects. Actors belong to this object and should die
-            // with it.
-            if objects.contains(child) {
-                commands.entity(child).remove::<ChildOf>();
-            }
-        }
-    }
-
     let mut deleted = Deleted {
-        objects: Vec::with_capacity(doomed.len()),
+        objects: ids
+            .get(entity)
+            .map(|unique| vec![unique.0])
+            .unwrap_or_default(),
         actors: Vec::new(),
     };
-    for object in doomed {
-        if let Ok(unique) = ids.get(object) {
-            deleted.objects.push(unique.0);
-        }
-        // The actors drawn here are children; Bevy's recursive despawn takes
-        // them with the object, so this only has to *report* them.
-        if let Ok(list) = children.get(object) {
-            for child in list.iter() {
-                if !objects.contains(child)
-                    && let Ok(unique) = ids.get(child)
-                {
-                    deleted.actors.push(unique.0);
-                }
+
+    if let Ok(list) = children.get(entity) {
+        for child in list.iter() {
+            if objects.contains(child) {
+                // Detached rather than destroyed: this deletion names one node.
+                commands.entity(child).remove::<ChildOf>();
+            } else if let Ok(unique) = ids.get(child) {
+                // An actor drawn here. The despawn below takes it; this only
+                // has to report it.
+                deleted.actors.push(unique.0);
             }
         }
     }
@@ -1048,39 +1027,14 @@ fn delete_object(
     commands.entity(entity).despawn();
 
     info!(
-        "scene: deleted object {id}{}{}",
-        if recursive {
-            format!(" and {} descendant(s)", deleted.objects.len() - 1)
-        } else {
-            String::new()
-        },
+        "scene: deleted object {id}{}",
         match deleted.actors.len() {
             0 => String::new(),
-            n => format!(", and {n} actor(s) drawing them"),
+            n => format!(" and the {n} actor(s) drawn under it"),
         }
     );
 
     deleted
-}
-
-/// Appends every descendant *object* of `entity`, skipping actors, which are
-/// children too but are not part of the object tree.
-fn collect_descendants(
-    entity: Entity,
-    objects: &Objects,
-    children: &Query<&Children>,
-    out: &mut Vec<Entity>,
-) {
-    let Ok(list) = children.get(entity) else {
-        return;
-    };
-    for child in list.iter() {
-        if !objects.contains(child) {
-            continue;
-        }
-        out.push(child);
-        collect_descendants(child, objects, children, out);
-    }
 }
 
 /// Describes one actor from its query item.

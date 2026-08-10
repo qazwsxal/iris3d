@@ -695,15 +695,17 @@ class Client:
         response = self._scene.ListObjects(ListObjectsRequest())
         return [_summary(info) for info in response.objects]
 
-    def delete_object(self, handle: int, *, recursive: bool = False) -> tuple[int, ...]:
-        """Removes an object, returning the handles actually removed.
+    def delete_object(self, handle: int) -> tuple[int, ...]:
+        """Removes one object, returning the handles actually removed.
 
-        Descendants are detached and become roots unless ``recursive`` is set,
-        so deleting an object never destroys data the caller did not name.
+        Deletes exactly what you name. Child objects are detached and become
+        roots; the actors drawn under it go with it. No arrays are freed —
+        :meth:`release_data` is what does that.
+
         Returns an empty tuple if the handle was already gone.
         """
         response = self._scene.DeleteObject(
-            DeleteObjectRequest(handle=ObjectHandle(id=handle), recursive=recursive)
+            DeleteObjectRequest(handle=ObjectHandle(id=handle))
         )
         return tuple(h.id for h in response.removed)
 

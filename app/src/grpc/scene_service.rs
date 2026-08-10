@@ -258,14 +258,9 @@ impl SceneService for SceneBridgeService {
             .handle
             .ok_or_else(|| Status::invalid_argument("handle is required"))?
             .id;
-        let recursive = request.recursive;
 
         let removed = self
-            .submit(|reply| SceneCommand::DeleteObject {
-                id,
-                recursive,
-                reply,
-            })
+            .submit(|reply| SceneCommand::DeleteObject { id, reply })
             .await?;
 
         Ok(Response::new(DeleteObjectResponse {
