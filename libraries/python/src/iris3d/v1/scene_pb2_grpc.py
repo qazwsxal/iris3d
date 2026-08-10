@@ -9,8 +9,14 @@ class SceneServiceStub(object):
     """SceneService is the whole surface of the iris3d scene: what is in it, where
     it sits, and how it is drawn.
 
-    Three things are kept apart, and the split is the reason the API looks the
-    way it does.
+    Things are kept apart, and the splits are the reason the API looks the way it
+    does.
+
+    **Data** is arrays and nothing more. UploadData takes them in and hands back a
+    handle each; no object appears, nothing is drawn, and the name on an array is
+    a label rather than a role. One array can feed several representations, and a
+    representation can read arrays that arrived at different times, so tying data
+    to the thing that draws it would be the wrong shape.
 
     An **object** holds data and a place in a tree. An **actor** is one way of
     drawing an object, and is a thing in its own right with its own handle: an
@@ -122,8 +128,14 @@ class SceneServiceServicer(object):
     """SceneService is the whole surface of the iris3d scene: what is in it, where
     it sits, and how it is drawn.
 
-    Three things are kept apart, and the split is the reason the API looks the
-    way it does.
+    Things are kept apart, and the splits are the reason the API looks the way it
+    does.
+
+    **Data** is arrays and nothing more. UploadData takes them in and hands back a
+    handle each; no object appears, nothing is drawn, and the name on an array is
+    a label rather than a role. One array can feed several representations, and a
+    representation can read arrays that arrived at different times, so tying data
+    to the thing that draws it would be the wrong shape.
 
     An **object** holds data and a place in a tree. An **actor** is one way of
     drawing an object, and is a thing in its own right with its own handle: an
@@ -386,8 +398,14 @@ class SceneService(object):
     """SceneService is the whole surface of the iris3d scene: what is in it, where
     it sits, and how it is drawn.
 
-    Three things are kept apart, and the split is the reason the API looks the
-    way it does.
+    Things are kept apart, and the splits are the reason the API looks the way it
+    does.
+
+    **Data** is arrays and nothing more. UploadData takes them in and hands back a
+    handle each; no object appears, nothing is drawn, and the name on an array is
+    a label rather than a role. One array can feed several representations, and a
+    representation can read arrays that arrived at different times, so tying data
+    to the thing that draws it would be the wrong shape.
 
     An **object** holds data and a place in a tree. An **actor** is one way of
     drawing an object, and is a thing in its own right with its own handle: an

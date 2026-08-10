@@ -384,6 +384,14 @@ message ParamValue {
     // A field name, or one option out of a fixed set. Which of the two is
     // decided by the parameter's ParamSpec.
     string text = 3;
+
+    // An array uploaded with UploadData, bound to an ArrayParam input.
+    //
+    // Geometry travels as a parameter on purpose. An actor's arrays and its
+    // settings are set by the same call, merged by the same rule, and described
+    // by the same declaration, so rebinding what an actor draws is the same
+    // kind of operation as moving a slider.
+    DataHandle data = 4;
   }
 }
 
@@ -430,7 +438,29 @@ message ParamSpec {
     BoolParam flag = 4;
     FieldParam field = 5;
     ChoiceParam choice = 6;
+    ArrayParam array = 7;
   }
+}
+
+// ArrayParam is an array the representation reads: positions, indices, a scalar
+// field. This is how a kind states what it needs in order to draw anything.
+//
+// It replaces guessing a role from a buffer's name. A client asks
+// ListActorKinds, sees that "points" wants float32 [n, 3] under "positions",
+// and binds an array it uploaded — so an array called "xyz", or "coords", or
+// nothing in particular, works exactly as well.
+message ArrayParam {
+  // Element types accepted. Empty accepts any.
+  repeated Dtype dtypes = 1;
+
+  // Shape, one entry per axis, where 0 accepts any length. Positions are
+  // [0, 3], a triangle index array [0, 3], a scalar field [0]. Empty accepts
+  // any shape at all.
+  repeated uint64 shape = 2;
+
+  // Whether the representation can draw without it. Positions cannot be
+  // omitted; a field that only tints something can.
+  bool required = 3;
 }
 
 // Color is sRGB, each channel 0..1.
@@ -560,6 +590,8 @@ message SubsetInfo {
 
 // ActorKindInfo describes a way of drawing that this build supports.
 message ActorKindInfo {
+  // Same as the map key in ListActorKindsResponse. Kept so a single kind can be
+  // passed around without its key.
   string id = 1;
   string label = 2;
 
@@ -645,7 +677,10 @@ message ListActorsResponse {
 message ListActorKindsRequest {}
 
 message ListActorKindsResponse {
-  repeated ActorKindInfo kinds = 1;
+  // Keyed by kind id: "points", "surface", "volume", "ball-and-stick". A map
+  // rather than a list because every caller is looking one up by name — to bind
+  // its inputs, or to check a kind it was given still exists.
+  map<string, ActorKindInfo> kinds = 1;
 }
 
 message ListObjectsRequest {}

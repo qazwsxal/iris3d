@@ -19,7 +19,7 @@ use crate::scene::{
 
 use super::SceneSender;
 use super::proto::{
-    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, BoolParam,
+    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, ArrayParam, BoolParam,
     BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest, CreateObjectResponse,
     DataHandle, DataInfo, DeleteObjectRequest, DeleteObjectResponse, Dtype as ProtoDtype,
     FieldParam, FloatParam, Grid as ProtoGrid, ListActorKindsRequest, ListActorKindsResponse,
@@ -458,15 +458,23 @@ impl SceneService for SceneBridgeService {
             .await?;
 
         Ok(Response::new(ListActorKindsResponse {
-            kinds: kinds.iter().map(kind_info).collect(),
+            kinds: kinds
+                .iter()
+                .map(|kind| (kind.id.clone(), kind_info(kind)))
+                .collect(),
         }))
     }
 }
 
 fn scene_error(error: SceneError) -> Status {
     match error {
-        SceneError::NoSuchObject(_) | SceneError::NoSuchActor(_) => {
+        SceneError::NoSuchObject(_) | SceneError::NoSuchActor(_) | SceneError::NoSuchData(_) => {
             Status::not_found(error.to_string())
+        }
+        // The caller's own request is at fault, and the declaration it needed in
+        // order to get it right is in ListActorKinds.
+        SceneError::MissingInput { .. } | SceneError::BadBinding { .. } => {
+            Status::invalid_argument(error.to_string())
         }
         // The caller named something that does not exist in this build, which
         // it could have discovered with ListActorKinds.
@@ -489,6 +497,7 @@ fn params_from_proto(
                 Some(Value::Number(number)) => ParamValue::Float(number as f32),
                 Some(Value::Flag(flag)) => ParamValue::Bool(flag),
                 Some(Value::Text(text)) => ParamValue::Text(text),
+                Some(Value::Data(handle)) => ParamValue::Data(handle.id),
                 // An empty `oneof` says nothing at all, and guessing which
                 // parameter was meant is worse than saying so.
                 None => {
@@ -510,6 +519,7 @@ fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, Proto
                 ParamValue::Float(number) => Value::Number(*number as f64),
                 ParamValue::Bool(flag) => Value::Flag(*flag),
                 ParamValue::Text(text) => Value::Text(text.clone()),
+                ParamValue::Data(id) => Value::Data(DataHandle { id: *id }),
             };
             (key.clone(), ProtoParam { value: Some(value) })
         })
@@ -662,6 +672,18 @@ fn kind_info(summary: &KindSummary) -> ActorKindInfo {
                             default_value: default.to_string(),
                         })
                     }
+                    ParamKind::Array {
+                        dtypes,
+                        shape,
+                        required,
+                    } => param_spec::Kind::Array(ArrayParam {
+                        dtypes: dtypes
+                            .iter()
+                            .map(|dtype| proto_dtype(*dtype) as i32)
+                            .collect(),
+                        shape: shape.to_vec(),
+                        required,
+                    }),
                 }),
             })
             .collect(),
@@ -988,8 +1010,8 @@ fn data_info(array: &DataSummary) -> DataInfo {
     }
 }
 
-fn buffer_spec(meta: &BufferMeta) -> BufferSpec {
-    let dtype = match meta.dtype {
+fn proto_dtype(dtype: Dtype) -> ProtoDtype {
+    match dtype {
         Dtype::Uint8 => ProtoDtype::Uint8,
         Dtype::Int8 => ProtoDtype::Int8,
         Dtype::Uint16 => ProtoDtype::Uint16,
@@ -1000,11 +1022,13 @@ fn buffer_spec(meta: &BufferMeta) -> BufferSpec {
         Dtype::Int64 => ProtoDtype::Int64,
         Dtype::Float32 => ProtoDtype::Float32,
         Dtype::Float64 => ProtoDtype::Float64,
-    };
+    }
+}
 
+fn buffer_spec(meta: &BufferMeta) -> BufferSpec {
     BufferSpec {
         name: meta.name.clone(),
-        dtype: dtype as i32,
+        dtype: proto_dtype(meta.dtype) as i32,
         shape: meta.shape.clone(),
         byte_length: meta.byte_length().unwrap_or_default(),
     }

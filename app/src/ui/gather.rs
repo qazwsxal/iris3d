@@ -15,8 +15,8 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::counter::UniqueID;
-use crate::scene::DataStore;
 use crate::scene::data::{FieldKind, Fields};
+use crate::scene::{BufferMeta, DataStore};
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
 use crate::scene::{Actors, ColorBy, DataArray, DatasetKind, SceneObject, Subset};
 
@@ -113,7 +113,9 @@ pub struct Gathered {
     /// the label it sent. No object holds these, so `owners` says nothing about
     /// them — without this they would be listed as unreferenced, which is the
     /// opposite of true.
-    pub held: HashMap<AssetId<DataArray>, (u64, String)>,
+    pub held: HashMap<AssetId<DataArray>, (u64, BufferMeta)>,
+    /// Every held array in handle order, for the input pickers.
+    pub bindable: Vec<(u64, BufferMeta)>,
     pub total_bytes: u64,
 }
 
@@ -143,10 +145,16 @@ pub fn gather(
     let mut rows: HashMap<Entity, Row> = HashMap::new();
     let mut roots: Vec<Entity> = Vec::new();
     let mut owners: HashMap<AssetId<DataArray>, Owner> = HashMap::new();
-    let held: HashMap<AssetId<DataArray>, (u64, String)> = store
+    let held: HashMap<AssetId<DataArray>, (u64, BufferMeta)> = store
         .iter()
-        .map(|(id, array)| (array.handle.id(), (id, array.meta.name.clone())))
+        .map(|(id, array)| (array.handle.id(), (id, array.meta.clone())))
         .collect();
+    // The same arrays as a list an input picker can walk, in handle order.
+    let mut bindable: Vec<(u64, BufferMeta)> = store
+        .iter()
+        .map(|(id, array)| (id, array.meta.clone()))
+        .collect();
+    bindable.sort_by_key(|(id, _)| *id);
 
     for (entity, id, object, kind, visibility, fields, children, drawn_by, parent) in objects {
         let child_objects: Vec<Entity> = children
@@ -289,6 +297,7 @@ pub fn gather(
         ordered,
         owners,
         held,
+        bindable,
         total_bytes,
     }
 }

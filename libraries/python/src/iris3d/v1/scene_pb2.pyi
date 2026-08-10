@@ -189,14 +189,16 @@ class ActorHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ParamValue(_message.Message):
-    __slots__ = ("number", "flag", "text")
+    __slots__ = ("number", "flag", "text", "data")
     NUMBER_FIELD_NUMBER: _ClassVar[int]
     FLAG_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
+    DATA_FIELD_NUMBER: _ClassVar[int]
     number: float
     flag: bool
     text: str
-    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ...) -> None: ...
+    data: DataHandle
+    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ..., data: _Optional[_Union[DataHandle, _Mapping]] = ...) -> None: ...
 
 class FloatParam(_message.Message):
     __slots__ = ("default_value", "min", "max", "logarithmic")
@@ -229,20 +231,32 @@ class ChoiceParam(_message.Message):
     def __init__(self, options: _Optional[_Iterable[str]] = ..., default_value: _Optional[str] = ...) -> None: ...
 
 class ParamSpec(_message.Message):
-    __slots__ = ("id", "label", "number", "flag", "field", "choice")
+    __slots__ = ("id", "label", "number", "flag", "field", "choice", "array")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     NUMBER_FIELD_NUMBER: _ClassVar[int]
     FLAG_FIELD_NUMBER: _ClassVar[int]
     FIELD_FIELD_NUMBER: _ClassVar[int]
     CHOICE_FIELD_NUMBER: _ClassVar[int]
+    ARRAY_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
     number: FloatParam
     flag: BoolParam
     field: FieldParam
     choice: ChoiceParam
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., field: _Optional[_Union[FieldParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ...) -> None: ...
+    array: ArrayParam
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., field: _Optional[_Union[FieldParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ...) -> None: ...
+
+class ArrayParam(_message.Message):
+    __slots__ = ("dtypes", "shape", "required")
+    DTYPES_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    dtypes: _containers.RepeatedScalarFieldContainer[Dtype]
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    required: bool
+    def __init__(self, dtypes: _Optional[_Iterable[_Union[Dtype, str]]] = ..., shape: _Optional[_Iterable[int]] = ..., required: _Optional[bool] = ...) -> None: ...
 
 class Color(_message.Message):
     __slots__ = ("r", "g", "b")
@@ -439,9 +453,16 @@ class ListActorKindsRequest(_message.Message):
 
 class ListActorKindsResponse(_message.Message):
     __slots__ = ("kinds",)
+    class KindsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ActorKindInfo
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ActorKindInfo, _Mapping]] = ...) -> None: ...
     KINDS_FIELD_NUMBER: _ClassVar[int]
-    kinds: _containers.RepeatedCompositeFieldContainer[ActorKindInfo]
-    def __init__(self, kinds: _Optional[_Iterable[_Union[ActorKindInfo, _Mapping]]] = ...) -> None: ...
+    kinds: _containers.MessageMap[str, ActorKindInfo]
+    def __init__(self, kinds: _Optional[_Mapping[str, ActorKindInfo]] = ...) -> None: ...
 
 class ListObjectsRequest(_message.Message):
     __slots__ = ()

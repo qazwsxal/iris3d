@@ -11,7 +11,7 @@ use bevy_egui::egui;
 use crate::scene::DatasetKind;
 use crate::scene::Subset;
 use crate::scene::actor::ColorMap;
-use crate::scene::registry::{ParamKind, ParamValue, flag, float, text};
+use crate::scene::registry::{ParamKind, ParamValue, data as registry_data, flag, float, text};
 
 use super::gather::{ActorRow, Gathered, Row};
 use super::{PendingActions, UiAction, UiState};
@@ -72,7 +72,7 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
 pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
     match state.selected_actor.and_then(|entity| scene.actor(entity)) {
         Some((row, actor)) => {
-            controls(ui, row, actor, actions);
+            controls(ui, scene, row, actor, actions);
             ui.separator();
         }
         None => {
@@ -120,7 +120,13 @@ fn add(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut Pendi
 /// here. A slider's range is the declared range, which is also the range values
 /// are clamped to on the way in, so the UI cannot ask for something a client
 /// could not.
-fn controls(ui: &mut egui::Ui, row: &Row, current: &ActorRow, actions: &mut PendingActions) {
+fn controls(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    row: &Row,
+    current: &ActorRow,
+    actions: &mut PendingActions,
+) {
     ui.horizontal(|ui| {
         ui.heading(current.label);
         ui.weak(format!("of [{}] {}", row.id, row.name));
@@ -158,6 +164,48 @@ fn controls(ui: &mut egui::Ui, row: &Row, current: &ActorRow, actions: &mut Pend
                         ParamValue::Float(value),
                     ));
                 }
+            }
+            ParamKind::Array { required, .. } => {
+                // Generated from the same declaration as every other control,
+                // which is the point of arrays being parameters: the picker only
+                // offers arrays the input will actually accept, because the
+                // input says what it accepts.
+                let bound = registry_data(&current.params, spec.id);
+                let label = bound
+                    .and_then(|id| scene.bindable.iter().find(|(held, _)| *held == id))
+                    .map(|(id, meta)| format!("d{id} {}", meta.name))
+                    .unwrap_or_else(|| {
+                        if required { "REQUIRED".into() } else { "none".into() }
+                    });
+                ui.horizontal(|ui| {
+                    ui.label(spec.label);
+                    egui::ComboBox::from_id_salt((current.entity, spec.id))
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            let mut any = false;
+                            for (id, meta) in &scene.bindable {
+                                if spec.kind.accepts(meta).is_err() {
+                                    continue;
+                                }
+                                any = true;
+                                let picked = bound == Some(*id);
+                                let text = format!(
+                                    "d{id} {} · {}{:?}",
+                                    meta.name, meta.dtype, meta.shape
+                                );
+                                if ui.selectable_label(picked, text).clicked() && !picked {
+                                    actions.0.push(UiAction::SetParam(
+                                        current.entity,
+                                        spec.id,
+                                        ParamValue::Data(*id),
+                                    ));
+                                }
+                            }
+                            if !any {
+                                ui.weak("no uploaded array fits this input");
+                            }
+                        });
+                });
             }
             ParamKind::Field => {
                 // The fields are the source object's, which is why the row this

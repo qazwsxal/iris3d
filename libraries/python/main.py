@@ -126,7 +126,7 @@ def main():
         # kind that fits is a fine policy for a sample loader — a real client
         # would offer the list.
         preferred: dict[str, str] = {}
-        for kind in client.actor_kinds():
+        for kind in client.actor_kinds().values():
             for dataset in kind.supports:
                 preferred.setdefault(dataset, kind.id)
         for summary in client.list_objects():

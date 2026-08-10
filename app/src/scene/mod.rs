@@ -155,6 +155,22 @@ pub struct KindSummary {
 pub enum SceneError {
     NoSuchObject(u64),
     NoSuchActor(u64),
+    /// A handle that names no held array. Distinct from `NoSuchObject` because
+    /// the three handle spaces share one sequence — passing an object handle
+    /// where an array was wanted is a plausible mistake worth naming precisely.
+    NoSuchData(u64),
+    /// An input the kind cannot draw without was left unbound.
+    MissingInput {
+        kind: String,
+        input: &'static str,
+    },
+    /// The bound array is the wrong element type or shape for the input.
+    BadBinding {
+        kind: String,
+        input: &'static str,
+        /// What is wrong, in the words of the input's own declaration.
+        reason: String,
+    },
     /// No backend registered a kind by that name, so nothing could draw it.
     UnknownKind(String),
     /// The kind exists but cannot draw this shape of data — ball-and-stick over
@@ -181,6 +197,19 @@ impl Display for SceneError {
             SceneError::NoSuchActor(id) => {
                 write!(f, "no actor with handle {id}")
             }
+            SceneError::NoSuchData(id) => write!(f, "no uploaded array with handle {id}"),
+            SceneError::MissingInput { kind, input } => write!(
+                f,
+                "actor kind \"{kind}\" cannot draw without an array bound to \"{input}\""
+            ),
+            SceneError::BadBinding {
+                kind,
+                input,
+                reason,
+            } => write!(
+                f,
+                "the array bound to \"{input}\" of actor kind \"{kind}\" {reason}"
+            ),
             SceneError::UnknownKind(kind) => write!(
                 f,
                 "no actor kind \"{kind}\" — ask ListActorKinds \
@@ -639,6 +668,7 @@ pub fn apply_scene_commands(
                     colour,
                     subset,
                     &mut arrays,
+                    &store,
                 );
                 let _ = reply.send(result);
             }
@@ -720,6 +750,47 @@ pub fn apply_scene_commands(
     }
 }
 
+/// Checks that every array an actor kind reads is bound, and bound to something
+/// it can actually read.
+///
+/// Separate from [`registry::ParamKind::sanitise`] on purpose. Sanitising judges
+/// a value on its own and runs wherever a parameter is written; this needs the
+/// [`DataStore`] to see what a handle points at, and the store is not reachable
+/// from all of those places. So one answers "is this the right sort of value"
+/// and the other "is that particular array the right shape".
+fn check_bindings(
+    kind: &registry::ActorKind,
+    params: &registry::ParamMap,
+    store: &DataStore,
+) -> Result<(), SceneError> {
+    for spec in kind.inputs() {
+        let registry::ParamKind::Array { required, .. } = spec.kind else {
+            continue;
+        };
+        match registry::data(params, spec.id) {
+            Some(id) => {
+                let array = store.get(id).ok_or(SceneError::NoSuchData(id))?;
+                spec.kind
+                    .accepts(&array.meta)
+                    .map_err(|reason| SceneError::BadBinding {
+                        kind: kind.id.to_string(),
+                        input: spec.id,
+                        reason,
+                    })?;
+            }
+            // An optional input left unbound is the normal case, not a fault.
+            None if required => {
+                return Err(SceneError::MissingInput {
+                    kind: kind.id.to_string(),
+                    input: spec.id,
+                });
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
+
 /// Adds a way of drawing an object.
 #[allow(clippy::too_many_arguments)]
 fn add_actor(
@@ -737,6 +808,7 @@ fn add_actor(
     colour: Option<ColorBy>,
     subset: Option<subset::SubsetRequest>,
     arrays: &mut Assets<DataArray>,
+    store: &DataStore,
 ) -> Result<ActorSummary, SceneError> {
     let source_entity = *index.get(&source).ok_or(SceneError::NoSuchObject(source))?;
     let parent_entity = match parent {
@@ -767,6 +839,7 @@ fn add_actor(
     // Unset parameters take the kind's default: this is a new actor, so there
     // is no previous value to preserve.
     let params = registered.normalise(&params);
+    check_bindings(registered, &params, store)?;
     let colour = colour.unwrap_or_else(|| ColorBy {
         field: default_colour_field(fields.get(source_entity).ok()),
         ..default()

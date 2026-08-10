@@ -240,18 +240,40 @@ class ActorSummary:
 
 @dataclass(frozen=True)
 class ParamInfo:
-    """One setting an actor kind accepts."""
+    """One setting or input an actor kind accepts."""
 
     id: str
     label: str
-    #: "float", "bool", "field" or "choice".
+    #: "float", "bool", "field", "choice" or "array".
     type: str
-    default: float | bool | str
+    #: Absent for an array input: there is no default array, so it starts unbound.
+    default: float | bool | str | None
     #: Allowed range, for float parameters only.
     range: tuple[float, float] | None = None
     logarithmic: bool = False
     #: The permitted values, for choice parameters only.
     options: tuple[str, ...] = ()
+    #: Element types this input accepts, for arrays only. Empty accepts any.
+    dtypes: tuple[np.dtype, ...] = ()
+    #: Declared shape, for arrays only. 0 accepts any length on that axis, so
+    #: positions read ``(0, 3)`` and a scalar field ``(0,)``.
+    shape: tuple[int, ...] = ()
+    #: Whether the kind can draw without it, for arrays only.
+    required: bool = False
+
+
+@dataclass(frozen=True)
+class Bind:
+    """Binds an uploaded array to one of an actor kind's inputs.
+
+    Wrapped rather than passed as a bare handle so it cannot be mistaken for a
+    slider value::
+
+        data = client.upload_data({"xyz": positions})
+        client.add_actor(obj, "points", params={"positions": iris3d.Bind(data["xyz"])})
+    """
+
+    handle: int
 
 
 @dataclass(frozen=True)
@@ -284,6 +306,8 @@ def _param_value(value: float | bool | str) -> ParamValue:
     number would swallow it and send True as 1.0 — which the server would then
     reject as the wrong type for a boolean parameter.
     """
+    if isinstance(value, Bind):
+        return ParamValue(data=DataHandle(id=value.handle))
     if isinstance(value, bool):
         return ParamValue(flag=value)
     if isinstance(value, (int, float)):
@@ -291,7 +315,8 @@ def _param_value(value: float | bool | str) -> ParamValue:
     if isinstance(value, str):
         return ParamValue(text=value)
     raise TypeError(
-        f"parameter values must be a number, a bool or a string, not {type(value).__name__}"
+        "parameter values must be a number, a bool, a string or a Bind, "
+        f"not {type(value).__name__}"
     )
 
 
@@ -302,6 +327,10 @@ def _read_param(value: ParamValue) -> float | bool | str:
             return value.flag
         case "text":
             return value.text
+        case "data":
+            # Comes back wrapped, so a round trip keeps an array distinguishable
+            # from a number that happens to equal its handle.
+            return Bind(value.data.id)
         case _:
             return value.number
 
@@ -428,6 +457,19 @@ def _kind(info: ActorKindInfo) -> ActorKindSummary:
                     type="choice",
                     default=spec.choice.default_value,
                     options=tuple(spec.choice.options),
+                )
+            )
+        elif kind == "array":
+            params.append(
+                ParamInfo(
+                    id=spec.id,
+                    label=spec.label,
+                    type="array",
+                    # No default array exists, so an input starts unbound.
+                    default=None,
+                    dtypes=tuple(from_proto_dtype(d) for d in spec.array.dtypes),
+                    shape=tuple(spec.array.shape),
+                    required=spec.array.required,
                 )
             )
         else:
@@ -867,12 +909,19 @@ class Client:
         response = self._scene.ListActors(request)
         return [_actor(info) for info in response.actors]
 
-    def actor_kinds(self) -> list[ActorKindSummary]:
-        """Lists the ways of drawing this server supports.
+    def actor_kinds(self) -> dict[str, ActorKindSummary]:
+        """The ways of drawing this server supports, keyed by kind id.
 
         Kinds come from whichever rendering backends the server was built with,
         so ask rather than assuming: a hardcoded list here would eventually
         offer something that silently does nothing.
+
+        A kind's ``params`` include its array inputs, each saying what element
+        types and shape it takes and whether the kind can draw without it. That
+        is what to bind an uploaded array to::
+
+            wanted = client.actor_kinds()["points"]
+            [p.id for p in wanted.params if p.type == "array" and p.required]
         """
         response = self._scene.ListActorKinds(ListActorKindsRequest())
-        return [_kind(info) for info in response.kinds]
+        return {key: _kind(info) for key, info in response.kinds.items()}

@@ -19,6 +19,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use super::DatasetKind;
+use super::data::{BufferMeta, Dtype};
 
 /// A single tunable value on an actor.
 ///
@@ -30,9 +31,25 @@ pub enum ParamValue {
     Bool(bool),
     /// A name: a field to read, or one option out of a fixed set.
     Text(String),
+    /// An uploaded array, by the handle [`DataStore`](super::DataStore) knows it
+    /// by.
+    ///
+    /// Geometry is a parameter like any other, deliberately. An actor's arrays
+    /// and its settings are edited by the same call, merged by the same rule,
+    /// and generate their controls from the same declaration — rebinding the
+    /// positions an actor draws is the same kind of operation as moving a
+    /// slider, so it would be strange for it to be a different mechanism.
+    Data(u64),
 }
 
 impl ParamValue {
+    pub fn as_data(&self) -> Option<u64> {
+        match self {
+            ParamValue::Data(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     pub fn as_float(&self) -> Option<f32> {
         match self {
             ParamValue::Float(value) => Some(*value),
@@ -85,6 +102,12 @@ pub fn text<'a>(params: &'a ParamMap, id: &str, fallback: &'a str) -> &'a str {
         .unwrap_or(fallback)
 }
 
+/// Reads a bound array's handle. `None` means nothing is bound to that slot,
+/// which is the normal state of an optional one. See [`float`].
+pub fn data(params: &ParamMap, id: &str) -> Option<u64> {
+    params.get(id).and_then(|value| value.as_data())
+}
+
 /// What a parameter is, which decides both its control and its valid range.
 #[derive(Debug, Clone, Copy)]
 pub enum ParamKind {
@@ -112,16 +135,88 @@ pub enum ParamKind {
         options: &'static [&'static str],
         default: &'static str,
     },
+    /// An array the backend reads: positions, indices, a scalar field.
+    ///
+    // No backend declares one yet, on purpose. A declared input that nothing
+    // consumes is a control that silently does nothing — the exact fault this
+    // registry exists to prevent — so declaring and consuming land together,
+    // one backend at a time.
+    #[allow(dead_code)]
+    ///
+    /// This is how a kind says what it needs in order to draw anything, and it
+    /// replaces guessing from buffer names. A client asks `ListActorKinds`, sees
+    /// that `points` wants `float32 [n, 3]` under `positions`, and binds an
+    /// array it uploaded. Nothing infers a role from what an array was called.
+    Array {
+        /// Element types that will do. Empty accepts any.
+        dtypes: &'static [Dtype],
+        /// Shape, one entry per axis, where 0 accepts any length: positions is
+        /// `[0, 3]`, a triangle index array `[0, 3]`, a scalar field `[0]`. An
+        /// empty slice accepts any shape at all.
+        shape: &'static [u64],
+        /// Whether the kind can draw without it. Colour fields are optional;
+        /// positions are not.
+        required: bool,
+    },
 }
 
 impl ParamKind {
-    pub fn default_value(self) -> ParamValue {
+    /// The value to start from, or `None` for a parameter with nothing sensible
+    /// to start from.
+    ///
+    /// Only [`Array`](Self::Array) has none. There is no default array — handle
+    /// 0 is a real array belonging to whoever uploaded first, so inventing one
+    /// would silently draw somebody else's data.
+    pub fn default_value(self) -> Option<ParamValue> {
         match self {
-            ParamKind::Float { default, .. } => ParamValue::Float(default),
-            ParamKind::Bool { default } => ParamValue::Bool(default),
-            ParamKind::Field => ParamValue::Text(String::new()),
-            ParamKind::Choice { default, .. } => ParamValue::Text(default.to_string()),
+            ParamKind::Float { default, .. } => Some(ParamValue::Float(default)),
+            ParamKind::Bool { default } => Some(ParamValue::Bool(default)),
+            ParamKind::Field => Some(ParamValue::Text(String::new())),
+            ParamKind::Choice { default, .. } => Some(ParamValue::Text(default.to_string())),
+            ParamKind::Array { .. } => None,
         }
+    }
+
+    /// Whether an array of this description may be bound here.
+    ///
+    /// Deliberately not part of [`sanitise`](Self::sanitise). Sanitising judges
+    /// a value on its own and is called wherever a parameter is written;
+    /// checking a binding needs the [`DataStore`](super::DataStore) to look up
+    /// what the handle actually points at, and the store is not reachable from
+    /// every one of those places. So the two checks stay separate: sanitise
+    /// decides "is this the right *kind* of value", this decides "is that
+    /// particular array the right shape".
+    pub fn accepts(self, meta: &BufferMeta) -> Result<(), String> {
+        let ParamKind::Array { dtypes, shape, .. } = self else {
+            return Err("not an array parameter".into());
+        };
+        if !dtypes.is_empty() && !dtypes.contains(&meta.dtype) {
+            return Err(format!(
+                "is {} but this input takes {}",
+                meta.dtype,
+                dtypes
+                    .iter()
+                    .map(|dtype| dtype.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ));
+        }
+        if shape.is_empty() {
+            return Ok(());
+        }
+        let fits = shape.len() == meta.shape.len()
+            && shape
+                .iter()
+                .zip(&meta.shape)
+                .all(|(wanted, actual)| *wanted == 0 || wanted == actual);
+        if !fits {
+            return Err(format!(
+                "has shape {:?} but this input takes {}",
+                meta.shape,
+                describe_shape(shape)
+            ));
+        }
+        Ok(())
     }
 
     /// Clamps a value into the declared range, and rejects one of the wrong
@@ -139,9 +234,28 @@ impl ParamKind {
             (ParamKind::Choice { options, .. }, ParamValue::Text(value)) => options
                 .contains(&value.as_str())
                 .then_some(ParamValue::Text(value)),
+            // Whether the array *fits* is `accepts`, checked where the store is
+            // reachable. Here it only has to be a handle rather than a number
+            // somebody meant as a slider value.
+            (ParamKind::Array { .. }, ParamValue::Data(id)) => Some(ParamValue::Data(id)),
             _ => None,
         }
     }
+}
+
+/// Renders a declared shape for an error message: `[n, 3]`, `[n]`, `[4, 4]`.
+fn describe_shape(shape: &[u64]) -> String {
+    let axes: Vec<String> = shape
+        .iter()
+        .map(|axis| {
+            if *axis == 0 {
+                "n".to_string()
+            } else {
+                axis.to_string()
+            }
+        })
+        .collect();
+    format!("[{}]", axes.join(", "))
 }
 
 /// One tunable parameter of an actor kind.
@@ -174,10 +288,21 @@ impl ActorKind {
         self.params.iter().find(|spec| spec.id == id)
     }
 
+    /// Every input this kind reads an array from, required or not.
+    pub fn inputs(&self) -> impl Iterator<Item = &ParamSpec> {
+        self.params
+            .iter()
+            .filter(|spec| matches!(spec.kind, ParamKind::Array { .. }))
+    }
+
+    /// Settings at their starting values. Array inputs are absent: they have no
+    /// default, so a new actor's map is complete only once they are bound.
     pub fn defaults(&self) -> ParamMap {
         self.params
             .iter()
-            .map(|spec| (spec.id.to_string(), spec.kind.default_value()))
+            .filter_map(|spec| {
+                Some((spec.id.to_string(), spec.kind.default_value()?))
+            })
             .collect()
     }
 
@@ -193,13 +318,15 @@ impl ActorKind {
     pub fn normalise(&self, given: &ParamMap) -> ParamMap {
         self.params
             .iter()
-            .map(|spec| {
+            .filter_map(|spec| {
+                // An unbound array stays unbound rather than becoming some
+                // arbitrary handle, so the map says truthfully what is missing.
                 let value = given
                     .get(spec.id)
                     .cloned()
                     .and_then(|value| spec.kind.sanitise(value))
-                    .unwrap_or_else(|| spec.kind.default_value());
-                (spec.id.to_string(), value)
+                    .or_else(|| spec.kind.default_value())?;
+                Some((spec.id.to_string(), value))
             })
             .collect()
     }
@@ -303,6 +430,95 @@ mod tests {
             params: SPECS,
             apply: |_, _| {},
         }
+    }
+
+    const WITH_INPUTS: &[ParamSpec] = &[
+        ParamSpec {
+            id: "positions",
+            label: "positions",
+            kind: ParamKind::Array {
+                dtypes: &[Dtype::Float32],
+                shape: &[0, 3],
+                required: true,
+            },
+        },
+        ParamSpec {
+            id: "scalars",
+            label: "scalars",
+            kind: ParamKind::Array {
+                dtypes: &[],
+                shape: &[0],
+                required: false,
+            },
+        },
+    ];
+
+    fn with_inputs() -> ActorKind {
+        ActorKind {
+            id: "bound",
+            label: "bound",
+            supports: |_| true,
+            params: WITH_INPUTS,
+            apply: |_, _| {},
+        }
+    }
+
+    fn meta(dtype: Dtype, shape: &[u64]) -> BufferMeta {
+        BufferMeta {
+            name: "whatever".into(),
+            dtype,
+            shape: shape.to_vec(),
+        }
+    }
+
+    /// An input accepts on element type and shape, and 0 in a declared shape
+    /// means any length. The name is never consulted: an array called anything
+    /// at all binds, which is the whole point of binding over inference.
+    #[test]
+    fn an_input_accepts_the_shape_it_declared() {
+        let positions = WITH_INPUTS[0].kind;
+        assert!(positions.accepts(&meta(Dtype::Float32, &[500, 3])).is_ok());
+        assert!(positions.accepts(&meta(Dtype::Float32, &[1, 3])).is_ok());
+
+        // Wrong element type, wrong component count, wrong rank.
+        assert!(positions.accepts(&meta(Dtype::Float64, &[500, 3])).is_err());
+        assert!(positions.accepts(&meta(Dtype::Float32, &[500, 2])).is_err());
+        assert!(positions.accepts(&meta(Dtype::Float32, &[500])).is_err());
+
+        // An empty dtype list takes anything numeric.
+        let scalars = WITH_INPUTS[1].kind;
+        assert!(scalars.accepts(&meta(Dtype::Uint8, &[8])).is_ok());
+        assert!(scalars.accepts(&meta(Dtype::Float64, &[8])).is_ok());
+        assert!(scalars.accepts(&meta(Dtype::Float64, &[8, 3])).is_err());
+    }
+
+    /// The error says what the input wanted, in its own terms, so a client can
+    /// fix the call without reading the server.
+    #[test]
+    fn a_rejected_binding_explains_itself() {
+        let positions = WITH_INPUTS[0].kind;
+        let reason = positions
+            .accepts(&meta(Dtype::Float32, &[500, 4]))
+            .expect_err("four components is not three");
+        assert!(reason.contains("[500, 4]"), "{reason}");
+        assert!(reason.contains("[n, 3]"), "{reason}");
+    }
+
+    /// Settings have defaults; arrays do not. Handle 0 is a real array
+    /// belonging to whoever uploaded first, so there is nothing safe to invent —
+    /// an unbound input has to stay absent and be reported as missing.
+    #[test]
+    fn an_unbound_input_stays_absent() {
+        let normalised = with_inputs().normalise(&ParamMap::default());
+        assert!(normalised.is_empty(), "{normalised:?}");
+
+        let mut given = ParamMap::default();
+        given.insert("positions".into(), ParamValue::Data(7));
+        // A slider value where an array belongs is refused, not coerced.
+        given.insert("scalars".into(), ParamValue::Float(1.0));
+        let normalised = with_inputs().normalise(&given);
+        assert_eq!(normalised.get("positions"), Some(&ParamValue::Data(7)));
+        assert_eq!(normalised.get("scalars"), None);
     }
 
     #[test]

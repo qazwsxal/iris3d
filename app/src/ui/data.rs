@@ -68,7 +68,7 @@ pub fn list(
                 // widget in egui, so something in it has to carry the click.
                 let name = owner
                     .map(|owner| owner.name.as_str())
-                    .or_else(|| held.map(|(_, name)| name.as_str()));
+                    .or_else(|| held.map(|(_, meta)| meta.name.as_str()));
                 if ui
                     .selectable_label(
                         state.selected_array == Some(id),
