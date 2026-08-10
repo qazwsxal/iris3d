@@ -20,6 +20,7 @@ use bevy::prelude::*;
 
 use crate::scene::actor::ColorMap;
 
+use crate::scene::link::Placement;
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
@@ -257,6 +258,14 @@ impl Plugin for DrawPlugin {
                     volume::draw_volumes,
                 )
                     .in_set(Backends),
+                // After the backends, so a placement picks up a handle on the
+                // same frame the actor gets one rather than a frame late.
+                (
+                    copy_meshes,
+                    copy_materials::<StandardMaterial>,
+                    copy_materials::<PointQuadMaterial>,
+                    copy_materials::<VolumeMaterial>,
+                ),
                 clear_dirty,
             )
                 .chain()
@@ -264,6 +273,49 @@ impl Plugin for DrawPlugin {
                 // actor has no style at all until that has run.
                 .after(crate::scene::registry::apply_actor_params),
         );
+    }
+}
+
+/// Gives every placement of an actor the mesh that actor owns.
+///
+/// The handle, not the geometry. A backend rebuilds into the asset it already
+/// holds, so the copies never need touching again — this only has to run when
+/// an actor's handle is first created or genuinely replaced, and the comparison
+/// makes that the common case. Several placements sharing one mesh and one
+/// material is also what lets Bevy batch them into a single draw.
+fn copy_meshes(
+    mut commands: Commands,
+    actors: Query<&Mesh3d>,
+    placements: Query<(Entity, &Placement, Option<&Mesh3d>)>,
+) {
+    for (entity, placement, current) in &placements {
+        let Ok(mesh) = actors.get(placement.0) else {
+            // The actor has not been drawn yet. Nothing to copy, and it will be
+            // here next frame.
+            continue;
+        };
+        if current.map(|Mesh3d(handle)| handle.id()) != Some(mesh.0.id()) {
+            commands.entity(entity).insert(mesh.clone());
+        }
+    }
+}
+
+/// As [`copy_meshes`], for the material.
+///
+/// Generic because the material type is the backend's choice, so this is
+/// registered once per material the build knows about.
+fn copy_materials<M: Material>(
+    mut commands: Commands,
+    actors: Query<&MeshMaterial3d<M>>,
+    placements: Query<(Entity, &Placement, Option<&MeshMaterial3d<M>>)>,
+) {
+    for (entity, placement, current) in &placements {
+        let Ok(material) = actors.get(placement.0) else {
+            continue;
+        };
+        if current.map(|MeshMaterial3d(handle)| handle.id()) != Some(material.0.id()) {
+            commands.entity(entity).insert(material.clone());
+        }
     }
 }
 

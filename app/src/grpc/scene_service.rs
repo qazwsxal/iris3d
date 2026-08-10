@@ -287,10 +287,14 @@ impl SceneService for SceneBridgeService {
             ));
         }
         let kind = request.kind;
-        // Optional, unlike the kind: an absent one is made rather than
-        // refused, because there is a sensible object to create and no
-        // sensible way to draw.
-        let parent = request.parent.map(|handle| handle.id);
+        // Optional, unlike the kind: with none given one is made, because
+        // there is a sensible object to create and no sensible way to draw.
+        // Several draws one actor in several places.
+        let parents = request
+            .parents
+            .into_iter()
+            .map(|handle| handle.id)
+            .collect();
         let params = params_from_proto(request.params)?;
         let colour = request.color.map(colour_from_proto).transpose()?;
         let subset = request.subset.map(subset_from_proto).transpose()?;
@@ -298,7 +302,7 @@ impl SceneService for SceneBridgeService {
         let summary = self
             .submit(|reply| SceneCommand::AddActor {
                 kind,
-                parent,
+                parents,
                 params,
                 colour,
                 subset,
@@ -336,7 +340,11 @@ impl SceneService for SceneBridgeService {
             (None, true) => Some(None),
             (None, false) => None,
         };
-        let parent = request.parent.map(|handle| handle.id);
+        // Absent leaves the placements alone; present replaces them, and an
+        // empty list takes the actor off screen without removing it.
+        let parents = request
+            .parents
+            .map(|list| list.handles.into_iter().map(|handle| handle.id).collect());
 
         let summary = self
             .submit(|reply| SceneCommand::SetActor {
@@ -345,7 +353,7 @@ impl SceneService for SceneBridgeService {
                 colour,
                 visible,
                 subset,
-                parent,
+                parents,
                 reply,
             })
             .await?
@@ -519,7 +527,11 @@ fn actor_info(summary: &ActorSummary) -> ActorInfo {
         handle: Some(ActorHandle { id: summary.id }),
         kind: summary.kind.clone(),
 
-        parent: summary.parent.map(|id| ObjectHandle { id }),
+        parents: summary
+            .parents
+            .iter()
+            .map(|id| ObjectHandle { id: *id })
+            .collect(),
         params: params_to_proto(&summary.params),
         color: Some(colour_to_proto(&summary.colour)),
         visible: summary.visible,

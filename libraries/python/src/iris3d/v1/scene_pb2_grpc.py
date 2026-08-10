@@ -8,18 +8,18 @@ from iris3d.v1 import scene_pb2 as iris3d_dot_v1_dot_scene__pb2
 class SceneServiceStub(object):
     """SceneService is the whole surface of the iris3d scene: what is in it, where
     it sits, and how it is drawn.
-
+    
     Things are kept apart, and the splits are the reason the API looks the way it
     does.
-
+    
     **Data** is arrays and nothing more. UploadData takes them in and hands back a
     handle each; no object appears, nothing is drawn, and the name on an array is
     a label rather than a role. One array can feed several representations, and a
     representation can read arrays that arrived at different times, so tying data
     to the thing that draws it would be the wrong shape.
-
+    
     An **object** is a place in the tree and a name. It holds no data at all.
-
+    
     An **actor** is one way of drawing something, a thing in its own right with
     its own handle. It is a child of the object it appears under, and it binds the
     arrays it reads to the inputs its kind declares. Showing one array in two
@@ -27,20 +27,20 @@ class SceneServiceStub(object):
     actor to part of what it binds, which is what makes several worth having —
     one structure drawn as cartoon over its protein and as sticks over its
     ligand.
-
+    
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
     This keeps large uploads compact on the wire, keeps decoding cheap in every
     client language, and lets iris3d accept data in formats it will never
     implement a parser for: a client parses locally and pushes the arrays.
-
+    
     The same position is taken wherever a question could be answered on either
     side. Selections arrive as index or mask arrays rather than as a query
     language, because a client already holds the structure needed to express
     "chain A" far better than a grammar invented here could. And nothing is
     inferred from what an array is called: a representation declares the element
     types and shapes it accepts, and a client binds whatever it uploaded.
-
+    
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
     ListActorKinds rather than carrying a table that will go stale.
@@ -122,18 +122,18 @@ class SceneServiceStub(object):
 class SceneServiceServicer(object):
     """SceneService is the whole surface of the iris3d scene: what is in it, where
     it sits, and how it is drawn.
-
+    
     Things are kept apart, and the splits are the reason the API looks the way it
     does.
-
+    
     **Data** is arrays and nothing more. UploadData takes them in and hands back a
     handle each; no object appears, nothing is drawn, and the name on an array is
     a label rather than a role. One array can feed several representations, and a
     representation can read arrays that arrived at different times, so tying data
     to the thing that draws it would be the wrong shape.
-
+    
     An **object** is a place in the tree and a name. It holds no data at all.
-
+    
     An **actor** is one way of drawing something, a thing in its own right with
     its own handle. It is a child of the object it appears under, and it binds the
     arrays it reads to the inputs its kind declares. Showing one array in two
@@ -141,20 +141,20 @@ class SceneServiceServicer(object):
     actor to part of what it binds, which is what makes several worth having —
     one structure drawn as cartoon over its protein and as sticks over its
     ligand.
-
+    
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
     This keeps large uploads compact on the wire, keeps decoding cheap in every
     client language, and lets iris3d accept data in formats it will never
     implement a parser for: a client parses locally and pushes the arrays.
-
+    
     The same position is taken wherever a question could be answered on either
     side. Selections arrive as index or mask arrays rather than as a query
     language, because a client already holds the structure needed to express
     "chain A" far better than a grammar invented here could. And nothing is
     inferred from what an array is called: a representation declares the element
     types and shapes it accepts, and a client binds whatever it uploaded.
-
+    
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
     ListActorKinds rather than carrying a table that will go stale.
@@ -162,16 +162,16 @@ class SceneServiceServicer(object):
 
     def UploadData(self, request_iterator, context):
         """Uploads arrays and nothing else.
-
+        
         No object, no place in the tree, nothing drawn. Each array comes back with
         a handle, and an actor is built by binding those handles to the inputs its
         kind declares — see ListActorKinds for what each one accepts.
-
+        
         A name in the header is a label, for the inventory and for a person reading
         it. It is not a role: what an array *is* to a representation is settled when
         it is bound, not guessed from what it was called. Upload the same array once
         and bind it to as many actors as you like.
-
+        
         The first message MUST carry `header`; every later one MUST carry `chunk`,
         addressing an array by its index in the header. Nothing is committed until
         every declared array has received exactly its `byte_length` bytes, so a
@@ -191,7 +191,7 @@ class SceneServiceServicer(object):
 
     def ReleaseData(self, request, context):
         """Forgets arrays.
-
+        
         The bytes go when nothing refers to them any more, so releasing a handle an
         actor still uses frees nothing until that actor goes too. A handle that was
         already gone is not an error; the response says what was actually held.
@@ -202,7 +202,7 @@ class SceneServiceServicer(object):
 
     def CreateObject(self, request, context):
         """Creates an object that holds no data.
-
+        
         Objects form a tree, and an empty object is how you make a pure grouping
         node: parent several objects to it and they share its transform. There is
         no separate "group" type — anything can parent anything, so a mesh may
@@ -235,14 +235,14 @@ class SceneServiceServicer(object):
 
     def DeleteObject(self, request, context):
         """Removes one object from the scene.
-
+        
         Deletes exactly what is named, and nothing else. Every child survives it,
         in the way that suits what it is: a child object becomes a root, since its
         transform is a place it still occupies; a child actor is detached and
         stops being drawn, since its transform is only an offset from the object
         it was under. A detached actor keeps its arrays and settings and can be
         placed again with SetActor.
-
+        
         No arrays are freed either; ReleaseData is what does that, and RemoveActor
         is what destroys an actor.
         """
@@ -252,15 +252,18 @@ class SceneServiceServicer(object):
 
     def AddActor(self, request, context):
         """Draws something under an object.
-
+        
         Adds; it does not replace. An object may carry any number of actors at
         once — a protein as cartoon and as licorice, a mesh as surface and as
-        wireframe — and each is configured independently.
-
-        `parent` says where it appears, and an absent one is created for you.
-        *What* it draws is in `params`, as arrays bound to the inputs its kind
-        declares, so showing one array in two places is two actors binding it
-        under two parents.
+        wireframe — and each is configured independently. The reverse holds too:
+        one actor may be drawn under any number of objects.
+        
+        `parents` says where it appears — one object, several, or none named at
+        all, in which case one is created for you. *What* it draws is in `params`,
+        as arrays bound to the inputs its kind declares.
+        
+        Naming several objects is how one drawing appears in several places while
+        staying one actor: change it once and every copy changes.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -274,14 +277,16 @@ class SceneServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def RemoveActor(self, request, context):
-        """Removes one actor, leaving the object it was drawn under alone.
+        """Removes one actor, and every appearance of it, leaving the objects it was
+        drawn under alone.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def ListActors(self, request, context):
-        """Lists actors, optionally only those drawn under one object.
+        """Lists actors, optionally only those drawn under one object. An actor drawn
+        under several is one entry whichever way it is asked for.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -289,7 +294,7 @@ class SceneServiceServicer(object):
 
     def ListActorKinds(self, request, context):
         """Lists the ways of drawing this build actually supports.
-
+        
         Kinds are contributed by whichever rendering backends are compiled in
         rather than fixed by the schema, so a client that asks cannot offer a
         choice that silently does nothing — and needs no hardcoded table of its
@@ -378,18 +383,18 @@ def add_SceneServiceServicer_to_server(servicer, server):
 class SceneService(object):
     """SceneService is the whole surface of the iris3d scene: what is in it, where
     it sits, and how it is drawn.
-
+    
     Things are kept apart, and the splits are the reason the API looks the way it
     does.
-
+    
     **Data** is arrays and nothing more. UploadData takes them in and hands back a
     handle each; no object appears, nothing is drawn, and the name on an array is
     a label rather than a role. One array can feed several representations, and a
     representation can read arrays that arrived at different times, so tying data
     to the thing that draws it would be the wrong shape.
-
+    
     An **object** is a place in the tree and a name. It holds no data at all.
-
+    
     An **actor** is one way of drawing something, a thing in its own right with
     its own handle. It is a child of the object it appears under, and it binds the
     arrays it reads to the inputs its kind declares. Showing one array in two
@@ -397,20 +402,20 @@ class SceneService(object):
     actor to part of what it binds, which is what makes several worth having —
     one structure drawn as cartoon over its protein and as sticks over its
     ligand.
-
+    
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
     This keeps large uploads compact on the wire, keeps decoding cheap in every
     client language, and lets iris3d accept data in formats it will never
     implement a parser for: a client parses locally and pushes the arrays.
-
+    
     The same position is taken wherever a question could be answered on either
     side. Selections arrive as index or mask arrays rather than as a query
     language, because a client already holds the structure needed to express
     "chain A" far better than a grammar invented here could. And nothing is
     inferred from what an array is called: a representation declares the element
     types and shapes it accepts, and a client binds whatever it uploaded.
-
+    
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
     ListActorKinds rather than carrying a table that will go stale.

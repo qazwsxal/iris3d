@@ -281,7 +281,7 @@ class Subset(_message.Message):
     def __init__(self, data: _Optional[bytes] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ...) -> None: ...
 
 class ActorInfo(_message.Message):
-    __slots__ = ("handle", "kind", "parent", "params", "color", "visible", "subset")
+    __slots__ = ("handle", "kind", "params", "color", "visible", "subset", "parents")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -291,19 +291,19 @@ class ActorInfo(_message.Message):
         def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     KIND_FIELD_NUMBER: _ClassVar[int]
-    PARENT_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
+    PARENTS_FIELD_NUMBER: _ClassVar[int]
     handle: ActorHandle
     kind: str
-    parent: ObjectHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
     subset: SubsetInfo
-    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ...) -> None: ...
+    parents: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ..., parents: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
 
 class SubsetInfo(_message.Message):
     __slots__ = ("encoding", "association", "selected")
@@ -326,7 +326,7 @@ class ActorKindInfo(_message.Message):
     def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
 
 class AddActorRequest(_message.Message):
-    __slots__ = ("kind", "parent", "params", "color", "subset")
+    __slots__ = ("kind", "params", "color", "subset", "parents")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -335,16 +335,16 @@ class AddActorRequest(_message.Message):
         value: ParamValue
         def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
     KIND_FIELD_NUMBER: _ClassVar[int]
-    PARENT_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     COLOR_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
+    PARENTS_FIELD_NUMBER: _ClassVar[int]
     kind: str
-    parent: ObjectHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     subset: Subset
-    def __init__(self, kind: _Optional[str] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ...) -> None: ...
+    parents: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
+    def __init__(self, kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., parents: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
 
 class AddActorResponse(_message.Message):
     __slots__ = ("actor",)
@@ -353,7 +353,7 @@ class AddActorResponse(_message.Message):
     def __init__(self, actor: _Optional[_Union[ActorInfo, _Mapping]] = ...) -> None: ...
 
 class SetActorRequest(_message.Message):
-    __slots__ = ("handle", "params", "color", "visible", "subset", "clear_subset", "parent")
+    __slots__ = ("handle", "params", "color", "visible", "subset", "clear_subset", "parents")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -367,15 +367,21 @@ class SetActorRequest(_message.Message):
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
     SUBSET_FIELD_NUMBER: _ClassVar[int]
     CLEAR_SUBSET_FIELD_NUMBER: _ClassVar[int]
-    PARENT_FIELD_NUMBER: _ClassVar[int]
+    PARENTS_FIELD_NUMBER: _ClassVar[int]
     handle: ActorHandle
     params: _containers.MessageMap[str, ParamValue]
     color: ColorSpec
     visible: bool
     subset: Subset
     clear_subset: bool
-    parent: ObjectHandle
-    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
+    parents: ObjectHandles
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., color: _Optional[_Union[ColorSpec, _Mapping]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ..., parents: _Optional[_Union[ObjectHandles, _Mapping]] = ...) -> None: ...
+
+class ObjectHandles(_message.Message):
+    __slots__ = ("handles",)
+    HANDLES_FIELD_NUMBER: _ClassVar[int]
+    handles: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
+    def __init__(self, handles: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
 
 class SetActorResponse(_message.Message):
     __slots__ = ("actor",)

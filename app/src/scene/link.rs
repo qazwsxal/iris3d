@@ -1,35 +1,90 @@
-//! Where an actor sits.
+//! Where an actor is drawn, which may be several places at once.
+//!
+//! An actor used to *be* its placement: one entity, child of one object,
+//! carrying the mesh. That made "what it draws" and "where it is drawn" the
+//! same entity, and `ChildOf` holds one parent, so an actor could only ever
+//! appear once.
+//!
+//! They are separate now. The actor entity holds the definition — its kind, its
+//! parameters, its bindings — and owns the mesh and material assets a backend
+//! builds for it. It is not in the tree and it never renders. A [`Placement`]
+//! entity per parent is a child of an object and carries *clones of those
+//! handles*, which is what puts one drawing in several places for the cost of
+//! one mesh.
+//!
+//! Sharing the handles rather than the geometry is the whole point. A backend
+//! rebuilds into the asset it already owns, so one rebuild updates every
+//! placement, and editing an actor edits every copy of it at once. Two actors
+//! binding the same array can do neither: they are two definitions, changed one
+//! at a time.
 //!
 //! There used to be a second link, `ActorOf`, naming the object whose *data* an
-//! actor drew — separate from `ChildOf`, which named where it was placed. The
-//! split existed so two scene nodes could draw a single dataset: point the two
-//! links at different objects, take the data from one and the placement from
-//! the other.
-//!
-//! Binding does that better. An actor names the arrays it reads, so drawing one
-//! dataset in two places is two actors binding the same array under two
-//! parents — and it works per array rather than per object, which the old link
-//! could not express at all. What was left of `ActorOf` was a lifetime and
-//! grouping edge wearing a name that said data.
-//!
-//! So an actor is now simply a child of the object it is drawn under. That is
-//! placement and grouping only — not lifetime. Deleting an object detaches its
-//! actors rather than destroying them, because an actor is defined by the
-//! arrays it binds and those outlive every node in the tree. `RemoveActor` is
-//! what ends an actor, and `SetActor`'s `parent` is what places one again.
+//! actor drew, separate from `ChildOf`, which named where it was placed. This
+//! is what that was reaching for and could not express — it gave an actor one
+//! data source and one place, where the split here gives it any number of
+//! places and, through binding, any number of arrays.
 
+use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
 
 use crate::counter::{GlobalIDCounter, UniqueID};
 
-use super::Subset;
+use super::{SceneObject, Subset};
 
-/// Spawns an actor under `parent`.
+/// The objects an actor is drawn under.
 ///
-/// `Transform` and `Visibility` make the entity a full participant in the
-/// hierarchy, so it inherits its parent's placement and visibility. Bevy's
-/// `Mesh3d` requires `Transform` but *not* `Visibility`, so a backend that only
-/// added `Mesh3d` would leave an entity the visibility systems never collect.
+/// A set in meaning if not in type: an actor is either drawn under an object or
+/// it is not, and a repeat would stack two identical meshes in one place.
+/// Empty is allowed and draws nothing — the state deleting the last object an
+/// actor was under leaves it in.
+#[derive(Component, Debug, Default, Clone, PartialEq, Eq)]
+pub struct Parents(pub Vec<Entity>);
+
+/// One appearance of an actor, under one object.
+///
+/// A child of that object, so it inherits the transform and visibility, and it
+/// carries copies of the actor's mesh and material handles. Nothing else: no
+/// parameters, no bindings, no handle of its own. It is not addressable from
+/// outside either — an object is what a client places and an actor is what it
+/// configures, which leaves a placement nothing to own. Two copies somewhere
+/// different is two objects.
+#[derive(Component, Debug, Clone, Copy)]
+#[relationship(relationship_target = Placements)]
+pub struct Placement(pub Entity);
+
+/// An actor's placements, maintained by Bevy.
+///
+/// `linked_spawn`, unlike the `Actors` list this replaced: a placement is a
+/// copy of one actor and means nothing without it, so removing an actor takes
+/// its placements with it. The other direction is Bevy's ordinary recursive
+/// despawn — a placement is a child of its object, so deleting the object
+/// takes it, and [`sync_placements`] then drops the dead parent.
+#[derive(Component, Debug, Default, Deref)]
+#[relationship_target(relationship = Placement, linked_spawn)]
+pub struct Placements(Vec<Entity>);
+
+/// Whether the client asked for this actor to be drawn.
+///
+/// A plain flag rather than a `Visibility`, because the actor entity must not
+/// have one. `Mesh3d` requires `Transform` but *not* `Visibility`, so an entity
+/// holding a mesh and no `Visibility` is never collected by the visibility
+/// systems and never renders — which is exactly what an actor has to be, the
+/// owner of the assets, on screen only through its placements. Storing this
+/// setting in a `Visibility` would put it back on screen at the origin.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shown(pub bool);
+
+impl Default for Shown {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// Spawns an actor to be drawn under `parents`.
+///
+/// No `Visibility` and no `Transform`, deliberately: see [`Shown`], and an
+/// actor has no placement of its own for a transform to mean anything about.
+/// `Mesh3d` brings a `Transform` when a backend draws, which goes unread.
 ///
 /// `subset` is a parameter rather than something the caller folds into `extra`
 /// because every backend queries one, so it cannot be optional — and a bundle
@@ -37,22 +92,74 @@ use super::Subset;
 pub fn spawn_actor(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
-    parent: Entity,
+    parents: Vec<Entity>,
     subset: Subset,
     extra: impl Bundle,
 ) -> (u64, Entity) {
     let id = counter.next();
     let entity = commands
-        .spawn((
-            ChildOf(parent),
-            UniqueID(id),
-            subset,
-            Transform::default(),
-            Visibility::default(),
-            extra,
-        ))
+        .spawn((UniqueID(id), subset, Parents(parents), Shown(true), extra))
         .id();
     (id, entity)
+}
+
+/// Makes each actor's placements match the parents it names.
+///
+/// Every frame rather than only on change, because a parent can also stop
+/// existing: deleting an object despawns the placements under it, and this is
+/// what notices and drops the entry so nothing tries to rebuild them.
+///
+/// Adds and removes rather than rebuilding the set. A placement's mesh handle
+/// is written by whichever backend owns the actor, so respawning them each
+/// frame would throw that away and flicker.
+pub fn sync_placements(
+    mut commands: Commands,
+    mut actors: Query<(Entity, &mut Parents, Option<&Placements>)>,
+    parent_of: Query<&ChildOf, With<Placement>>,
+    objects: Query<(), With<SceneObject>>,
+) {
+    for (actor, mut parents, placements) in &mut actors {
+        // An object that has been deleted is not a parent any more. Asked of
+        // the objects query rather than of entity liveness, so an entity that
+        // is alive but not an object is dropped just as surely.
+        if parents.0.iter().any(|parent| !objects.contains(*parent)) {
+            parents.0.retain(|parent| objects.contains(*parent));
+        }
+
+        let wanted: HashSet<Entity> = parents.0.iter().copied().collect();
+        let mut held: HashSet<Entity> = HashSet::new();
+        for placement in placements.into_iter().flat_map(|list| list.iter()) {
+            // A placement whose object was despawned is already gone; what is
+            // left here is one under an object the actor no longer names.
+            match parent_of.get(placement).map(|link| link.parent()) {
+                Ok(parent) if wanted.contains(&parent) => {
+                    held.insert(parent);
+                }
+                _ => commands.entity(placement).despawn(),
+            }
+        }
+        for parent in wanted.difference(&held) {
+            commands.spawn((Placement(actor), ChildOf(*parent), Visibility::default()));
+        }
+    }
+}
+
+/// Hides or shows every placement of an actor together.
+///
+/// The setting belongs to the actor — a client asked for *this drawing* to be
+/// hidden, not for one copy of it — so it is applied to all of them.
+pub fn apply_shown(actors: Query<&Shown>, mut placements: Query<(&Placement, &mut Visibility)>) {
+    for (placement, mut visibility) in &mut placements {
+        let wanted = match actors.get(placement.0) {
+            Ok(Shown(true)) => Visibility::Inherited,
+            // An actor mid-despawn takes its placements with it; hiding them
+            // first costs nothing and avoids a frame of orphaned geometry.
+            _ => Visibility::Hidden,
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -60,34 +167,156 @@ mod tests {
     use super::*;
     use crate::scene::registry::ActorKindId;
 
-    /// An actor spawns as a child, so it inherits the object's placement and
-    /// visibility. That is all the link is for — `delete_object` detaches
-    /// rather than cascading, so the hierarchy does not own an actor's
-    /// lifetime; see `an_actor_outlives_the_object_it_was_drawn_under`.
-    #[test]
-    fn an_actor_is_spawned_as_a_child_of_its_object() {
+    fn app() -> App {
         let mut app = App::new();
-        let mut counter = GlobalIDCounter::default();
+        app.add_systems(Update, (sync_placements, apply_shown).chain());
+        app
+    }
 
-        let object = app.world_mut().spawn_empty().id();
+    fn object(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((
+                SceneObject { name: "o".into() },
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id()
+    }
+
+    fn actor(app: &mut App, parents: Vec<Entity>) -> Entity {
+        let mut counter = GlobalIDCounter::default();
         let mut commands = app.world_mut().commands();
-        let (_, actor) = spawn_actor(
+        let (_, entity) = spawn_actor(
             &mut commands,
             &mut counter,
-            object,
+            parents,
             Subset::All,
             ActorKindId("surface"),
         );
         app.world_mut().flush();
+        entity
+    }
+
+    /// Which objects an actor currently appears under.
+    fn placed_under(app: &mut App, actor: Entity) -> Vec<Entity> {
+        let mut found: Vec<Entity> = app
+            .world_mut()
+            .query::<(&Placement, &ChildOf)>()
+            .iter(app.world())
+            .filter(|(placement, _)| placement.0 == actor)
+            .map(|(_, link)| link.parent())
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// The actor itself must never be collected for rendering. Everything it
+    /// draws goes through a placement, and an actor that rendered on its own
+    /// would put a copy at the origin belonging to no object.
+    #[test]
+    fn an_actor_carries_no_visibility_of_its_own() {
+        let mut app = app();
+        let object = object(&mut app);
+        let actor = actor(&mut app, vec![object]);
+        app.update();
+
+        assert!(
+            app.world().get::<Visibility>(actor).is_none(),
+            "an actor with a Visibility is an actor that renders"
+        );
+        assert_eq!(app.world().get::<Shown>(actor), Some(&Shown(true)));
+    }
+
+    /// One actor, two objects, two placements. The point of the split.
+    #[test]
+    fn an_actor_is_placed_under_every_parent_it_names() {
+        let mut app = app();
+        let (first, second) = (object(&mut app), object(&mut app));
+        let actor = actor(&mut app, vec![first, second]);
+        app.update();
+
+        let mut wanted = vec![first, second];
+        wanted.sort();
+        assert_eq!(placed_under(&mut app, actor), wanted);
+    }
+
+    /// Dropping a parent costs that placement and leaves the others alone.
+    #[test]
+    fn dropping_a_parent_removes_only_that_placement() {
+        let mut app = app();
+        let (kept, dropped) = (object(&mut app), object(&mut app));
+        let actor = actor(&mut app, vec![kept, dropped]);
+        app.update();
+
+        app.world_mut()
+            .entity_mut(actor)
+            .insert(Parents(vec![kept]));
+        app.update();
+
+        assert_eq!(placed_under(&mut app, actor), vec![kept]);
+    }
+
+    /// Losing an object costs the actor that placement and nothing else.
+    ///
+    /// This is what replaced parking a parentless actor under a hidden node:
+    /// with the mesh on the placements, an actor with none simply draws
+    /// nowhere, and needs nothing to arrange that.
+    #[test]
+    fn deleting_an_object_costs_the_actor_only_that_placement() {
+        let mut app = app();
+        let (kept, doomed) = (object(&mut app), object(&mut app));
+        let actor = actor(&mut app, vec![kept, doomed]);
+        app.update();
+
+        app.world_mut().entity_mut(doomed).despawn();
+        app.update();
+
+        assert_eq!(placed_under(&mut app, actor), vec![kept]);
+        assert!(
+            app.world().get_entity(actor).is_ok(),
+            "the actor outlives the object it was drawn under"
+        );
+        assert_eq!(
+            app.world().get::<Parents>(actor),
+            Some(&Parents(vec![kept])),
+            "and stops claiming a parent that no longer exists"
+        );
+    }
+
+    /// An actor under nothing is not drawn, and needs no special state to
+    /// arrange it: there is no placement, so there is nothing on screen.
+    #[test]
+    fn an_actor_under_no_object_has_no_placements() {
+        let mut app = app();
+        let object = object(&mut app);
+        let actor = actor(&mut app, vec![object]);
+        app.update();
+
+        app.world_mut().entity_mut(actor).insert(Parents(vec![]));
+        app.update();
+
+        assert!(placed_under(&mut app, actor).is_empty());
+        assert!(app.world().get_entity(actor).is_ok());
+    }
+
+    /// Removing an actor takes every copy of it.
+    #[test]
+    fn removing_an_actor_takes_its_placements() {
+        let mut app = app();
+        let (first, second) = (object(&mut app), object(&mut app));
+        let actor = actor(&mut app, vec![first, second]);
+        app.update();
+
+        app.world_mut().entity_mut(actor).despawn();
+        app.update();
 
         assert_eq!(
-            app.world().get::<ChildOf>(actor).map(|link| link.parent()),
-            Some(object),
-            "an actor has to be a child, or it inherits no transform"
-        );
-        assert!(
-            app.world().get::<Visibility>(actor).is_some(),
-            "without Visibility the visibility systems never collect it"
+            app.world_mut()
+                .query::<&Placement>()
+                .iter(app.world())
+                .len(),
+            0,
+            "a placement is a copy of an actor and means nothing without it"
         );
     }
 }

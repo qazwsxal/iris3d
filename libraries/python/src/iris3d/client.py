@@ -8,7 +8,7 @@ should end up looking much the same.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import grpc
@@ -34,6 +34,7 @@ from .v1.scene_pb2 import (
     ListDataRequest,
     ListObjectsRequest,
     ObjectHandle,
+    ObjectHandles,
     ObjectInfo,
     ParamValue,
     Quaternion,
@@ -49,6 +50,11 @@ from .v1.scene_pb2 import (
     VectorValue,
 )
 from .v1.scene_pb2_grpc import SceneServiceStub
+
+
+def _maybe(handle: int | None) -> tuple[int, ...]:
+    """One handle as a sequence, or none at all."""
+    return () if handle is None else (handle,)
 
 DEFAULT_ADDRESS = "[::1]:50051"
 
@@ -199,12 +205,12 @@ class ActorSummary:
     handle: int
     #: Registered kind id, e.g. "points" or "ball-and-stick".
     kind: str
-    #: Handle of the object it is drawn under, or None if it is detached —
-    #: where deleting that object leaves it. An actor's transform is an offset
-    #: from whatever it is drawn under, so with no object there is nowhere for
-    #: it to be and it is not drawn at all. It keeps its arrays and settings
-    #: until ``set_actor(handle, parent=...)`` places it again.
-    parent: int | None
+    #: Handles of every object it is drawn under, in order. Several means one
+    #: drawing appearing in several places — one mesh, one set of settings, and
+    #: every copy changes together. Empty draws nothing, which is where
+    #: deleting the last object it was under leaves it; the actor is untouched
+    #: and ``set_actor(handle, parents=[...])`` puts it back on screen.
+    parents: tuple[int, ...]
     #: Complete and in range, whatever was sent to produce it.
     params: dict[str, float | bool]
     coloring: Coloring
@@ -390,7 +396,7 @@ def _actor(info: ActorInfo) -> ActorSummary:
     return ActorSummary(
         handle=info.handle.id,
         kind=info.kind,
-        parent=info.parent.id if info.HasField("parent") else None,
+        parents=tuple(handle.id for handle in info.parents),
         params={key: _read_param(value) for key, value in info.params.items()},
         coloring=_coloring(info.color),
         visible=info.visible,
@@ -727,6 +733,7 @@ class Client:
         kind: str,
         *,
         parent: int | None = None,
+        parents: Sequence[int] | None = None,
         params: Mapping[str, float | bool | str] | None = None,
         coloring: Coloring | None = None,
         subset: np.ndarray | None = None,
@@ -739,24 +746,30 @@ class Client:
 
         ``parent`` is where it appears — whose transform it inherits. Leave it
         out and an object is created to hold this actor, named after its kind;
-        the handle comes back as ``.parent``. An actor has no place of its own,
-        so it always ends up under something::
+        the handle comes back as ``.parents[0]``. An actor has no place of its
+        own, so it always ends up under something::
 
             data = client.upload_data({"xyz": positions})
             actor = client.add_actor("points",
                                      params={"positions": Bind(data["xyz"])})
-            client.set_transform(actor.parent, translation=(10, 0, 0))
+            client.set_transform(actor.parents[0], translation=(10, 0, 0))
 
-        *What* it draws is in ``params``, as :class:`Bind` values against the
-        inputs its kind declares. Showing one array in two places is two actors
-        binding it under two parents::
+        ``parents`` draws this one actor under each of several objects at
+        once. It stays one actor — one mesh, one set of settings — so changing
+        it changes every copy::
 
             here = client.create_object("here")
             there = client.create_object("there")
             client.set_transform(there, translation=(10, 0, 0))
-            for where in (here, there):
-                client.add_actor("points", parent=where,
-                                 params={"positions": Bind(data["xyz"])})
+            actor = client.add_actor("points", parents=[here, there],
+                                     params={"positions": Bind(data["xyz"])})
+            client.set_actor(actor.handle, {"size": 0.2})   # both of them
+
+        Two actors binding the same array is the other thing: two drawings that
+        happen to look alike, each configured on its own.
+
+        *What* it draws is in ``params``, as :class:`Bind` values against the
+        inputs its kind declares.
 
         Parameters left out take the kind's default, not the value some other
         actor happens to have.
@@ -775,9 +788,13 @@ class Client:
         when both its atoms do, so a cut leaves a clean boundary rather than
         stretched or dangling geometry.
         """
+        if parent is not None and parents is not None:
+            raise ValueError("pass parent or parents, not both")
         request = AddActorRequest(kind=kind, params=_params(params))
-        if parent is not None:
-            request.parent.CopyFrom(ObjectHandle(id=parent))
+        # One spelling on the wire. `parent` is the singular convenience, kept
+        # because drawing in one place is much the commoner case.
+        for handle in (parents if parents is not None else _maybe(parent)):
+            request.parents.append(ObjectHandle(id=handle))
         if coloring is not None:
             request.color.CopyFrom(_color_spec(coloring))
         if subset is not None:
@@ -795,6 +812,7 @@ class Client:
         per_cell: bool = False,
         clear_subset: bool = False,
         parent: int | None = None,
+        parents: Sequence[int] | None = None,
     ) -> ActorSummary:
         """Changes an actor, leaving anything unnamed alone.
 
@@ -810,10 +828,13 @@ class Client:
         goes back to drawing the whole dataset. The two are separate because
         "unchanged" and "cleared" both have to be expressible.
 
-        ``parent`` moves the actor under another object, and is how a detached
-        one — an actor whose object was deleted — starts being drawn again. The
-        actor's transform is left alone, so it appears wherever that offset
-        puts it under its new object.
+        ``parent`` moves the actor under one object, and ``parents`` replaces
+        the whole set of objects it is drawn under — which both adds an
+        appearance and takes one away. ``parents=[]`` takes it off screen
+        without removing it. Passing neither leaves the placements alone.
+
+        This is how an actor that lost its last object is drawn again, and how
+        one drawing is put in several places at once.
         """
         if subset is not None and clear_subset:
             raise ValueError("pass a subset or clear_subset, not both")
@@ -829,8 +850,13 @@ class Client:
             request.visible = visible
         if subset is not None:
             request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
-        if parent is not None:
-            request.parent.CopyFrom(ObjectHandle(id=parent))
+        if parent is not None and parents is not None:
+            raise ValueError("pass parent or parents, not both")
+        if parent is not None or parents is not None:
+            wanted = parents if parents is not None else _maybe(parent)
+            request.parents.CopyFrom(
+                ObjectHandles(handles=[ObjectHandle(id=handle) for handle in wanted])
+            )
         return _actor(self._scene.SetActor(request).actor)
 
     def remove_actor(self, handle: int) -> bool:

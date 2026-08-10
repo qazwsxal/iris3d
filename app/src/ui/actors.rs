@@ -46,20 +46,21 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
                 heading.weak()
             });
             for actor in &row.actors {
-                entry(ui, actor, state, actions);
+                entry(ui, actor, Some(row), state, actions);
             }
         });
     }
 
-    // Actors whose object was deleted. Grouped on their own because they belong
-    // to nothing and are not drawn — leaving them out would make them
-    // unreachable, with nothing on screen to say they still exist.
+    // Actors drawn under nothing, usually because the last object they were
+    // under was deleted. Grouped on their own because they are in no object's
+    // list — leaving them out would make them unreachable, with nothing on
+    // screen to say they still exist.
     if !scene.detached.is_empty() {
         drew_anything = true;
         egui::Frame::new().inner_margin(4.0).show(ui, |ui| {
             ui.label(egui::RichText::new("Detached — not drawn").weak().italics());
             for actor in &scene.detached {
-                entry(ui, actor, state, actions);
+                entry(ui, actor, None, state, actions);
             }
         });
     }
@@ -70,14 +71,26 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
 }
 
 /// One clickable row in the list.
-fn entry(ui: &mut egui::Ui, actor: &ActorRow, state: &UiState, actions: &mut PendingActions) {
+///
+/// `under` is the object whose group this row is in, which is what the click
+/// selects alongside the actor. One actor drawn under several objects has a row
+/// in each of their groups, and they differ only in this.
+fn entry(
+    ui: &mut egui::Ui,
+    actor: &ActorRow,
+    under: Option<&Row>,
+    state: &UiState,
+    actions: &mut PendingActions,
+) {
     ui.horizontal(|ui| {
         let picked = state.selected_actor == Some(actor.entity);
         if ui
             .selectable_label(picked, format!("[{}] {}", actor.id, actor.label))
             .clicked()
         {
-            actions.0.push(UiAction::SelectActor(actor.entity));
+            actions
+                .0
+                .push(UiAction::SelectActor(actor.entity, under.map(|r| r.entity)));
         }
         // Worth saying outright: two identical-looking rows over one object are
         // otherwise indistinguishable when what differs is which part of the
@@ -147,11 +160,16 @@ fn controls(
         ui.heading(current.label);
         match row {
             Some(row) => ui.weak(format!("of [{}] {}", row.id, row.name)),
-            // It has nowhere to be, so it is not drawn until something adopts
-            // it. Worth saying outright — otherwise its controls look broken.
-            None => ui.weak("detached — under no object, not drawn"),
+            // Nowhere to be drawn, so nothing is on screen. Worth saying
+            // outright — otherwise these controls look broken.
+            None => ui.weak("under no object — not drawn"),
         };
     });
+    // One actor, several places. Every control below changes all of them at
+    // once, which is the reason to draw it this way rather than as two actors.
+    if current.places > 1 {
+        ui.weak(format!("drawn under {} objects", current.places));
+    }
     ui.horizontal(|ui| {
         if matches!(current.subset, Subset::Selected { .. }) {
             ui.label(egui::RichText::new("subset").weak());

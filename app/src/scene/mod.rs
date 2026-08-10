@@ -39,6 +39,7 @@ pub mod subset;
 // module path — this is a binary crate, so unused re-exports are just noise.
 pub use actor::ColorBy;
 pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedBuffer};
+pub use link::{Parents, Placement, Shown};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
 pub use subset::{Subset, SubsetEncoding};
 
@@ -52,44 +53,20 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<DataArray>()
             .init_resource::<DataStore>()
-            .add_systems(Startup, spawn_unplaced)
             .add_systems(
                 Update,
-                // Order matters: the drain creates actors, and only then are
-                // style components and bindings derived from the parameters it
-                // wrote.
-                (apply_scene_commands, registry::apply_actor_params).chain(),
+                // Order matters: the drain creates actors, style components and
+                // bindings are derived from the parameters it wrote, and the
+                // placements follow the parents it set.
+                (
+                    apply_scene_commands,
+                    registry::apply_actor_params,
+                    link::sync_placements,
+                    link::apply_shown,
+                )
+                    .chain(),
             );
     }
-}
-
-/// Where actors go when they have no object.
-///
-/// A hidden node, and the parent of every detached actor. Deleting an object
-/// leaves its actors alive, and an actor with no object has nowhere to *be* —
-/// its transform is an offset from whatever it is drawn under, not a place of
-/// its own, so drawing one at that offset from the origin would put it
-/// somewhere arbitrary. It must not draw at all until something adopts it.
-///
-/// A parent rather than writing `Visibility::Hidden` onto the actor itself.
-/// That component is the client's own setting, reported back as
-/// `ActorSummary::visible` and written by `SetActor`; overwriting it would both
-/// destroy what the client asked for and let the next `SetActor { visible:
-/// true }` put an unplaced actor back on screen. Inherited from here, the rule
-/// cannot be broken by any command, and re-attaching restores exactly the
-/// visibility the client last chose.
-#[derive(Resource, Debug, Clone, Copy)]
-pub struct Unplaced(pub Entity);
-
-fn spawn_unplaced(mut commands: Commands) {
-    let entity = commands
-        .spawn((
-            Name::new("unplaced actors"),
-            Transform::default(),
-            Visibility::Hidden,
-        ))
-        .id();
-    commands.insert_resource(Unplaced(entity));
 }
 
 /// A place in the scene tree, and a name for it.
@@ -133,10 +110,13 @@ pub struct ActorSummary {
     pub id: u64,
     /// Registered kind id — see [`ActorRegistry`].
     pub kind: String,
-    /// The object it is drawn under, or `None` if it is detached — which is
-    /// where deleting that object leaves it, drawing at its own transform
-    /// until something attaches it again.
-    pub parent: Option<u64>,
+    /// Every object it is drawn under, in handle order.
+    ///
+    /// Any number, including none. One actor under several objects is one
+    /// drawing appearing in several places — changed once, changed everywhere
+    /// — and an empty list draws nothing, which is where deleting the last
+    /// object it was under leaves it.
+    pub parents: Vec<u64>,
     pub params: registry::ParamMap,
     pub colour: ColorBy,
     pub visible: bool,
@@ -286,10 +266,10 @@ pub enum SceneCommand {
 
     /// Draws something under an object. Adds; never replaces.
     AddActor {
-        /// The object to draw under, whose transform it inherits. `None` makes
-        /// one, since an actor has no place of its own. *What* it draws is in
-        /// `params`, as bindings.
-        parent: Option<u64>,
+        /// The objects to draw under, whose transforms it inherits. Empty
+        /// makes one, since an actor has no place of its own. *What* it draws
+        /// is in `params`, as bindings.
+        parents: Vec<u64>,
         /// Which registered kind draws it. Named by the caller, always: the
         /// server has no opinion on how a dataset should look.
         kind: String,
@@ -314,9 +294,9 @@ pub enum SceneCommand {
         /// drawing everything. Absent and cleared have to be distinguishable,
         /// which is what the nesting buys.
         subset: Option<Option<subset::SubsetRequest>>,
-        /// Move it under another object. `None` leaves it where it is —
-        /// including detached, which is where a deleted parent leaves it.
-        parent: Option<u64>,
+        /// Replace the set of objects it is drawn under. `None` leaves them
+        /// alone; `Some(vec![])` takes it off screen without removing it.
+        parents: Option<Vec<u64>>,
         reply: oneshot::Sender<Result<ActorSummary, SceneError>>,
     },
     RemoveActor {
@@ -345,9 +325,9 @@ pub struct Deleted {
 
 /// Read-only view of the objects in the scene.
 ///
-/// An object's actors are its children that an [`ActorQuery`] matches — the
-/// rest of its children are nested objects. One list, told apart by what the
-/// entity carries, since an actor is a plain child now.
+/// An object's children are placements and nested objects, told apart by what
+/// each entity carries. An actor is no longer among them — a placement is a
+/// copy of one, and the actor itself sits outside the tree.
 type Objects<'w, 's> = Query<'w, 's, (Entity, &'static UniqueID, &'static SceneObject)>;
 
 /// Mutable view of the actor entities.
@@ -364,9 +344,9 @@ type ActorQuery<'w, 's> = Query<
         &'static ActorKindId,
         &'static mut ActorParams,
         &'static mut ColorBy,
-        &'static mut Visibility,
+        &'static mut Shown,
         &'static mut Subset,
-        Option<&'static ChildOf>,
+        &'static mut Parents,
     ),
     With<ActorKindId>,
 >;
@@ -378,9 +358,9 @@ type ActorItem<'a> = (
     &'a ActorKindId,
     &'a ActorParams,
     &'a ColorBy,
-    &'a Visibility,
+    &'a Shown,
     &'a Subset,
-    Option<&'a ChildOf>,
+    &'a Parents,
 );
 
 /// Drains commands submitted from outside the ECS and applies them to the
@@ -409,8 +389,8 @@ pub fn apply_scene_commands(
     child_of: Query<&ChildOf>,
     globals: Query<&GlobalTransform>,
     mut actors: ActorQuery,
+    placements: Query<&Placement>,
     mut awake: ResMut<KeepAwake>,
-    unplaced: Res<Unplaced>,
 ) {
     let batch: Vec<SceneCommand> = std::iter::from_fn(|| bridge.try_recv().ok()).collect();
     if batch.is_empty() {
@@ -542,19 +522,18 @@ pub fn apply_scene_commands(
                 let mut listing: Vec<ObjectSummary> = objects
                     .iter()
                     .map(|(entity, id, object)| {
-                        // An object's actors are the children the actor query
-                        // matches; the rest of its children are nested objects.
+                        // What is drawn here are the placements among its
+                        // children, each standing for an actor; the rest of its
+                        // children are nested objects. An actor under several
+                        // objects is reported under each of them, which is the
+                        // truth — it is one actor, appearing in several places.
                         let drawn = children
                             .get(entity)
                             .into_iter()
                             .flat_map(|list| list.iter())
                             .filter_map(|child| {
-                                summarise_actor(
-                                    actors.get(child).ok()?,
-                                    &pending_parent,
-                                    &ids,
-                                    &arrays,
-                                )
+                                let actor = placements.get(child).ok()?.0;
+                                summarise_actor(actors.get(actor).ok()?, &ids, &arrays)
                             })
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -572,7 +551,6 @@ pub fn apply_scene_commands(
                     &mut commands,
                     &mut index,
                     &mut pending_parent,
-                    unplaced.0,
                     &objects,
                     &children,
                     id,
@@ -582,7 +560,7 @@ pub fn apply_scene_commands(
 
             SceneCommand::AddActor {
                 kind,
-                parent,
+                parents,
                 params,
                 colour,
                 subset,
@@ -594,7 +572,7 @@ pub fn apply_scene_commands(
                     &registry,
                     &mut index,
                     &mut drawn,
-                    parent,
+                    parents,
                     kind,
                     params,
                     colour,
@@ -611,15 +589,13 @@ pub fn apply_scene_commands(
                 colour,
                 visible,
                 subset,
-                parent,
+                parents,
                 reply,
             } => {
                 let result = set_actor(
-                    &mut commands,
                     &registry,
                     &drawn,
                     &index,
-                    &mut pending_parent,
                     &mut actors,
                     &ids,
                     &mut arrays,
@@ -628,7 +604,7 @@ pub fn apply_scene_commands(
                     colour,
                     visible,
                     subset,
-                    parent,
+                    parents,
                 );
                 let _ = reply.send(result);
             }
@@ -663,11 +639,8 @@ pub fn apply_scene_commands(
                     // Filtered on where an actor is drawn. It used to filter on
                     // whose data it read, which is no longer a thing an actor
                     // has — it reads arrays, and any number of them.
-                    .filter(|item| {
-                        filter
-                            .is_none_or(|object| item.7.is_some_and(|link| link.parent() == object))
-                    })
-                    .filter_map(|item| summarise_actor(item, &pending_parent, &ids, &arrays))
+                    .filter(|item| filter.is_none_or(|object| item.7.0.contains(&object)))
+                    .filter_map(|item| summarise_actor(item, &ids, &arrays))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
                 let _ = reply.send(Ok(listing));
@@ -729,12 +702,15 @@ fn check_bindings(
     Ok(())
 }
 
-/// Adds a way of drawing, at a place in the tree.
+/// Adds a way of drawing, at any number of places in the tree.
 ///
-/// `parent` may be `None`, in which case an object is made to hold this actor.
-/// An actor has no place of its own, so it always ends up under one — and a
-/// caller with nothing to group it under would otherwise open every single
-/// drawing with the same `CreateObject` call.
+/// `parents` may be empty, in which case an object is made to hold this actor.
+/// An actor has no place of its own, so it needs at least one — and a caller
+/// with nothing to group it under would otherwise open every single drawing
+/// with the same `CreateObject` call.
+///
+/// Naming several draws one actor in several places. It stays one actor: one
+/// mesh, one set of parameters, and every copy changes together.
 #[allow(clippy::too_many_arguments)]
 fn add_actor(
     commands: &mut Commands,
@@ -742,7 +718,7 @@ fn add_actor(
     registry: &ActorRegistry,
     index: &mut HashMap<u64, Entity>,
     drawn: &mut HashMap<u64, Entity>,
-    parent: Option<u64>,
+    parents: Vec<u64>,
     kind: String,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
@@ -751,9 +727,16 @@ fn add_actor(
     store: &DataStore,
 ) -> Result<ActorSummary, SceneError> {
     // Resolved before anything is created, so a bad handle builds nothing.
-    let named_parent = parent
-        .map(|id| index.get(&id).copied().ok_or(SceneError::NoSuchObject(id)))
-        .transpose()?;
+    let named: Vec<(u64, Entity)> = parents
+        .into_iter()
+        .map(|id| {
+            index
+                .get(&id)
+                .copied()
+                .map(|entity| (id, entity))
+                .ok_or(SceneError::NoSuchObject(id))
+        })
+        .collect::<Result<_, _>>()?;
 
     // The caller names the kind. There is no default to fall back on: which
     // representation suits some data is a judgement, and the server has no
@@ -791,19 +774,20 @@ fn add_actor(
 
     // Only now, with every reason to refuse behind us. Creating the object any
     // earlier would leave an empty one behind whenever an actor is rejected.
-    let (parent, parent_entity) = match named_parent {
-        Some(entity) => (parent.expect("a named parent came from a handle"), entity),
-        None => {
+    let placed = match named.is_empty() {
+        false => named,
+        true => {
             let name = registered.label.to_string();
             let (id, _) = spawn_object(commands, counter, index, SceneObject { name });
-            (id, index[&id])
+            vec![(id, index[&id])]
         }
     };
+    let (parents, entities): (Vec<u64>, Vec<Entity>) = placed.into_iter().unzip();
 
     let (id, entity) = link::spawn_actor(
         commands,
         counter,
-        parent_entity,
+        entities,
         subset,
         (
             ActorKindId(registered.id),
@@ -814,14 +798,14 @@ fn add_actor(
     drawn.insert(id, entity);
 
     info!(
-        "scene: actor {id} draws {} under object {parent}",
+        "scene: actor {id} draws {} under object(s) {parents:?}",
         registered.id
     );
 
     Ok(ActorSummary {
         id,
         kind: registered.id.to_string(),
-        parent: Some(parent),
+        parents,
         params,
         colour,
         visible: true,
@@ -832,11 +816,9 @@ fn add_actor(
 /// Changes an existing actor, leaving anything unnamed alone.
 #[allow(clippy::too_many_arguments)]
 fn set_actor(
-    commands: &mut Commands,
     registry: &ActorRegistry,
     drawn: &HashMap<u64, Entity>,
     index: &HashMap<u64, Entity>,
-    pending_parent: &mut HashMap<Entity, Option<Entity>>,
     actors: &mut ActorQuery,
     ids: &Query<&UniqueID>,
     arrays: &mut Assets<DataArray>,
@@ -845,13 +827,18 @@ fn set_actor(
     colour: Option<ColorBy>,
     visible: Option<bool>,
     subset: Option<Option<subset::SubsetRequest>>,
-    parent: Option<u64>,
+    parents: Option<Vec<u64>>,
 ) -> Result<ActorSummary, SceneError> {
     let entity = *drawn.get(&id).ok_or(SceneError::NoSuchActor(id))?;
 
     // Resolved before anything is written, so a bad handle changes nothing.
-    let moving_to = parent
-        .map(|id| index.get(&id).copied().ok_or(SceneError::NoSuchObject(id)))
+    let moving_to = parents
+        .map(|wanted| {
+            wanted
+                .into_iter()
+                .map(|id| index.get(&id).copied().ok_or(SceneError::NoSuchObject(id)))
+                .collect::<Result<Vec<_>, _>>()
+        })
         .transpose()?;
 
     let Ok(mut item) = actors.get_mut(entity) else {
@@ -882,35 +869,24 @@ fn set_actor(
         *item.4 = colour;
     }
     if let Some(visible) = visible {
-        *item.5 = if visible {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
+        *item.5 = Shown(visible);
     }
     if let Some(subset) = subset {
         *item.6 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
     }
 
-    if let Some(parent) = moving_to {
-        // No cycle check, unlike `set_parent`. An actor is a leaf — nothing is
-        // ever parented under one — so no placement of it can close a loop.
+    if let Some(wanted) = moving_to {
+        // No cycle check, unlike `set_parent`. Nothing is ever parented under
+        // a placement, so no arrangement of them can close a loop.
         //
-        // Its local transform is kept as it stands, which means it moves on
-        // screen if the new parent sits somewhere else. That is what an
-        // actor's transform *is* — an offset from whatever it is drawn under,
-        // not a place of its own — so there is nothing to preserve here, and
-        // no equivalent of `set_parent`'s world-transform arithmetic.
-        //
-        // Adopting one out of `Unplaced` is the same write, and is how a
-        // detached actor starts drawing again.
-        commands.entity(entity).insert(ChildOf(parent));
-        pending_parent.insert(entity, Some(parent));
+        // A plain write, not a queued command: `sync_placements` reads this
+        // next and builds or drops placements to match, so adding a parent and
+        // taking the last one away are the same operation.
+        *item.7 = Parents(wanted);
     }
 
     summarise_actor(
         actors.get(entity).expect("the entity was just written"),
-        pending_parent,
         ids,
         arrays,
     )
@@ -1070,29 +1046,24 @@ fn effective_parent(
 
 /// Removes one object, returning the handles actually removed.
 ///
-/// Deletes exactly what was named, and nothing else. Every child survives it —
-/// but they do not all survive it the same way, because an object and an actor
-/// are not the same kind of thing.
+/// Deletes exactly what was named. Child *objects* are detached first and
+/// become roots, because a transform is a place and they still have one with
+/// nothing above them.
 ///
-/// A child *object* becomes a root. Its transform is a place, so it still has
-/// one with nothing above it.
+/// The other children are placements, and those go. A placement is one copy of
+/// an actor, under this object; the actor itself is not in the tree and is
+/// untouched, so what a deletion costs it is that one appearance. If it was the
+/// only one the actor draws nowhere, which needs nothing arranging — there is
+/// simply no placement left. `sync_placements` drops the dead parent from its
+/// list, and `RemoveActor` is what destroys an actor outright.
 ///
-/// A child *actor* moves to [`Unplaced`] and stops drawing. Its transform is an
-/// offset from whatever it is drawn under, so with nothing above it there is no
-/// answer to where it belongs, and drawing it at that offset from the origin
-/// would put it somewhere no one chose. It keeps its arrays, its parameters and
-/// its own visibility setting, and waits for `SetActor`'s `parent`.
-///
-/// Actors used to die here instead. That made sense while an actor drew a
-/// source object's data, because losing the object left it drawing nothing;
-/// the `reap_orphaned_actors` sweep existed for exactly that. An actor binds
-/// arrays that outlive every node now, so one whose parent is deleted is still
-/// completely defined and worth keeping. `RemoveActor` is what destroys one.
+/// Actors used to die here, back when an actor *was* its placement. That is the
+/// whole reason the two are separate: one drawing shown in three places should
+/// not be destroyed by tidying up one of them.
 fn delete_object(
     commands: &mut Commands,
     index: &mut HashMap<u64, Entity>,
     pending_parent: &mut HashMap<Entity, Option<Entity>>,
-    unplaced: Entity,
     objects: &Objects,
     children: &Query<&Children>,
     id: u64,
@@ -1102,18 +1073,11 @@ fn delete_object(
     };
 
     if let Ok(list) = children.get(entity) {
-        for child in list.iter() {
-            // Anything here that is not an object is an actor drawn under it.
-            let moved_to = if objects.contains(child) {
-                commands.entity(child).remove::<ChildOf>();
-                None
-            } else {
-                commands.entity(child).insert(ChildOf(unplaced));
-                Some(unplaced)
-            };
-            // Both are queued, so anything listing the scene later in this same
-            // drain would otherwise report a parent about to be despawned.
-            pending_parent.insert(child, moved_to);
+        for child in list.iter().filter(|child| objects.contains(*child)) {
+            commands.entity(child).remove::<ChildOf>();
+            // Queued, so anything listing the scene later in this same drain
+            // would otherwise report a parent about to be despawned.
+            pending_parent.insert(child, None);
         }
     }
 
@@ -1123,7 +1087,7 @@ fn delete_object(
     commands.entity(entity).despawn();
     let deleted = Deleted { objects: vec![id] };
 
-    info!("scene: deleted object {id}; its children outlived it");
+    info!("scene: deleted object {id}; its child objects are roots now");
 
     deleted
 }
@@ -1132,30 +1096,31 @@ fn delete_object(
 ///
 /// `Option` only so callers can filter with `?`; an actor always describes.
 fn summarise_actor(
-    (entity, id, kind, params, colour, visibility, subset, parent): ActorItem<'_>,
-    pending_parent: &HashMap<Entity, Option<Entity>>,
+    (_, id, kind, params, colour, shown, subset, parents): ActorItem<'_>,
     ids: &Query<&UniqueID>,
     arrays: &Assets<DataArray>,
 ) -> Option<ActorSummary> {
-    // Detachments and moves made earlier this drain are still queued, so the
-    // link on the entity is the one from before the batch. Reporting that would
-    // have `SetActor` answer with the parent it was just asked to replace.
-    let parent = match pending_parent.get(&entity) {
-        Some(pending) => *pending,
-        None => parent.map(|link| link.parent()),
-    };
+    // Read straight off the component, unlike an object's parent. Placements
+    // are built from this by a later system rather than by a queued command, so
+    // there is no deferred write for a listing in this same drain to miss.
+    let mut parents: Vec<u64> = parents
+        .0
+        .iter()
+        .filter_map(|parent| ids.get(*parent).ok())
+        .map(|unique| unique.0)
+        .collect();
+    parents.sort_unstable();
 
     Some(ActorSummary {
         id: id.0,
         kind: kind.0.to_string(),
-        parent: parent
-            .and_then(|parent| ids.get(parent).ok())
-            .map(|unique| unique.0),
+        parents,
         params: params.0.clone(),
         colour: colour.clone(),
-        // What this actor was told; an object hidden above it still hides it
-        // on screen, which is `InheritedVisibility`'s business.
-        visible: *visibility != Visibility::Hidden,
+        // What this actor was told. An object hidden above one of its
+        // placements still hides that copy, which is `InheritedVisibility`'s
+        // business and not reported here.
+        visible: shown.0,
         subset: match subset {
             Subset::All => None,
             Subset::Selected {
@@ -1206,11 +1171,17 @@ mod tests {
         app.init_resource::<ActorRegistry>();
         app.init_resource::<KeepAwake>();
         app.init_resource::<GrpcBridge>();
-        // The parent detached actors are parked under. A Startup system in the
-        // real plugin; run here directly, since these tests never run Startup.
-        app.add_systems(Startup, spawn_unplaced);
-        app.add_systems(Update, apply_scene_commands);
-        app.update();
+        // Placements follow the parents the drain writes, so the whole chain
+        // has to run for a listing to reflect what is on screen.
+        app.add_systems(
+            Update,
+            (
+                apply_scene_commands,
+                link::sync_placements,
+                link::apply_shown,
+            )
+                .chain(),
+        );
         app
     }
 
@@ -1256,6 +1227,50 @@ mod tests {
             keep_world_transform: true,
             reply,
         })
+    }
+
+    /// A kind that draws nothing and needs nothing, so a test can make actors
+    /// without a rendering backend compiled in.
+    fn marker(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(registry::ActorKind {
+                id: "marker",
+                label: "Marker",
+                params: &[],
+                apply: |_, _| {},
+            });
+    }
+
+    fn two_objects(app: &mut App) -> (u64, u64) {
+        let mut first = create(app, "first");
+        let mut second = create(app, "second");
+        app.update();
+        (
+            first.try_recv().expect("a reply").id,
+            second.try_recv().expect("a reply").id,
+        )
+    }
+
+    fn add(app: &mut App, parents: Vec<u64>) -> u64 {
+        let mut added = send(app, |reply| SceneCommand::AddActor {
+            parents,
+            kind: "marker".into(),
+            params: registry::ParamMap::default(),
+            colour: None,
+            subset: None,
+            reply,
+        });
+        app.update();
+        added.try_recv().expect("a reply").expect("an actor").id
+    }
+
+    /// How many copies of anything are on screen.
+    fn placements(app: &mut App) -> usize {
+        app.world_mut()
+            .query::<&Placement>()
+            .iter(app.world())
+            .len()
     }
 
     fn array(name: &str, bytes: usize) -> NamedBuffer {
@@ -1390,17 +1405,10 @@ mod tests {
     #[test]
     fn an_actor_with_no_parent_is_given_an_object() {
         let mut app = app();
-        app.world_mut()
-            .resource_mut::<ActorRegistry>()
-            .register(registry::ActorKind {
-                id: "marker",
-                label: "Marker",
-                params: &[],
-                apply: |_, _| {},
-            });
+        marker(&mut app);
 
         let mut added = send(&app, |reply| SceneCommand::AddActor {
-            parent: None,
+            parents: vec![],
             kind: "marker".into(),
             params: registry::ParamMap::default(),
             colour: None,
@@ -1418,7 +1426,7 @@ mod tests {
                 .iter()
                 .map(|o| (o.id, o.name.as_str()))
                 .collect::<Vec<_>>(),
-            vec![(actor.parent.expect("a parent"), "Marker")],
+            vec![(actor.parents[0], "Marker")],
             "exactly one object, named after the kind, holding the actor"
         );
     }
@@ -1433,7 +1441,7 @@ mod tests {
         let mut app = app();
 
         let mut added = send(&app, |reply| SceneCommand::AddActor {
-            parent: None,
+            parents: vec![],
             kind: "no-such-kind".into(),
             params: registry::ParamMap::default(),
             colour: None,
@@ -1454,43 +1462,60 @@ mod tests {
         );
     }
 
-    /// Deleting an object detaches the actors drawn under it, parks them where
-    /// they cannot draw, and lets one be drawn under some other object.
+    /// One actor under two objects is drawn twice and stays one actor.
     ///
-    /// They used to be destroyed, which made deletion inconsistent with itself:
-    /// a child object survived and a child actor did not, so deleting a
-    /// grouping node quietly took work with it. An actor binds arrays that
-    /// outlive every node, so one whose parent is gone still knows everything
-    /// it needs to draw and is only missing somewhere to be — and until it has
-    /// somewhere, it must not be drawn anywhere.
+    /// The whole point of splitting an actor from its placements. Two actors
+    /// binding the same arrays would look the same on screen and then have to
+    /// be configured one at a time; this is one drawing, one mesh, and one
+    /// thing to change.
     #[test]
-    fn an_actor_outlives_the_object_it_was_drawn_under() {
+    fn one_actor_is_drawn_under_every_object_it_names() {
         let mut app = app();
-        app.world_mut()
-            .resource_mut::<ActorRegistry>()
-            .register(registry::ActorKind {
-                id: "marker",
-                label: "Marker",
-                params: &[],
-                apply: |_, _| {},
-            });
+        marker(&mut app);
 
-        let mut first = create(&app, "first");
-        let mut second = create(&app, "second");
-        app.update();
-        let first = first.try_recv().expect("a reply").id;
-        let second = second.try_recv().expect("a reply").id;
+        let (first, second) = two_objects(&mut app);
+        let actor = add(&mut app, vec![first, second]);
 
-        let mut added = send(&app, |reply| SceneCommand::AddActor {
-            parent: Some(first),
-            kind: "marker".into(),
-            params: registry::ParamMap::default(),
-            colour: None,
-            subset: None,
+        let mut listed = send(&app, |reply| SceneCommand::ListActors {
+            parent: None,
             reply,
         });
         app.update();
-        let actor = added.try_recv().expect("a reply").expect("an actor").id;
+        let listing = listed.try_recv().expect("a reply").expect("a listing");
+        assert_eq!(
+            listing.iter().map(|a| a.id).collect::<Vec<_>>(),
+            vec![actor],
+            "two placements are still one actor"
+        );
+        assert_eq!(listing[0].parents, vec![first, second]);
+
+        // And each object reports it, because each of them draws it.
+        let mut objects = send(&app, |reply| SceneCommand::ListObjects { reply });
+        app.update();
+        assert_eq!(
+            objects
+                .try_recv()
+                .expect("a reply")
+                .iter()
+                .map(|o| (o.id, o.actors.iter().map(|a| a.id).collect::<Vec<_>>()))
+                .collect::<Vec<_>>(),
+            vec![(first, vec![actor]), (second, vec![actor])]
+        );
+    }
+
+    /// Deleting an object costs an actor that one appearance and nothing else.
+    ///
+    /// Actors used to be destroyed with the object they were under, which meant
+    /// tidying up one of the three places a drawing appeared destroyed the
+    /// drawing. The actor is not in the tree at all now — only its placements
+    /// are — so a deletion reaches exactly one of them.
+    #[test]
+    fn deleting_one_object_leaves_the_actor_drawn_under_the_others() {
+        let mut app = app();
+        marker(&mut app);
+
+        let (first, second) = two_objects(&mut app);
+        let actor = add(&mut app, vec![first, second]);
 
         let mut deleted = send(&app, |reply| SceneCommand::DeleteObject {
             id: first,
@@ -1510,49 +1535,66 @@ mod tests {
         app.update();
         let listing = listed.try_recv().expect("a reply").expect("a listing");
         assert_eq!(
-            listing.iter().map(|a| (a.id, a.parent)).collect::<Vec<_>>(),
-            vec![(actor, None)],
-            "the actor has to survive its object, detached"
+            listing
+                .iter()
+                .map(|a| (a.id, a.parents.clone()))
+                .collect::<Vec<_>>(),
+            vec![(actor, vec![second])],
+            "the actor survives, drawn under what is left"
         );
         assert!(
             listing[0].visible,
-            "detaching must not touch the client's own visibility setting"
+            "and its own visibility setting is untouched"
         );
+    }
 
-        // But parked where nothing draws it. It has no object, so its transform
-        // is an offset from nothing and there is no honest place to put it.
-        let entity = *app.world().resource::<Unplaced>();
-        let parked = app
-            .world()
-            .iter_entities()
-            .find(|e| e.get::<UniqueID>().is_some_and(|id| id.0 == actor))
-            .expect("the actor entity");
-        assert_eq!(
-            parked.get::<ChildOf>().map(|link| link.parent()),
-            Some(entity.0),
-            "a detached actor belongs to the unplaced node"
-        );
-        assert_eq!(
-            app.world().get::<Visibility>(entity.0),
-            Some(&Visibility::Hidden),
-            "which is hidden, so nothing under it is drawn"
-        );
+    /// An actor under nothing draws nothing, and comes back when placed.
+    ///
+    /// No hidden node arranges this and nothing marks the actor: with the mesh
+    /// on the placements, having none *is* being off screen.
+    #[test]
+    fn an_actor_with_no_parents_has_no_placements() {
+        let mut app = app();
+        marker(&mut app);
 
-        // And it goes back into the scene without being rebuilt.
-        let mut moved = send(&app, |reply| SceneCommand::SetActor {
-            id: actor,
-            params: registry::ParamMap::default(),
-            colour: None,
-            visible: None,
-            subset: None,
-            parent: Some(second),
-            reply,
-        });
+        let (first, second) = two_objects(&mut app);
+        let actor = add(&mut app, vec![first]);
+
+        let set = |app: &App, parents: Vec<u64>| {
+            send(app, move |reply| SceneCommand::SetActor {
+                id: actor,
+                params: registry::ParamMap::default(),
+                colour: None,
+                visible: None,
+                subset: None,
+                parents: Some(parents),
+                reply,
+            })
+        };
+
+        let mut cleared = set(&app, vec![]);
+        app.update();
+        assert!(
+            cleared
+                .try_recv()
+                .expect("a reply")
+                .expect("an actor")
+                .parents
+                .is_empty()
+        );
+        assert_eq!(placements(&mut app), 0, "nothing is drawn");
+
+        let mut placed = set(&app, vec![second]);
         app.update();
         assert_eq!(
-            moved.try_recv().expect("a reply").expect("an actor").parent,
-            Some(second),
-            "a detached actor has to be attachable to another object"
+            placed
+                .try_recv()
+                .expect("a reply")
+                .expect("an actor")
+                .parents,
+            vec![second],
+            "and it draws again once it has somewhere to be"
         );
+        assert_eq!(placements(&mut app), 1);
     }
 }

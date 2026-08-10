@@ -103,21 +103,26 @@ service SceneService {
   //
   // Adds; it does not replace. An object may carry any number of actors at
   // once — a protein as cartoon and as licorice, a mesh as surface and as
-  // wireframe — and each is configured independently.
+  // wireframe — and each is configured independently. The reverse holds too:
+  // one actor may be drawn under any number of objects.
   //
-  // `parent` says where it appears, and an absent one is created for you.
-  // *What* it draws is in `params`, as arrays bound to the inputs its kind
-  // declares, so showing one array in two places is two actors binding it
-  // under two parents.
+  // `parents` says where it appears — one object, several, or none named at
+  // all, in which case one is created for you. *What* it draws is in `params`,
+  // as arrays bound to the inputs its kind declares.
+  //
+  // Naming several objects is how one drawing appears in several places while
+  // staying one actor: change it once and every copy changes.
   rpc AddActor(AddActorRequest) returns (AddActorResponse);
 
   // Changes an existing actor. Only what is named is altered.
   rpc SetActor(SetActorRequest) returns (SetActorResponse);
 
-  // Removes one actor, leaving the object it was drawn under alone.
+  // Removes one actor, and every appearance of it, leaving the objects it was
+  // drawn under alone.
   rpc RemoveActor(RemoveActorRequest) returns (RemoveActorResponse);
 
-  // Lists actors, optionally only those drawn under one object.
+  // Lists actors, optionally only those drawn under one object. An actor drawn
+  // under several is one entry whichever way it is asked for.
   rpc ListActors(ListActorsRequest) returns (ListActorsResponse);
 
   // Lists the ways of drawing this build actually supports.
@@ -506,13 +511,10 @@ message ActorInfo {
   // Field 3 was `source`, the object whose data was drawn.
   reserved 3;
 
-  // The object it is drawn under.
-  //
-  // Absent if it is detached — an actor whose object was deleted. An actor's
-  // transform is an offset from whatever it is drawn under, so with no object
-  // there is nowhere for it to be and it is not drawn at all. It keeps its
-  // arrays and settings until SetActor's `parent` places it.
-  ObjectHandle parent = 4;
+  // Field 4 was `parent`, the single object it was drawn under. An actor can
+  // be drawn under several at once now; see `parents`.
+  reserved 4;
+  reserved "parent";
 
   // Complete and in range, whatever was sent to produce it.
   map<string, ParamValue> params = 5;
@@ -533,6 +535,18 @@ message ActorInfo {
   // the client sent them — so `data` is empty here and only the encoding,
   // dtype and element count are reported.
   optional SubsetInfo subset = 8;
+
+  // Every object this actor is drawn under, in handle order.
+  //
+  // One actor under several objects is one drawing appearing in several
+  // places: one mesh, one set of parameters, and every copy changes together.
+  // Two actors binding the same arrays is the other thing — two drawings that
+  // happen to look alike, configured one at a time.
+  //
+  // Empty draws nothing, which is where deleting the last object it was under
+  // leaves it. The actor is untouched and still has its arrays and settings;
+  // give it a parent to put it back on screen.
+  repeated ObjectHandle parents = 9;
 }
 
 // SubsetInfo describes an actor's selection without returning it.
@@ -569,13 +583,9 @@ message AddActorRequest {
   // server's only basis for guessing was the order its backends registered in.
   string kind = 2;
 
-  // The object to draw under: whose transform it inherits, and where it sits.
-  //
-  // Absent creates one, named after the kind and placed at the origin. An actor
-  // has to be under something — it has no place of its own — and a caller with
-  // nothing to group it under would otherwise have to call CreateObject first
-  // every single time. The new object's handle comes back as `actor.parent`.
-  ObjectHandle parent = 3;
+  // Field 3 was `parent`, a single object. See `parents`.
+  reserved 3;
+  reserved "parent";
 
   // Settings to override. Anything not named takes the kind's default — this
   // is a new actor, so there is no previous value to keep.
@@ -587,6 +597,16 @@ message AddActorRequest {
 
   // Absent draws the whole dataset.
   optional Subset subset = 6;
+
+  // The objects to draw under: whose transforms it inherits, and where it sits.
+  //
+  // Empty creates one, named after the kind and placed at the origin. An actor
+  // has to be under something — it has no place of its own — and a caller with
+  // nothing to group it under would otherwise have to call CreateObject first
+  // every single time. The handle comes back in `actor.parents`.
+  //
+  // Naming several draws this one actor in each of them at once.
+  repeated ObjectHandle parents = 7;
 }
 
 message AddActorResponse {
@@ -614,16 +634,24 @@ message SetActorRequest {
   // way to say "clear it".
   bool clear_subset = 6;
 
-  // Move this actor under another object. Absent leaves it where it is.
+  // Replace the set of objects this actor is drawn under.
   //
-  // Here rather than on SetParent, which moves objects and takes an
-  // ObjectHandle. An actor outlives the object it was drawn under, so this is
-  // how a detached one starts being drawn again — and how one is moved between
-  // objects without rebuilding it.
+  // Absent leaves them alone. Present replaces the whole set, so this both adds
+  // an appearance and takes one away; an empty list takes the actor off screen
+  // without removing it.
   //
-  // The actor's transform is left alone, so it appears wherever that offset
-  // puts it under its new object.
-  optional ObjectHandle parent = 7;
+  // Here rather than on SetParent, which moves objects and takes one handle. An
+  // actor outlives the objects it is drawn under, so this is how one that lost
+  // them is drawn again, and how one drawing is put in several places.
+  optional ObjectHandles parents = 8;
+}
+
+// A list of object handles, so an optional one can be told from an empty one.
+//
+// A bare `repeated` field cannot express that difference, and SetActor needs
+// both: leave the placements alone, or take them all away.
+message ObjectHandles {
+  repeated ObjectHandle handles = 1;
 }
 
 message SetActorResponse {

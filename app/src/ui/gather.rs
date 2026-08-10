@@ -5,9 +5,11 @@
 //! a tab take `&Row` wherever it likes; threading Bevy queries down through
 //! nested closures instead means a borrow conflict at every level.
 //!
-//! An object's children are two things at once — nested objects and the actors
-//! drawn under it — and the rows split them apart, by what each entity carries
-//! rather than by any second link.
+//! An object's children are two things at once — nested objects and the
+//! placements drawn under it — and the rows split them apart, by what each
+//! entity carries rather than by any second link. A placement resolves to the
+//! actor it is a copy of, so one actor drawn under three objects appears in
+//! three rows and is the same row content each time.
 
 use bevy::asset::AssetId;
 use bevy::platform::collections::HashMap;
@@ -15,7 +17,7 @@ use bevy::prelude::*;
 
 use crate::counter::UniqueID;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
-use crate::scene::{BufferMeta, DataStore};
+use crate::scene::{BufferMeta, DataStore, Parents, Placement};
 use crate::scene::{ColorBy, DataArray, SceneObject, Subset};
 
 /// A flattened view of one object.
@@ -43,6 +45,9 @@ pub struct ActorRow {
     pub params: ParamMap,
     pub colour: ColorBy,
     pub subset: Subset,
+    /// How many objects draw it. More than one means editing it here changes
+    /// every copy, which is worth saying where the controls are.
+    pub places: usize,
 }
 
 /// Who holds an array, and what reads it.
@@ -80,7 +85,7 @@ pub type ActorData<'w, 's> = Query<
         &'static ActorParams,
         &'static ColorBy,
         &'static Subset,
-        Option<&'static ChildOf>,
+        &'static Parents,
     ),
 >;
 
@@ -92,12 +97,12 @@ pub struct Gathered {
     /// Every object in handle order, which is how the Data and Actors tabs
     /// group their listings.
     pub ordered: Vec<Entity>,
-    /// Actors under no object, in handle order.
+    /// Actors drawn under no object, in handle order.
     ///
-    /// Deleting an object detaches its actors rather than destroying them, and
-    /// they stop drawing until something adopts them. Without a list of their
-    /// own they would appear in no panel at all — no way to re-home one, and no
-    /// way to tell it still exists.
+    /// Deleting an object costs an actor that placement rather than its life,
+    /// so losing the last one leaves it defined but nowhere. It appears in no
+    /// object's row then — without a list of its own there would be no way to
+    /// reach it, or to tell it still exists.
     pub detached: Vec<ActorRow>,
     pub owners: HashMap<AssetId<DataArray>, Owner>,
     /// Arrays uploaded on their own, as the handle a client knows them by and
@@ -137,7 +142,7 @@ impl Gathered {
 /// A kind with no registration cannot be drawn or configured, so there is
 /// nothing useful to show for it either.
 fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Option<ActorRow> {
-    let (entity, id, kind, params, colour, subset, _) = actors.get(entity).ok()?;
+    let (entity, id, kind, params, colour, subset, parents) = actors.get(entity).ok()?;
     let registered = registry.get(kind.0)?;
     Some(ActorRow {
         entity,
@@ -147,12 +152,14 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
         params: params.0.clone(),
         colour: colour.clone(),
         subset: subset.clone(),
+        places: parents.0.len(),
     })
 }
 
 pub fn gather(
     objects: &ObjectData,
     actors: &ActorData,
+    placements: &Query<&Placement>,
     registry: &ActorRegistry,
     store: &DataStore,
 ) -> Gathered {
@@ -181,11 +188,14 @@ pub fn gather(
             .filter(|child| objects.contains(*child))
             .collect();
 
+        // Each placement stands for an actor. Resolved to the actor here, so a
+        // row shows the drawing itself — one set of controls, whichever of its
+        // objects it is being looked at under.
         let drawn: Vec<ActorRow> = children
             .into_iter()
             .flatten()
             .copied()
-            .filter_map(|entity| actor_row(actors, registry, entity))
+            .filter_map(|child| actor_row(actors, registry, placements.get(child).ok()?.0))
             .collect();
 
         // Every kind, for every object. What an actor draws is what it binds, so
@@ -228,12 +238,11 @@ pub fn gather(
         );
     }
 
-    // Actors under no object. Same test the object rows use — a detached actor
-    // is parented to the `Unplaced` node rather than left a root, so "has a
-    // parent" is not the question; "is that parent an object" is.
+    // Actors with nowhere to be drawn. Asked of the parent list rather than of
+    // the tree, because an actor is not in the tree — only its placements are.
     let mut detached: Vec<ActorRow> = actors
         .iter()
-        .filter(|(.., parent)| !parent.is_some_and(|link| objects.contains(link.parent())))
+        .filter(|(.., parents)| parents.0.is_empty())
         .filter_map(|(entity, ..)| actor_row(actors, registry, entity))
         .collect();
     detached.sort_by_key(|row| row.id);

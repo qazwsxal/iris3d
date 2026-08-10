@@ -29,7 +29,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiCon
 use crate::scene::actor::ColorMap;
 use crate::scene::link::spawn_actor;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamValue};
-use crate::scene::{ColorBy, DataArray, SceneCommand, Subset};
+use crate::scene::{ColorBy, DataArray, Placement, SceneCommand, Subset};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
 use gather::{ActorData, ObjectData};
@@ -125,7 +125,11 @@ impl Default for UiState {
 /// Something the user asked for, applied after the UI has finished drawing.
 enum UiAction {
     Select(Entity),
-    SelectActor(Entity),
+    /// Show an actor's controls. The second entity is the object whose row it
+    /// was clicked in — an actor drawn under three objects appears in three
+    /// rows, so which one was clicked is the only thing that says which object
+    /// to highlight. `None` for one that is drawn nowhere.
+    SelectActor(Entity, Option<Entity>),
     SelectArray(AssetId<DataArray>),
     ToggleVisibility(Entity),
     Delete(u64),
@@ -150,6 +154,7 @@ fn draw_ui(
     mut actions: ResMut<PendingActions>,
     objects: ObjectData,
     actor_data: ActorData,
+    placements: Query<&Placement>,
     registry: Res<ActorRegistry>,
     arrays: Res<Assets<DataArray>>,
     store: Res<crate::scene::DataStore>,
@@ -177,7 +182,7 @@ fn draw_ui(
     );
 
     // Gather first, draw second.
-    let world = gather::gather(&objects, &actor_data, &registry, &store);
+    let world = gather::gather(&objects, &actor_data, &placements, &registry, &store);
 
     // How much the panels took, so the 3D camera can be inset to what is left.
     // Without this the scene renders across the whole window and hides behind
@@ -313,10 +318,7 @@ fn apply_actions(
     mut visibility: Query<&mut Visibility>,
     mut params: Query<(&ActorKindId, &mut ActorParams)>,
     mut colours: Query<&mut ColorBy>,
-    // Where each actor sits, `None` for a detached one. Optional rather than
-    // filtered, so a match still means "this entity is an actor" — and a
-    // detached actor is precisely the one that still needs removing.
-    placements: Query<Option<&ChildOf>, With<ActorKindId>>,
+    actor_entities: Query<(), With<ActorKindId>>,
     scene_objects: Query<(), With<crate::scene::SceneObject>>,
     bridge: Res<crate::grpc::GrpcBridge>,
 ) {
@@ -333,22 +335,14 @@ fn apply_actions(
                 // group that is no longer highlighted.
                 state.selected_actor = None;
             }
-            UiAction::SelectActor(entity) => {
+            UiAction::SelectActor(entity, under) => {
                 state.selected_actor = Some(entity);
-                // Select the object it is drawn under too: the outline, the
+                // Select the object it was clicked under too: the outline, the
                 // tree highlight and the tint in the actor list all key off the
                 // object selection, and three of them disagreeing is worse than
-                // the outline moving. A detached actor is under nothing, so the
-                // object selection has to clear rather than stay behind on
-                // whatever was picked before — and it is parented to the
-                // `Unplaced` node, which is not an object, so the parent has to
-                // be checked rather than taken.
-                state.selected = placements
-                    .get(entity)
-                    .ok()
-                    .flatten()
-                    .map(|link| link.parent())
-                    .filter(|parent| scene_objects.contains(*parent));
+                // the outline moving. An actor drawn nowhere clears it rather
+                // than leaving it on whatever was picked before.
+                state.selected = under.filter(|parent| scene_objects.contains(*parent));
             }
             UiAction::SelectArray(id) => state.selected_array = Some(id),
             UiAction::ToggleVisibility(entity) => {
@@ -377,7 +371,10 @@ fn apply_actions(
                 let (_, actor) = spawn_actor(
                     &mut commands,
                     &mut counter,
-                    object,
+                    // One object here. Drawing it somewhere else as well is a
+                    // second parent, which a client asks for by handle — there
+                    // is nothing to click on to mean "and also there".
+                    vec![object],
                     // Selections are computed by a client, not clicked together
                     // here, so the tree only ever adds a whole-dataset one.
                     Subset::All,
@@ -392,9 +389,9 @@ fn apply_actions(
                 state.selected_actor = Some(actor);
             }
             UiAction::RemoveActor(entity) => {
-                // Only ever an actor, and actors own nothing, so there is no
-                // subtree to consider.
-                if placements.contains(entity) {
+                // Every copy of it goes: `Placements` is a linked relationship,
+                // so despawning the actor takes its placements with it.
+                if actor_entities.contains(entity) {
                     commands.entity(entity).despawn();
                     if state.selected_actor == Some(entity) {
                         state.selected_actor = None;
