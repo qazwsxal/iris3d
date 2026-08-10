@@ -1,12 +1,16 @@
 //! Rendering backends.
 //!
-//! Each backend is a system that picks up actor entities of one kind, reads
-//! the dataset of the object the actor is *of* — which need not be its
-//! transform parent — and builds something drawable onto the actor entity
-//! itself. Nothing in [`crate::scene`] knows these exist, so a backend can be
-//! replaced or run alongside another.
+//! Each backend is a system that picks up actor entities of one kind, reads the
+//! arrays that actor has *bound* — not whatever the node it hangs under happens
+//! to hold — and builds something drawable onto the actor entity itself. Nothing
+//! in [`crate::scene`] knows these exist, so a backend can be replaced or run
+//! alongside another.
 //!
-//! This is the straightforward `Mesh3d`-per-object baseline. It is deliberately
+//! What each kind needs is declared, not assumed: a kind states its inputs as
+//! array parameters, so a client is told that `points` wants `float32 [n, 3]`
+//! rather than having to name an array "positions" and hope.
+//!
+//! This is the straightforward `Mesh3d`-per-actor baseline. It is deliberately
 //! the simple option: it gets every sample dataset on screen and gives a
 //! reference image to check more ambitious approaches against. It will not
 //! scale — see the notes on each backend for where it gives out.
@@ -15,12 +19,9 @@ use bevy::asset::embedded_asset;
 use bevy::prelude::*;
 
 use crate::scene::actor::ColorMap;
-use crate::scene::data::Fields;
+
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
-use crate::scene::{
-    ActorOf, Actors, ColorBy, DataArray, DataStore, MeshData, MoleculeData, PointCloud,
-    SceneObject, Subset,
-};
+use crate::scene::{ActorOf, ColorBy, DataArray, DataStore, Subset};
 
 mod molecule;
 mod points;
@@ -279,17 +280,9 @@ fn mark_dirty(
     recoloured: Query<Entity, (With<ActorKindId>, Changed<ColorBy>)>,
     resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
     rebound: Query<Entity, (With<ActorKindId>, Changed<Bindings>)>,
-    changed_datasets: Query<
-        &Actors,
-        Or<(
-            Changed<PointCloud>,
-            Changed<MeshData>,
-            Changed<MoleculeData>,
-            Changed<Fields>,
-        )>,
-    >,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
-    objects: Query<(&SceneObject, &Actors)>,
+    store: Res<DataStore>,
+    bindings: Query<(Entity, &Bindings)>,
 ) {
     for entity in &new_actors {
         mark(&mut commands, entity, Dirty::ALL);
@@ -315,17 +308,8 @@ fn mark_dirty(
         mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 
-    // Following the source link rather than the child list is what makes this
-    // correct for shared data: an actor parented under some other node still
-    // redraws when the object it actually draws changes.
-    for drawn_by in &changed_datasets {
-        for actor in drawn_by.iter() {
-            mark(&mut commands, actor, Dirty::GEOMETRY);
-        }
-    }
-
-    // Array contents can be rewritten without the components referring to them
-    // changing at all, so watch the assets directly.
+    // Array contents can be rewritten without any binding changing, so watch the
+    // assets directly.
     let modified: Vec<_> = array_events
         .read()
         .filter_map(|event| match event {
@@ -336,15 +320,16 @@ fn mark_dirty(
     if modified.is_empty() {
         return;
     }
-    for (object, drawn_by) in &objects {
-        let touched = object
-            .arrays
-            .iter()
-            .any(|array| modified.contains(&array.handle.id()));
-        if !touched {
-            continue;
-        }
-        for actor in drawn_by.iter() {
+    // Asking each actor what it binds, rather than each object what it holds.
+    // That is what keeps this right for shared data: one array feeding three
+    // actors redraws all three, wherever in the tree they sit.
+    for (actor, bound) in &bindings {
+        let touched = bound.0.values().any(|id| {
+            store
+                .get(*id)
+                .is_some_and(|held| modified.contains(&held.handle.id()))
+        });
+        if touched {
             mark(&mut commands, actor, Dirty::GEOMETRY);
         }
     }
@@ -462,12 +447,30 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
     [rgb[0], rgb[1], rgb[2], 1.0]
 }
 
+/// Linearly interpolates between evenly spaced colour stops.
+fn ramp(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
+    if stops.is_empty() {
+        return [0.0, 0.0, 0.0];
+    }
+    let last = stops.len() - 1;
+    let scaled = t.clamp(0.0, 1.0) * last as f32;
+    let low = scaled.floor() as usize;
+    let high = (low + 1).min(last);
+    let blend = scaled - low as f32;
+    let mut rgb = [0.0; 3];
+    for channel in 0..3 {
+        rgb[channel] = stops[low][channel] * (1.0 - blend) + stops[high][channel] * blend;
+    }
+    rgb
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::ActorOf;
-    use crate::scene::data::{BufferMeta, Dtype, NamedArray};
+    use crate::scene::data::{BufferMeta, Dtype};
     use crate::scene::registry::{ActorParams, ParamValue};
+    use crate::scene::{ActorOf, SceneObject};
+    use bevy::platform::collections::HashMap;
 
     fn array() -> DataArray {
         DataArray {
@@ -481,31 +484,27 @@ mod tests {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
+        app.init_resource::<DataStore>();
         app.add_systems(Update, mark_dirty);
         app
     }
 
-    /// Spawns an object holding one point-cloud dataset.
+    /// Holds one array under handle 0, and spawns a place to draw it.
     fn spawn_object(app: &mut App, name: &str) -> Entity {
         let positions = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
             .add(array());
+        let meta = BufferMeta {
+            name: "whatever".into(),
+            dtype: Dtype::Float32,
+            shape: vec![1, 3],
+        };
         app.world_mut()
-            .spawn((
-                SceneObject {
-                    name: name.into(),
-                    arrays: vec![NamedArray {
-                        meta: BufferMeta {
-                            name: "positions".into(),
-                            dtype: Dtype::Float32,
-                            shape: vec![1, 3],
-                        },
-                        handle: positions.clone(),
-                    }],
-                },
-                PointCloud { positions },
-            ))
+            .resource_mut::<DataStore>()
+            .insert(0, meta, positions);
+        app.world_mut()
+            .spawn(SceneObject { name: name.into() })
             .id()
     }
 
@@ -519,6 +518,7 @@ mod tests {
                 ActorParams(params),
                 ColorBy::default(),
                 Subset::All,
+                Bindings(HashMap::from_iter([("positions", 0u64)])),
                 ActorOf(source),
                 ChildOf(parent),
             ))
@@ -579,14 +579,15 @@ mod tests {
 
     #[test]
     fn redraws_when_the_dataset_changes() {
-        let (mut app, object, actor) = scene();
+        let (mut app, _object, actor) = scene();
         settle(&mut app, actor);
 
-        // Obtaining a `Mut` is not enough — change ticks are written on deref.
+        // Binding a different array is new data, not a new setting.
         app.world_mut()
-            .get_mut::<PointCloud>(object)
+            .get_mut::<Bindings>(actor)
             .unwrap()
-            .set_changed();
+            .0
+            .insert("positions", 1);
         app.update();
         assert_eq!(flags(&app, actor), Dirty::GEOMETRY);
     }
@@ -595,16 +596,17 @@ mod tests {
     /// tick, and an `insert` would let whichever ran last drop the rest.
     #[test]
     fn separate_reasons_accumulate() {
-        let (mut app, object, actor) = scene();
+        let (mut app, _object, actor) = scene();
         settle(&mut app, actor);
 
         // Any change to the colouring; the ramp stands in for what used to be a
         // change of field.
         app.world_mut().get_mut::<ColorBy>(actor).unwrap().map = ColorMap::CoolWarm;
         app.world_mut()
-            .get_mut::<PointCloud>(object)
+            .get_mut::<Bindings>(actor)
             .unwrap()
-            .set_changed();
+            .0
+            .insert("positions", 1);
         app.update();
 
         let flags = flags(&app, actor);
@@ -616,13 +618,13 @@ mod tests {
         let (mut app, _, actor) = scene();
         settle(&mut app, actor);
 
-        // The component still points at the same handle, so only the asset
-        // event reveals that the contents moved underneath it.
+        // The binding still names the same handle, so only the asset event
+        // reveals that the contents moved underneath it.
         let id = app
             .world()
-            .get::<SceneObject>(app.world().entity(object_of(&app, actor)).id())
+            .resource::<DataStore>()
+            .get(0)
             .unwrap()
-            .arrays[0]
             .handle
             .id();
         app.world_mut().write_message(AssetEvent::Modified { id });
@@ -646,76 +648,50 @@ mod tests {
         assert!(!dirty(&app, actor));
     }
 
-    /// The object an actor *draws*, which since the source and transform links
-    /// were separated is no longer the same question as its parent.
-    fn object_of(app: &App, actor: Entity) -> Entity {
-        app.world()
-            .get::<ActorOf>(actor)
-            .expect("actor has a source")
-            .0
-    }
-
-    /// The whole point of the split: data comes from the source, not the
-    /// transform parent, so one dataset can be drawn at another node's
-    /// placement. Before this, `mark_dirty` walked the parent's children and
-    /// such an actor would never have been marked at all.
+    /// Every actor binding an array redraws when its bytes change, wherever in
+    /// the tree it sits. This used to be reached by following the source link
+    /// from the object holding the data; the binding says it directly, so an
+    /// actor placed under some unrelated node is no longer a special case.
     #[test]
-    fn redraws_from_its_source_not_its_parent() {
+    fn marks_every_actor_binding_an_array() {
         let mut app = app();
         let source = spawn_object(&mut app, "source");
         let elsewhere = spawn_object(&mut app, "elsewhere");
-        let actor = spawn_actor(&mut app, source, elsewhere);
-        app.update();
-        settle(&mut app, actor);
-
-        app.world_mut()
-            .get_mut::<PointCloud>(elsewhere)
-            .unwrap()
-            .set_changed();
-        app.update();
-        assert!(
-            !dirty(&app, actor),
-            "the transform parent's data is not what is being drawn"
-        );
-
-        app.world_mut()
-            .get_mut::<PointCloud>(source)
-            .unwrap()
-            .set_changed();
-        app.update();
-        assert!(dirty(&app, actor), "the source's data is");
-    }
-
-    /// Two actors of one object redraw together, which is the case that could
-    /// not be expressed at all before.
-    #[test]
-    fn marks_every_actor_of_an_object() {
-        let mut app = app();
-        let source = spawn_object(&mut app, "source");
         let first = spawn_actor(&mut app, source, source);
-        let second = spawn_actor(&mut app, source, source);
+        let second = spawn_actor(&mut app, source, elsewhere);
         app.update();
         settle(&mut app, first);
         settle(&mut app, second);
 
-        app.world_mut()
-            .get_mut::<PointCloud>(source)
+        let id = app
+            .world()
+            .resource::<DataStore>()
+            .get(0)
             .unwrap()
-            .set_changed();
+            .handle
+            .id();
+        app.world_mut().write_message(AssetEvent::Modified { id });
         app.update();
         assert!(dirty(&app, first));
-        assert!(dirty(&app, second));
+        assert!(
+            dirty(&app, second),
+            "placement does not decide what it reads"
+        );
     }
-}
 
-fn ramp(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
-    let scaled = t * (stops.len() - 1) as f32;
-    let index = (scaled.floor() as usize).min(stops.len() - 2);
-    let frac = scaled - index as f32;
-    let (a, b) = (stops[index], stops[index + 1]);
-    [
-        a[0] + (b[0] - a[0]) * frac,
-        a[1] + (b[1] - a[1]) * frac,
-        a[2] + (b[2] - a[2]) * frac,
-    ]
+    /// An array nothing binds marks nothing.
+    #[test]
+    fn leaves_actors_that_bind_something_else_alone() {
+        let (mut app, _, actor) = scene();
+        settle(&mut app, actor);
+
+        let unrelated = app
+            .world_mut()
+            .resource_mut::<Assets<DataArray>>()
+            .add(array());
+        app.world_mut()
+            .write_message(AssetEvent::Modified { id: unrelated.id() });
+        app.update();
+        assert!(!dirty(&app, actor));
+    }
 }

@@ -87,32 +87,6 @@ pub fn list(
                 ui.end_row();
             }
         });
-
-    ui.add_space(8.0);
-    ui.separator();
-    ui.strong("Fields");
-
-    let mut any = false;
-    egui::Grid::new("field-grid")
-        .num_columns(3)
-        .striped(true)
-        .show(ui, |ui| {
-            for object in &scene.ordered {
-                let Some(row) = scene.rows.get(object) else {
-                    continue;
-                };
-                for field in &row.fields {
-                    any = true;
-                    ui.monospace(format!("{}", row.id));
-                    ui.label(&field.name);
-                    ui.weak(field.kind);
-                    ui.end_row();
-                }
-            }
-        });
-    if !any {
-        ui.weak("Nothing loaded carries a field.");
-    }
 }
 
 pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, arrays: &Assets<DataArray>) {
@@ -158,14 +132,4 @@ pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, arrays: &As
             }
             ui.end_row();
         });
-
-    let Some(owner) = owner else { return };
-    if owner.fields.is_empty() {
-        return;
-    }
-    ui.separator();
-    ui.label("read as");
-    for field in &owner.fields {
-        ui.monospace(field);
-    }
 }

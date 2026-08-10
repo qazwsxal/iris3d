@@ -288,7 +288,6 @@ mod tests {
             .world_mut()
             .spawn(SceneObject {
                 name: "somewhere".into(),
-                arrays: Vec::new(),
             })
             .id();
         let actor = app

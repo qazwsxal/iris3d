@@ -94,10 +94,7 @@ fn add(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut Pendi
         return;
     };
     if row.available.is_empty() {
-        ui.weak(format!(
-            "No registered kind can draw a {} object.",
-            row.kind.as_str()
-        ));
+        ui.weak("This build has no registered actor kinds.");
         return;
     }
     ui.horizontal(|ui| {

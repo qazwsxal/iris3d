@@ -178,8 +178,10 @@ def main():
 
         everything = datasets()
         placements, cursor = layout(everything)
-        for name, arrays in everything.items():
-            handle = client.upload_object(name, arrays)
+        # A place in the tree per sample. The data goes in separately and the
+        # actor binds it, so an object is only ever a name and a transform.
+        for name in everything:
+            handle = client.create_object(name)
             client.set_parent(handle, root)
             client.set_transform(handle, translation=placements[name])
 
@@ -208,25 +210,27 @@ def main():
                 params=bind(client, wanted, everything[summary.name]),
             )
 
-        print(f"\n{'handle':<8}{'object':<18}{'kind':<11}{'drawn as':<16}arrays")
-        print("-" * 78)
+        print(f"\n{'handle':<8}{'object':<20}{'drawn as':<16}")
+        print("-" * 46)
         for summary in sorted(client.list_objects(), key=lambda s: s.handle):
             indent = "  " if summary.parent is not None else ""
-            arrays = ", ".join(f"{b.name}{list(b.shape)}" for b in summary.buffers)
             print(
-                f"{summary.handle:<8}{indent + summary.name:<18}"
-                f"{summary.dataset_kind:<11}"
-                f"{', '.join(r.kind for r in summary.actors) or '-':<16}{arrays}"
+                f"{summary.handle:<8}{indent + summary.name:<20}"
+                f"{', '.join(r.kind for r in summary.actors) or '-':<16}"
             )
 
-        # Both, now that data can live away from any object. Summing only the
-        # objects' buffers reported a fraction of what was actually held.
-        in_objects = sum(s.total_bytes for s in client.list_objects())
-        held = sum(d.byte_length for d in client.list_data())
-        print(
-            f"\n{(in_objects + held) / 1024:.1f} KiB resident"
-            f" ({held / 1024:.1f} KiB of it bound rather than owned)"
-        )
+        # The arrays are their own listing now, because they belong to no object.
+        held = client.list_data()
+        print(f"\n{'handle':<8}{'array':<20}{'type':<20}size")
+        print("-" * 60)
+        for array in held:
+            print(
+                f"d{array.handle:<7}{array.name:<20}"
+                f"{f'{array.dtype}{list(array.shape)}':<20}"
+                f"{array.byte_length / 1024:.1f} KiB"
+            )
+        total = sum(a.byte_length for a in held)
+        print(f"\n{total / 1024:.1f} KiB resident across {len(held)} arrays")
 
 
 if __name__ == "__main__":

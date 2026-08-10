@@ -69,21 +69,6 @@ service SceneService {
   // already gone is not an error; the response says what was actually held.
   rpc ReleaseData(ReleaseDataRequest) returns (ReleaseDataResponse);
 
-  // Uploads a single object as a stream of chunks.
-  //
-  // The object holds data and a place in the tree. Nothing draws it: call
-  // AddActor to say how it should look. The server does not choose a
-  // representation on a client's behalf, so an upload alone changes what is in
-  // the scene without changing what is on screen.
-  //
-  // The first message on the stream MUST carry `header`; every subsequent
-  // message MUST carry `chunk`. Chunks are written into the buffers declared
-  // by the header, and the upload is only committed to the scene once every
-  // declared buffer has received exactly its `byte_length` bytes. A stream
-  // that ends early, overruns a buffer, or arrives out of order is rejected
-  // and nothing is added to the scene.
-  rpc UploadObject(stream UploadObjectRequest) returns (UploadObjectResponse);
-
   // Creates an object that holds no data.
   //
   // Objects form a tree, and an empty object is how you make a pure grouping
@@ -191,65 +176,6 @@ message BufferSpec {
   uint64 byte_length = 4;
 }
 
-// Grid declares a regular, axis-aligned grid.
-//
-// The one structure that cannot be inferred from the buffers, which is why it
-// is declared rather than guessed. Every other dataset kind is recognisable
-// from its arrays — "positions" and "indices" make a mesh, "elements" makes a
-// molecule — but a grid's sample points are *implicit*, so there is no array
-// whose presence gives it away and no array whose contents carry the spacing.
-//
-// Nothing here is uploaded per point. A grid of 256^3 samples describes its
-// geometry in nine numbers rather than 50 million coordinates, which is the
-// reason to have the type at all.
-//
-// Sample `(i, j, k)` sits at `origin + (i, j, k) * spacing`.
-//
-// Values arrive with **k varying fastest**, then `j`, then `i`. That is what a
-// numpy array of shape `(x, y, z)` gives you from a plain `.ravel()`, because C
-// order runs the last axis fastest. It matches the ordering the other buffers
-// already use, where the last axis of an `[n, 3]` array is the contiguous one.
-message Grid {
-  // Position of sample (0, 0, 0).
-  Vector3 origin = 1;
-
-  // Distance between adjacent samples on each axis. Every component must be
-  // greater than zero.
-  Vector3 spacing = 2;
-
-  // Number of samples along each axis. Every component must be at least one.
-  Dimensions dims = 3;
-}
-
-// Dimensions is a count along each axis, as distinct from Vector3, which is a
-// measurement in world units.
-message Dimensions {
-  uint32 x = 1;
-  uint32 y = 2;
-  uint32 z = 3;
-}
-
-// ObjectHeader opens an upload and declares everything that will follow.
-message ObjectHeader {
-  // Human-readable label. Need not be unique.
-  string name = 1;
-
-  // The buffers that make up this object, in the order they are indexed by
-  // `Chunk.buffer_index`. Must contain at least one entry.
-  repeated BufferSpec buffers = 2;
-
-  // Declares the buffers to be fields sampled over a regular grid.
-  //
-  // Present, the buffers carry no geometry and every one of them is a field:
-  // send no "positions" and no "indices". Absent, the server infers the
-  // structure from the buffer names as before.
-  //
-  // A field's association follows its length. One value per sample is
-  // per-point; one value per cell — `(x-1) * (y-1) * (z-1)` of them — is
-  // per-cell. This is the only upload where the server can tell the two apart,
-  // because it is the only one that knows both counts.
-  optional Grid grid = 3;
-}
 
 // Chunk carries a contiguous slice of one buffer's bytes.
 message Chunk {
@@ -314,41 +240,24 @@ message ReleaseDataResponse {
   repeated DataHandle released = 1;
 }
 
-message UploadObjectRequest {
-  oneof payload {
-    ObjectHeader header = 1;
-    Chunk chunk = 2;
-  }
-}
-
-message UploadObjectResponse {
-  // Handle for the newly created object.
-  ObjectHandle handle = 1;
-
-  // Total number of buffer bytes accepted, summed across all buffers.
-  uint64 total_bytes = 2;
-}
-
 // ObjectHandle identifies an object for the lifetime of the running scene.
 // Handles are not reused after deletion and are not stable across restarts.
 message ObjectHandle {
   uint64 id = 1;
 }
 
-// ObjectInfo describes an object without transferring its contents.
+// ObjectInfo describes a place in the scene tree.
+//
+// Fields 3, 4 and 5 were `buffers`, `total_bytes` and `dataset_kind` — what an
+// object held and what shape the server inferred it to be. An object holds no
+// data now; ask ListData what is resident.
 message ObjectInfo {
+  reserved 3, 4, 5;
+
   ObjectHandle handle = 1;
   string name = 2;
-  repeated BufferSpec buffers = 3;
-  uint64 total_bytes = 4;
 
-  // Structure the server inferred from the uploaded buffers: "points", "mesh",
-  // "grid", "molecule", "raw" when nothing was recognised, or "empty" for an
-  // object that holds no data at all. Inference is provisional — a later
-  // revision should let the client state this outright.
-  string dataset_kind = 5;
-
-  // Everything currently drawing this object's data. Empty means nothing is.
+  // Everything drawing here. Empty means nothing is.
   //
   // This field previously carried a list of kind names. It had no handles, so
   // there was no way to say *which* of an object's actors to change — and,

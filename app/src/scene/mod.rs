@@ -3,21 +3,22 @@
 //!
 //! Three layers, deliberately separated:
 //!
-//! - [`data`] — raw arrays as shared assets, plus what their bytes mean.
-//! - [`dataset`] — what an object *is*: points, mesh, grid, molecule.
-//! - [`actor`] — how it gets *drawn*, as separate entities so one
-//!   dataset can be shown several ways at once.
-//! - [`link`] — which object an actor draws, which is *not* the same
-//!   question as where it sits.
+//! - [`data`] — raw arrays, held flat in a [`DataStore`] and referred to by
+//!   handle. They belong to no object.
+//! - [`actor`] — how something gets *drawn*, as its own entity, binding the
+//!   arrays it reads.
+//! - [`link`] — where an actor sits, which is not the same question as what it
+//!   reads.
 //!
-//! Objects form a tree. There is no separate group type: an object with no data
-//! is a grouping node, and any object may parent any other, so a field can be
-//! made to follow the mesh it belongs to.
+//! An object is a place in the tree and nothing else. It used to hold data as
+//! well, and a dataset component saying what shape that data made, which meant
+//! "put these numbers in the scene" and "put a node in the tree" were one
+//! operation. Splitting them is what lets one array feed several actors, and one
+//! actor read arrays that arrived separately.
 //!
 //! Nothing here knows about gRPC, and nothing here draws. A rendering backend
-//! plugs in by consuming [`Actor`] and the dataset components — see
-//! [`crate::draw`], which is one such backend and deliberately not the only
-//! possible one.
+//! plugs in by consuming actors and their bindings — see [`crate::draw`], which
+//! is one such backend and deliberately not the only possible one.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -30,8 +31,6 @@ use crate::redraw::KeepAwake;
 
 pub mod actor;
 pub mod data;
-pub mod dataset;
-pub mod ingest;
 pub mod link;
 pub mod registry;
 pub mod subset;
@@ -39,8 +38,7 @@ pub mod subset;
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
 pub use actor::ColorBy;
-pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedArray, NamedBuffer};
-pub use dataset::{DatasetKind, MeshData, MoleculeData, PointCloud};
+pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedBuffer};
 pub use link::{ActorOf, Actors};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
 pub use subset::{Subset, SubsetEncoding};
@@ -71,24 +69,18 @@ impl Plugin for ScenePlugin {
     }
 }
 
-/// An object in the scene. Paired with a [`UniqueID`] carrying its handle, at
-/// most one dataset component, a [`Fields`](data::Fields) map, and child actor
-/// entities.
+/// A place in the scene tree, and a name for it.
+///
+/// It used to hold data too — the arrays it was uploaded with, a dataset
+/// component saying what shape they made, and a `Fields` map saying what they
+/// meant. An actor binds the arrays it draws, so none of that was read any
+/// more, and what an object *is* has collapsed into where it is.
+///
+/// Paired with a [`UniqueID`] carrying its handle, a transform, and whatever
+/// actors and child objects hang under it.
 #[derive(Component, Debug)]
 pub struct SceneObject {
     pub name: String,
-    /// Every array uploaded with the object, retained so the object can be
-    /// described without dereferencing its contents. Empty for a grouping node.
-    pub arrays: Vec<NamedArray>,
-}
-
-impl SceneObject {
-    pub fn total_bytes(&self) -> u64 {
-        self.arrays
-            .iter()
-            .filter_map(|array| array.meta.byte_length())
-            .sum()
-    }
 }
 
 /// A held array, described without its contents.
@@ -98,15 +90,15 @@ pub struct DataSummary {
     pub meta: BufferMeta,
 }
 
-/// A description of an object in the scene, without its contents.
+/// A description of an object in the scene.
+///
+/// No buffers and no byte count: an object holds no data to describe. What is
+/// resident is a question about the arrays, and `ListData` answers it.
 #[derive(Debug, Clone)]
 pub struct ObjectSummary {
     pub id: u64,
     pub name: String,
-    pub kind: DatasetKind,
-    pub buffers: Vec<BufferMeta>,
-    pub total_bytes: u64,
-    /// Everything currently drawing this object's data.
+    /// Everything drawing here.
     pub actors: Vec<ActorSummary>,
     /// Parent in the scene tree, `None` for a root.
     pub parent: Option<u64>,
@@ -226,14 +218,6 @@ impl std::error::Error for SceneError {}
 /// applies a command never does the transfer.
 #[derive(Debug)]
 pub enum SceneCommand {
-    InsertObject {
-        name: String,
-        buffers: Vec<NamedBuffer>,
-        /// The client's declaration that the buffers are fields over a regular
-        /// grid. `None` leaves the structure to be inferred from their names.
-        grid: Option<dataset::GridData>,
-        reply: oneshot::Sender<ObjectSummary>,
-    },
     /// Takes in arrays on their own. No object, no actor — the reply hands back
     /// a handle per array, and something else decides what they are for.
     UploadData {
@@ -347,7 +331,6 @@ type Objects<'w, 's> = Query<
         Entity,
         &'static UniqueID,
         &'static SceneObject,
-        &'static DatasetKind,
         Option<&'static Actors>,
     ),
 >;
@@ -409,7 +392,6 @@ pub fn apply_scene_commands(
     mut transforms: Query<&mut Transform>,
     objects: Objects,
     ids: Query<&UniqueID>,
-    fields: Query<&data::Fields>,
     children: Query<&Children>,
     child_of: Query<&ChildOf>,
     globals: Query<&GlobalTransform>,
@@ -439,43 +421,6 @@ pub fn apply_scene_commands(
 
     for command in batch {
         match command {
-            SceneCommand::InsertObject {
-                name,
-                buffers,
-                grid,
-                reply,
-            } => {
-                let ingested = ingest::ingest(buffers, grid, &mut arrays);
-                let object = SceneObject {
-                    name,
-                    arrays: ingested.arrays,
-                };
-                let (id, summary) = spawn_object(
-                    &mut commands,
-                    &mut counter,
-                    &mut index,
-                    object,
-                    ingested.kind,
-                    Some(ingested.fields),
-                );
-                match ingested.dataset {
-                    ingest::Dataset::Points(points) => {
-                        commands.entity(index[&id]).insert(points);
-                    }
-                    ingest::Dataset::Mesh(mesh) => {
-                        commands.entity(index[&id]).insert(mesh);
-                    }
-                    ingest::Dataset::Grid(grid) => {
-                        commands.entity(index[&id]).insert(grid);
-                    }
-                    ingest::Dataset::Molecule(molecule) => {
-                        commands.entity(index[&id]).insert(molecule);
-                    }
-                    ingest::Dataset::Raw => {}
-                }
-                let _ = reply.send(summary);
-            }
-
             // Arrays with no object around them. The bytes become assets exactly
             // as an object's would; the only difference is who holds the handle.
             SceneCommand::UploadData {
@@ -525,18 +470,8 @@ pub fn apply_scene_commands(
             }
 
             SceneCommand::CreateObject { name, reply } => {
-                let object = SceneObject {
-                    name,
-                    arrays: Vec::new(),
-                };
-                let (_, summary) = spawn_object(
-                    &mut commands,
-                    &mut counter,
-                    &mut index,
-                    object,
-                    DatasetKind::Empty,
-                    None,
-                );
+                let object = SceneObject { name };
+                let (_, summary) = spawn_object(&mut commands, &mut counter, &mut index, object);
                 let _ = reply.send(summary);
             }
 
@@ -592,7 +527,7 @@ pub fn apply_scene_commands(
             SceneCommand::ListObjects { reply } => {
                 let mut listing: Vec<ObjectSummary> = objects
                     .iter()
-                    .map(|(entity, id, object, kind, drawn_by)| {
+                    .map(|(entity, id, object, drawn_by)| {
                         let drawn = drawn_by
                             .into_iter()
                             .flat_map(|list| list.iter())
@@ -603,7 +538,7 @@ pub fn apply_scene_commands(
                         let parent = effective_parent(entity, &pending_parent, &child_of)
                             .and_then(|p| ids.get(p).ok())
                             .map(|unique| unique.0);
-                        summarise(id.0, object, *kind, drawn, parent)
+                        summarise(id.0, object, drawn, parent)
                     })
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
@@ -941,24 +876,14 @@ fn spawn_object(
     counter: &mut GlobalIDCounter,
     index: &mut HashMap<u64, Entity>,
     object: SceneObject,
-    kind: DatasetKind,
-    fields: Option<data::Fields>,
 ) -> (u64, ObjectSummary) {
     let id = counter.next();
     let name = object.name.clone();
-    let buffers: Vec<BufferMeta> = object
-        .arrays
-        .iter()
-        .map(|array| array.meta.clone())
-        .collect();
-    let total_bytes = object.total_bytes();
 
     let spawned = commands
         .spawn((
             object,
             UniqueID(id),
-            kind,
-            fields.unwrap_or_default(),
             Transform::default(),
             Visibility::default(),
         ))
@@ -968,23 +893,13 @@ fn spawn_object(
     let summary = ObjectSummary {
         id,
         name,
-        kind,
-        buffers,
-        total_bytes,
         // Nothing draws a new object. The caller adds an actor when it has
         // decided how it wants this drawn.
         actors: Vec::new(),
         parent: None,
     };
 
-    info!(
-        "scene: added {} object {} \"{}\" ({} arrays, {} bytes, not drawn)",
-        kind.as_str(),
-        id,
-        summary.name,
-        summary.buffers.len(),
-        summary.total_bytes,
-    );
+    info!("scene: added object {} \"{}\", not drawn", id, summary.name);
 
     (id, summary)
 }
@@ -1237,16 +1152,12 @@ fn summarise_actor(
 fn summarise(
     id: u64,
     object: &SceneObject,
-    kind: DatasetKind,
     actors: Vec<ActorSummary>,
     parent: Option<u64>,
 ) -> ObjectSummary {
     ObjectSummary {
         id,
         name: object.name.clone(),
-        kind,
-        buffers: object.arrays.iter().map(|a| a.meta.clone()).collect(),
-        total_bytes: object.total_bytes(),
         actors,
         parent,
     }

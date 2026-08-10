@@ -15,9 +15,8 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::counter::UniqueID;
-use crate::scene::data::{FieldKind, Fields};
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
-use crate::scene::{Actors, ColorBy, DataArray, DatasetKind, SceneObject, Subset};
+use crate::scene::{Actors, ColorBy, DataArray, SceneObject, Subset};
 use crate::scene::{BufferMeta, DataStore};
 
 /// A flattened view of one object.
@@ -25,12 +24,7 @@ pub struct Row {
     pub entity: Entity,
     pub id: u64,
     pub name: String,
-    pub kind: DatasetKind,
     pub visible: bool,
-    pub arrays: usize,
-    pub bytes: u64,
-    /// Field name and what shape its values have, for the colour-by picker.
-    pub fields: Vec<FieldRow>,
     /// Everything drawing this object's data, wherever it is placed.
     pub actors: Vec<ActorRow>,
     /// Kinds that could be added to this object, as `(id, label)`. Resolved
@@ -38,11 +32,6 @@ pub struct Row {
     pub available: Vec<(&'static str, &'static str)>,
     /// Child *objects* only. Actors are children too and are excluded here.
     pub children: Vec<Entity>,
-}
-
-pub struct FieldRow {
-    pub name: String,
-    pub kind: &'static str,
 }
 
 pub struct ActorRow {
@@ -62,9 +51,6 @@ pub struct Owner {
     pub object: u64,
     /// The buffer name it was uploaded under.
     pub name: String,
-    /// Fields whose values are these bytes. Separate from `name` because a
-    /// buffer is a field as well as a buffer, and the two names can differ.
-    pub fields: Vec<String>,
 }
 
 /// Everything the UI reads about objects, in one query.
@@ -78,9 +64,7 @@ pub type ObjectData<'w, 's> = Query<
         Entity,
         &'static UniqueID,
         &'static SceneObject,
-        &'static DatasetKind,
         &'static Visibility,
-        Option<&'static Fields>,
         Option<&'static Children>,
         Option<&'static Actors>,
         Option<&'static ChildOf>,
@@ -123,9 +107,8 @@ impl Gathered {
     /// The actor with this entity, together with the object whose data it
     /// draws.
     ///
-    /// The pair comes back together because every control that edits an actor
-    /// also needs the source's fields — the colour picker offers them, and so
-    /// does any `Field` parameter.
+    /// The object comes back too, because the controls head their panel with
+    /// which object the actor is drawn under.
     pub fn actor(&self, entity: Entity) -> Option<(&Row, &ActorRow)> {
         self.rows.values().find_map(|row| {
             row.actors
@@ -156,7 +139,7 @@ pub fn gather(
         .collect();
     bindable.sort_by_key(|(id, _)| *id);
 
-    for (entity, id, object, kind, visibility, fields, children, drawn_by, parent) in objects {
+    for (entity, id, object, visibility, children, drawn_by, parent) in objects {
         let child_objects: Vec<Entity> = children
             .into_iter()
             .flatten()
@@ -189,35 +172,9 @@ pub fn gather(
         let available: Vec<(&'static str, &'static str)> =
             registry.iter().map(|kind| (kind.id, kind.label)).collect();
 
-        for array in &object.arrays {
-            owners.insert(
-                array.handle.id(),
-                Owner {
-                    object: id.0,
-                    name: array.meta.name.clone(),
-                    fields: Vec::new(),
-                },
-            );
-        }
-        // A field names bytes that were already uploaded as a buffer, so this
-        // usually annotates an entry that exists. Grids are the exception:
-        // their fields are the only thing uploaded, so the entry starts here.
-        if let Some(fields) = fields {
-            for (name, field) in &fields.0 {
-                owners
-                    .entry(field.array.id())
-                    .or_insert_with(|| Owner {
-                        object: id.0,
-                        name: name.clone(),
-                        fields: Vec::new(),
-                    })
-                    .fields
-                    .push(name.clone());
-            }
-        }
-        // An actor's selection is an array too, and it is held by the actor
-        // rather than the object. Without this the inventory calls it
-        // unreferenced, which is exactly backwards.
+        // An object owns no arrays now. The only thing still tied to one is an
+        // actor's selection, which the actor holds rather than the store —
+        // without this the inventory calls it unreferenced, which is backwards.
         for actor in &drawn {
             if let Subset::Selected { array, .. } = &actor.subset {
                 owners.insert(
@@ -225,29 +182,10 @@ pub fn gather(
                     Owner {
                         object: id.0,
                         name: "subset".into(),
-                        fields: Vec::new(),
                     },
                 );
             }
         }
-
-        let mut field_names: Vec<FieldRow> = fields
-            .map(|fields| {
-                fields
-                    .0
-                    .iter()
-                    .map(|(name, field)| FieldRow {
-                        name: name.clone(),
-                        kind: match field.kind {
-                            FieldKind::Scalar => "scalar",
-                            FieldKind::Vector => "vector",
-                            FieldKind::Tensor(_) => "tensor",
-                        },
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        field_names.sort_by(|a, b| a.name.cmp(&b.name));
 
         // A parent that is not itself an object does not make this a child.
         let parented = parent.is_some_and(|link| objects.contains(link.parent()));
@@ -261,11 +199,7 @@ pub fn gather(
                 entity,
                 id: id.0,
                 name: object.name.clone(),
-                kind: *kind,
                 visible: *visibility != Visibility::Hidden,
-                arrays: object.arrays.len(),
-                bytes: object.total_bytes(),
-                fields: field_names,
                 actors: drawn,
                 available,
                 children: child_objects,
@@ -273,23 +207,17 @@ pub fn gather(
         );
     }
 
-    for owner in owners.values_mut() {
-        owner.fields.sort();
-    }
-
     let handle = |entity: &Entity| rows.get(entity).map(|row| row.id).unwrap_or(u64::MAX);
     roots.sort_by_key(handle);
     let mut ordered: Vec<Entity> = rows.keys().copied().collect();
     ordered.sort_by_key(handle);
 
-    // Objects and loose arrays both, or the count and the size would disagree:
-    // the listing shows every array in memory, so the total has to cover them.
-    let object_bytes: u64 = rows.values().map(|row| row.bytes).sum();
-    let held_bytes: u64 = store
+    // Every array in memory. They are all held rather than owned now, so there
+    // is no second source to add in.
+    let total_bytes: u64 = store
         .iter()
         .filter_map(|(_, array)| array.meta.byte_length())
         .sum();
-    let total_bytes = object_bytes + held_bytes;
 
     Gathered {
         rows,

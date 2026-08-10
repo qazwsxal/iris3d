@@ -44,36 +44,6 @@ class BufferSpec(_message.Message):
     byte_length: int
     def __init__(self, name: _Optional[str] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ..., byte_length: _Optional[int] = ...) -> None: ...
 
-class Grid(_message.Message):
-    __slots__ = ("origin", "spacing", "dims")
-    ORIGIN_FIELD_NUMBER: _ClassVar[int]
-    SPACING_FIELD_NUMBER: _ClassVar[int]
-    DIMS_FIELD_NUMBER: _ClassVar[int]
-    origin: Vector3
-    spacing: Vector3
-    dims: Dimensions
-    def __init__(self, origin: _Optional[_Union[Vector3, _Mapping]] = ..., spacing: _Optional[_Union[Vector3, _Mapping]] = ..., dims: _Optional[_Union[Dimensions, _Mapping]] = ...) -> None: ...
-
-class Dimensions(_message.Message):
-    __slots__ = ("x", "y", "z")
-    X_FIELD_NUMBER: _ClassVar[int]
-    Y_FIELD_NUMBER: _ClassVar[int]
-    Z_FIELD_NUMBER: _ClassVar[int]
-    x: int
-    y: int
-    z: int
-    def __init__(self, x: _Optional[int] = ..., y: _Optional[int] = ..., z: _Optional[int] = ...) -> None: ...
-
-class ObjectHeader(_message.Message):
-    __slots__ = ("name", "buffers", "grid")
-    NAME_FIELD_NUMBER: _ClassVar[int]
-    BUFFERS_FIELD_NUMBER: _ClassVar[int]
-    GRID_FIELD_NUMBER: _ClassVar[int]
-    name: str
-    buffers: _containers.RepeatedCompositeFieldContainer[BufferSpec]
-    grid: Grid
-    def __init__(self, name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., grid: _Optional[_Union[Grid, _Mapping]] = ...) -> None: ...
-
 class Chunk(_message.Message):
     __slots__ = ("buffer_index", "offset", "data")
     BUFFER_INDEX_FIELD_NUMBER: _ClassVar[int]
@@ -142,22 +112,6 @@ class ReleaseDataResponse(_message.Message):
     released: _containers.RepeatedCompositeFieldContainer[DataHandle]
     def __init__(self, released: _Optional[_Iterable[_Union[DataHandle, _Mapping]]] = ...) -> None: ...
 
-class UploadObjectRequest(_message.Message):
-    __slots__ = ("header", "chunk")
-    HEADER_FIELD_NUMBER: _ClassVar[int]
-    CHUNK_FIELD_NUMBER: _ClassVar[int]
-    header: ObjectHeader
-    chunk: Chunk
-    def __init__(self, header: _Optional[_Union[ObjectHeader, _Mapping]] = ..., chunk: _Optional[_Union[Chunk, _Mapping]] = ...) -> None: ...
-
-class UploadObjectResponse(_message.Message):
-    __slots__ = ("handle", "total_bytes")
-    HANDLE_FIELD_NUMBER: _ClassVar[int]
-    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
-    handle: ObjectHandle
-    total_bytes: int
-    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., total_bytes: _Optional[int] = ...) -> None: ...
-
 class ObjectHandle(_message.Message):
     __slots__ = ("id",)
     ID_FIELD_NUMBER: _ClassVar[int]
@@ -165,22 +119,16 @@ class ObjectHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ObjectInfo(_message.Message):
-    __slots__ = ("handle", "name", "buffers", "total_bytes", "dataset_kind", "actors", "parent")
+    __slots__ = ("handle", "name", "actors", "parent")
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
-    BUFFERS_FIELD_NUMBER: _ClassVar[int]
-    TOTAL_BYTES_FIELD_NUMBER: _ClassVar[int]
-    DATASET_KIND_FIELD_NUMBER: _ClassVar[int]
     ACTORS_FIELD_NUMBER: _ClassVar[int]
     PARENT_FIELD_NUMBER: _ClassVar[int]
     handle: ObjectHandle
     name: str
-    buffers: _containers.RepeatedCompositeFieldContainer[BufferSpec]
-    total_bytes: int
-    dataset_kind: str
     actors: _containers.RepeatedCompositeFieldContainer[ActorInfo]
     parent: ObjectHandle
-    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., buffers: _Optional[_Iterable[_Union[BufferSpec, _Mapping]]] = ..., total_bytes: _Optional[int] = ..., dataset_kind: _Optional[str] = ..., actors: _Optional[_Iterable[_Union[ActorInfo, _Mapping]]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ObjectHandle, _Mapping]] = ..., name: _Optional[str] = ..., actors: _Optional[_Iterable[_Union[ActorInfo, _Mapping]]] = ..., parent: _Optional[_Union[ObjectHandle, _Mapping]] = ...) -> None: ...
 
 class ActorHandle(_message.Message):
     __slots__ = ("id",)

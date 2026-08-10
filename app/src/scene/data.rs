@@ -1,11 +1,13 @@
-//! Arrays and the meaning attached to them.
+//! Arrays, and nothing about what they mean.
 //!
-//! Raw bytes live in [`DataArray`], a Bevy asset, so several actors of one
-//! object share a single copy and get change detection for free. Everything
-//! that says what the bytes *mean* — element type, shape, whether a field is
-//! scalar, vector or tensor, whether it sits on points or cells — is kept
-//! outside the array, because the same bytes legitimately mean different
-//! things in different contexts.
+//! Raw bytes live in [`DataArray`], a Bevy asset, so several actors binding the
+//! same array share one copy and get change detection for free. [`DataStore`]
+//! holds them by the handle a client knows them by.
+//!
+//! What the bytes *mean* is not recorded here, and deliberately not recorded at
+//! all: it is decided when an array is bound to an actor's input. The same
+//! numbers can be positions for one actor and a colour ramp for another, so
+//! there was never one right answer to store.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -83,6 +85,8 @@ impl BufferMeta {
     }
 
     /// Number of components per element: `[n, 3]` has three, `[n]` has one.
+    // Wanted once a client can ask what shape a held array is.
+    #[allow(dead_code)]
     pub fn components(&self) -> u64 {
         self.shape.iter().skip(1).product()
     }
@@ -234,76 +238,16 @@ impl DataArray {
     }
 }
 
-/// An array belonging to a scene object, retained so objects can be described
-/// without dereferencing their contents.
-#[derive(Debug, Clone)]
-pub struct NamedArray {
-    pub meta: BufferMeta,
-    pub handle: Handle<DataArray>,
-}
-
-/// What a field's components represent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldKind {
-    /// One component per element.
-    Scalar,
-    /// Three components per element.
-    Vector,
-    /// A rank-2 tensor — stress, strain, diffusion.
-    Tensor(TensorLayout),
-}
-
-/// How a tensor's components are packed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TensorLayout {
-    /// All nine components, row-major.
-    Full9,
-    /// The six unique components of a symmetric tensor, in Voigt order:
-    /// `xx, yy, zz, yz, xz, xy`. The usual storage for stress and strain.
-    SymmetricVoigt6,
-}
-
-/// What a field's values are attached to.
+/// What a selection's indices are attached to.
 ///
 /// The distinction the raw arrays cannot express: identical bytes mean
-/// different things depending on whether each value belongs to a point or to
-/// a cell.
+/// different things depending on whether each value belongs to a point or to a
+/// cell. The only thing still asking is a [`Subset`](super::Subset), which has
+/// to know whether it is keeping vertices or whole cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Association {
     PerPoint,
     PerCell,
-}
-
-/// A named quantity defined over a dataset.
-#[derive(Debug, Clone)]
-pub struct Field {
-    /// Unread until a backend distinguishes per-cell from per-point values;
-    /// `vertex_colours` currently assumes per-point for everything.
-    #[allow(dead_code)]
-    pub association: Association,
-    pub kind: FieldKind,
-    pub array: Handle<DataArray>,
-    pub meta: BufferMeta,
-}
-
-/// The fields defined over an object, keyed by name.
-#[derive(Component, Debug, Default)]
-pub struct Fields(pub HashMap<String, Field>);
-
-impl Field {
-    /// Infers a field kind from an array's component count.
-    ///
-    /// Provisional: six components are read as symmetric Voigt tensors, which
-    /// is the common convention for stress and strain but is a guess. Once the
-    /// wire format carries field kind explicitly this should defer to it.
-    pub fn infer_kind(meta: &BufferMeta) -> FieldKind {
-        match meta.components() {
-            9 => FieldKind::Tensor(TensorLayout::Full9),
-            6 => FieldKind::Tensor(TensorLayout::SymmetricVoigt6),
-            3 => FieldKind::Vector,
-            _ => FieldKind::Scalar,
-        }
-    }
 }
 
 #[cfg(test)]

@@ -9,7 +9,6 @@ from .client import (
     DEFAULT_CONNECT_TIMEOUT,
     ActorKindSummary,
     ActorSummary,
-    BufferInfo,
     Client,
     Coloring,
     Grid,
@@ -18,9 +17,8 @@ from .client import (
     SubsetSummary,
     from_proto_dtype,
     to_proto_dtype,
-    upload_messages,
 )
-from .v1.scene_pb2 import BufferSpec, Chunk, Dtype, ObjectHandle, ObjectHeader
+from .v1.scene_pb2 import BufferSpec, Chunk, Dtype, ObjectHandle
 from .v1.scene_pb2_grpc import SceneServiceStub
 
 __all__ = [
@@ -31,7 +29,6 @@ __all__ = [
     "DEFAULT_CONNECT_TIMEOUT",
     "ActorKindSummary",
     "ActorSummary",
-    "BufferInfo",
     "BufferSpec",
     "Chunk",
     "Client",
@@ -39,7 +36,6 @@ __all__ = [
     "Dtype",
     "Grid",
     "ObjectHandle",
-    "ObjectHeader",
     "ObjectSummary",
     "ParamInfo",
     "SceneServiceStub",
@@ -48,5 +44,4 @@ __all__ = [
     "molecules",
     "testdata",
     "to_proto_dtype",
-    "upload_messages",
 ]

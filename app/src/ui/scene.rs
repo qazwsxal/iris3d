@@ -9,7 +9,7 @@ use bevy_egui::egui;
 use crate::viewport::OverlaySettings;
 
 use super::gather::Gathered;
-use super::{PendingActions, UiAction, UiState, human_bytes};
+use super::{PendingActions, UiAction, UiState};
 
 pub fn list(
     ui: &mut egui::Ui,
@@ -94,17 +94,6 @@ pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &m
     egui::Grid::new("object-details")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("kind");
-            ui.monospace(row.kind.as_str());
-            ui.end_row();
-            ui.label("arrays");
-            ui.monospace(format!("{}", row.arrays));
-            ui.end_row();
-            ui.label("size");
-            ui.monospace(human_bytes(row.bytes));
-            ui.end_row();
-            ui.label("fields");
-            ui.monospace(format!("{}", row.fields.len()));
             ui.end_row();
             ui.label("actors");
             ui.monospace(format!("{}", row.actors.len()));

@@ -67,11 +67,6 @@ class SceneServiceStub(object):
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataRequest.SerializeToString,
                 response_deserializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataResponse.FromString,
                 _registered_method=True)
-        self.UploadObject = channel.stream_unary(
-                '/iris3d.v1.SceneService/UploadObject',
-                request_serializer=iris3d_dot_v1_dot_scene__pb2.UploadObjectRequest.SerializeToString,
-                response_deserializer=iris3d_dot_v1_dot_scene__pb2.UploadObjectResponse.FromString,
-                _registered_method=True)
         self.CreateObject = channel.unary_unary(
                 '/iris3d.v1.SceneService/CreateObject',
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.CreateObjectRequest.SerializeToString,
@@ -205,25 +200,6 @@ class SceneServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def UploadObject(self, request_iterator, context):
-        """Uploads a single object as a stream of chunks.
-
-        The object holds data and a place in the tree. Nothing draws it: call
-        AddActor to say how it should look. The server does not choose a
-        representation on a client's behalf, so an upload alone changes what is in
-        the scene without changing what is on screen.
-
-        The first message on the stream MUST carry `header`; every subsequent
-        message MUST carry `chunk`. Chunks are written into the buffers declared
-        by the header, and the upload is only committed to the scene once every
-        declared buffer has received exactly its `byte_length` bytes. A stream
-        that ends early, overruns a buffer, or arrives out of order is rejected
-        and nothing is added to the scene.
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def CreateObject(self, request, context):
         """Creates an object that holds no data.
 
@@ -330,11 +306,6 @@ def add_SceneServiceServicer_to_server(servicer, server):
                     servicer.ReleaseData,
                     request_deserializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataRequest.FromString,
                     response_serializer=iris3d_dot_v1_dot_scene__pb2.ReleaseDataResponse.SerializeToString,
-            ),
-            'UploadObject': grpc.stream_unary_rpc_method_handler(
-                    servicer.UploadObject,
-                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.UploadObjectRequest.FromString,
-                    response_serializer=iris3d_dot_v1_dot_scene__pb2.UploadObjectResponse.SerializeToString,
             ),
             'CreateObject': grpc.unary_unary_rpc_method_handler(
                     servicer.CreateObject,
@@ -506,33 +477,6 @@ class SceneService(object):
             '/iris3d.v1.SceneService/ReleaseData',
             iris3d_dot_v1_dot_scene__pb2.ReleaseDataRequest.SerializeToString,
             iris3d_dot_v1_dot_scene__pb2.ReleaseDataResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def UploadObject(request_iterator,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.stream_unary(
-            request_iterator,
-            target,
-            '/iris3d.v1.SceneService/UploadObject',
-            iris3d_dot_v1_dot_scene__pb2.UploadObjectRequest.SerializeToString,
-            iris3d_dot_v1_dot_scene__pb2.UploadObjectResponse.FromString,
             options,
             channel_credentials,
             insecure,
