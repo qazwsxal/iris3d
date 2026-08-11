@@ -12,7 +12,7 @@ than an ImportError from three frames down.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -29,13 +29,126 @@ __all__ = [
 ]
 
 # Symbols in atomic-number order; index + 1 is Z.
-_SYMBOLS = (
-    "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni "
-    "Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe "
-    "Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg "
-    "Tl Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr Rf Db Sg "
-    "Bh Hs Mt Ds Rg Cn Nh Fl Mc Lv Ts Og"
-).split()
+_SYMBOLS = [
+    "H",
+    "He",
+    "Li",
+    "Be",
+    "B",
+    "C",
+    "N",
+    "O",
+    "F",
+    "Ne",
+    "Na",
+    "Mg",
+    "Al",
+    "Si",
+    "P",
+    "S",
+    "Cl",
+    "Ar",
+    "K",
+    "Ca",
+    "Sc",
+    "Ti",
+    "V",
+    "Cr",
+    "Mn",
+    "Fe",
+    "Co",
+    "Ni",
+    "Cu",
+    "Zn",
+    "Ga",
+    "Ge",
+    "As",
+    "Se",
+    "Br",
+    "Kr",
+    "Rb",
+    "Sr",
+    "Y",
+    "Zr",
+    "Nb",
+    "Mo",
+    "Tc",
+    "Ru",
+    "Rh",
+    "Pd",
+    "Ag",
+    "Cd",
+    "In",
+    "Sn",
+    "Sb",
+    "Te",
+    "I",
+    "Xe",
+    "Cs",
+    "Ba",
+    "La",
+    "Ce",
+    "Pr",
+    "Nd",
+    "Pm",
+    "Sm",
+    "Eu",
+    "Gd",
+    "Tb",
+    "Dy",
+    "Ho",
+    "Er",
+    "Tm",
+    "Yb",
+    "Lu",
+    "Hf",
+    "Ta",
+    "W",
+    "Re",
+    "Os",
+    "Ir",
+    "Pt",
+    "Au",
+    "Hg",
+    "Tl",
+    "Pb",
+    "Bi",
+    "Po",
+    "At",
+    "Rn",
+    "Fr",
+    "Ra",
+    "Ac",
+    "Th",
+    "Pa",
+    "U",
+    "Np",
+    "Pu",
+    "Am",
+    "Cm",
+    "Bk",
+    "Cf",
+    "Es",
+    "Fm",
+    "Md",
+    "No",
+    "Lr",
+    "Rf",
+    "Db",
+    "Sg",
+    "Bh",
+    "Hs",
+    "Mt",
+    "Ds",
+    "Rg",
+    "Cn",
+    "Nh",
+    "Fl",
+    "Mc",
+    "Lv",
+    "Ts",
+    "Og",
+]
 _BY_SYMBOL = {symbol.upper(): index + 1 for index, symbol in enumerate(_SYMBOLS)}
 
 #: Bond types, matching biotite's `BondType` enum, which iris3d adopts as its
@@ -70,7 +183,7 @@ def _biotite() -> Any:
     return struc
 
 
-def atomic_numbers(symbols: "np.ndarray | list[str]") -> np.ndarray:
+def atomic_numbers(symbols: np.ndarray | list[str]) -> np.ndarray:
     """Maps element symbols to atomic numbers, as uint8.
 
     Unrecognised or blank symbols become 0, which the renderer draws in the
@@ -83,7 +196,7 @@ def atomic_numbers(symbols: "np.ndarray | list[str]") -> np.ndarray:
 
 
 def arrays_from_atoms(
-    atoms: "AtomArray",
+    atoms: AtomArray,
     *,
     connect: bool = True,
 ) -> dict[str, np.ndarray]:
@@ -150,7 +263,9 @@ def arrays_from_atoms(
 _EXTRA_FIELDS = ["b_factor", "occupancy", "charge"]
 
 
-def load_structure(path: str, *, model: int = 1, connect: bool = True) -> dict[str, np.ndarray]:
+def load_structure(
+    path: str, *, model: int = 1, connect: bool = True
+) -> dict[str, np.ndarray]:
     """Reads a structure file (PDB, mmCIF, BinaryCIF, MOL/SDF...) for upload.
 
     ``model`` selects one frame from a multi-model file such as an NMR
@@ -172,7 +287,7 @@ def fetch(
     pdb_id: str,
     *,
     directory: str | None = None,
-    file_format: str = "pdb",
+    file_format: Literal["pdb", "cif"] = "pdb",
     model: int = 1,
     connect: bool = True,
 ) -> dict[str, np.ndarray]:
@@ -204,7 +319,7 @@ def residue(name: str) -> dict[str, np.ndarray]:
     molecular path without a structure file to hand.
     """
     _biotite()
-    import biotite.structure.info as info
+    from biotite.structure import info
 
     template = info.residue(name)
     if template is None:

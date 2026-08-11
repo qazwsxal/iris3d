@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Self, cast
 
 import grpc
 import numpy as np
@@ -43,8 +44,8 @@ from .v1.scene_pb2 import (
     RemoveActorRequest,
     SetActorRequest,
     SetParentRequest,
-    Subset,
     SetTransformRequest,
+    Subset,
     UploadDataRequest,
     Vector3,
     VectorValue,
@@ -66,7 +67,7 @@ DEFAULT_CHUNK_BYTES = 1 << 20
 #: a cold debug-build start of the Bevy app.
 DEFAULT_CONNECT_TIMEOUT = 60.0
 
-_TO_PROTO: dict[np.dtype, "Dtype.ValueType"] = {
+_TO_PROTO: dict[np.dtype, Dtype] = {
     np.dtype(np.uint8): Dtype.DTYPE_UINT8,
     np.dtype(np.int8): Dtype.DTYPE_INT8,
     np.dtype(np.uint16): Dtype.DTYPE_UINT16,
@@ -82,7 +83,7 @@ _TO_PROTO: dict[np.dtype, "Dtype.ValueType"] = {
 _FROM_PROTO = {proto: dtype for dtype, proto in _TO_PROTO.items()}
 
 
-def to_proto_dtype(dtype: np.dtype) -> "Dtype.ValueType":
+def to_proto_dtype(dtype: np.dtype) -> Dtype:
     """Maps a numpy dtype onto its wire equivalent."""
     try:
         return _TO_PROTO[np.dtype(dtype).newbyteorder("=")]
@@ -90,7 +91,7 @@ def to_proto_dtype(dtype: np.dtype) -> "Dtype.ValueType":
         raise ValueError(f"unsupported dtype {dtype!r}") from None
 
 
-def from_proto_dtype(dtype: "Dtype.ValueType") -> np.dtype:
+def from_proto_dtype(dtype: Dtype) -> np.dtype:
     """Maps a wire dtype back onto numpy."""
     try:
         return _FROM_PROTO[dtype]
@@ -122,7 +123,7 @@ class ObjectSummary:
     handle: int
     name: str
     #: Everything drawing here; empty if nothing does.
-    actors: tuple["ActorSummary", ...]
+    actors: tuple[ActorSummary, ...]
     #: Parent handle in the scene tree, or None for a root object.
     parent: int | None
 
@@ -212,7 +213,7 @@ class ActorSummary:
     #: and ``set_actor(handle, parents=[...])`` puts it back on screen.
     parents: tuple[int, ...]
     #: Complete and in range, whatever was sent to produce it.
-    params: dict[str, float | bool]
+    params: dict[str, RawParamValue]
     coloring: Coloring
     #: The setting, not whether anything reaches the screen. A hidden object
     #: above it does not show here, and neither does being detached — a
@@ -231,7 +232,7 @@ class ParamInfo:
     #: "float", "bool", "choice", "array" or "vector".
     type: str
     #: Absent for an array input: there is no default array, so it starts unbound.
-    default: float | bool | str | None
+    default: float | bool | str | tuple[float, ...] | tuple[int, ...] | None
     #: Allowed range, for float parameters only.
     range: tuple[float, float] | None = None
     logarithmic: bool = False
@@ -296,7 +297,7 @@ class ActorKindSummary:
     """
 
 
-def _param_value(value: float | bool | str) -> ParamValue:
+def _param_value(value: RawParamValue) -> ParamValue:
     """Wraps a Python value for the wire.
 
     ``bool`` is checked first: it is a subclass of ``int``, so testing for a
@@ -321,8 +322,9 @@ def _param_value(value: float | bool | str) -> ParamValue:
         f"numbers or a Bind, not {type(value).__name__}"
     )
 
+RawParamValue = float | bool | str | tuple[float, ...] | Bind
 
-def _read_param(value: ParamValue) -> float | bool | str:
+def _read_param(value: ParamValue) -> RawParamValue:
     """Unwraps a value from the wire, keeping its type."""
     match value.WhichOneof("value"):
         case "flag":
@@ -339,7 +341,7 @@ def _read_param(value: ParamValue) -> float | bool | str:
             return value.number
 
 
-def _params(params: Mapping[str, float | bool | str] | None) -> dict[str, ParamValue]:
+def _params(params: Mapping[str, RawParamValue] | None) -> dict[str, ParamValue]:
     return {key: _param_value(value) for key, value in (params or {}).items()}
 
 
@@ -605,7 +607,7 @@ class Client:
                 f"iris3d was not reachable at {self._address} within {timeout:g}s"
             ) from None
 
-    def __enter__(self) -> "Client":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -701,8 +703,9 @@ class Client:
         ``(x, y, z, w)`` order; ``scale`` accepts a single number for a uniform
         scale.
         """
+        # Cast op needed for strict type checking
         if isinstance(scale, (int, float)):
-            scale = (float(scale),) * 3
+            scale = cast(tuple[float, float, float], (float(scale),) * 3)
         self._scene.SetTransform(
             SetTransformRequest(
                 handle=ObjectHandle(id=handle),

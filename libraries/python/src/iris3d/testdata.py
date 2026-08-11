@@ -11,6 +11,7 @@ Each generator returns a ``{buffer_name: ndarray}`` mapping ready to hand to
 """
 
 from __future__ import annotations
+from typing import cast
 
 import numpy as np
 
@@ -199,7 +200,7 @@ def random_cloud(count: int = 250_000, seed: int = 0) -> dict[str, np.ndarray]:
 def hydrogen_orbital(
     n: int = 48,
     extent: float = 12.0,
-) -> tuple[dict[str, np.ndarray], "Grid"]:
+) -> tuple[dict[str, np.ndarray], Grid]:
     """A scalar field on a regular grid: the hydrogen 3d_z2 orbital.
 
     Returns ``(arrays, grid)``, because a grid is declared rather than inferred
@@ -233,7 +234,9 @@ def hydrogen_orbital(
         "probability": (amplitude.ravel() ** 2).astype(np.float32),
         "cell_density": cell.ravel().astype(np.float32),
     }
-    return arrays, Grid(dims=(n, n, n), origin=(-extent,) * 3, spacing=(2.0 * extent / (n - 1),) * 3)
+    origin = cast(tuple[float, float, float], (-extent,) * 3)
+    spacing = cast(tuple[float, float, float], (2.0 * extent / (n - 1),) * 3)
+    return arrays, Grid(dims=(n, n, n), origin=origin, spacing=spacing)
 
 
 def examples() -> dict[str, dict[str, np.ndarray]]:
