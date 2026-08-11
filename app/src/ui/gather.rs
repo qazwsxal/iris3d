@@ -28,17 +28,29 @@ pub struct Row {
     pub visible: bool,
     /// Everything drawn under this object.
     pub actors: Vec<ActorRow>,
-    /// Kinds that could be added to this object, as `(id, label)`. Resolved
-    /// while gathering so the drawing closures never borrow the registry.
-    pub available: Vec<(&'static str, &'static str)>,
+    /// Kinds that could be added to this object. Resolved while gathering so
+    /// the drawing closures never borrow the registry.
+    pub available: Vec<KindOption>,
     /// Child *objects* only. Actors are children too and are excluded here.
     pub children: Vec<Entity>,
+}
+
+/// One kind offered in the "draw this another way" picker.
+pub struct KindOption {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// See [`ActorRow::shared`].
+    pub shared: bool,
 }
 
 pub struct ActorRow {
     pub entity: Entity,
     pub id: u64,
     pub label: &'static str,
+    /// Whether this kind exists under every backend. `false` is worth saying
+    /// out loud: the actor draws fine, but it will not survive a switch of
+    /// pathway, and nothing else on screen would reveal that.
+    pub shared: bool,
     /// The controls to show, taken straight from the backend's declaration —
     /// `&'static` so nothing here has to be cloned or borrowed from the world.
     pub specs: &'static [ParamSpec],
@@ -91,6 +103,9 @@ pub type ActorData<'w, 's> = Query<
 
 /// The whole scene as the UI sees it for one frame.
 pub struct Gathered {
+    /// The rendering pathway this build is running, for naming it where a kind
+    /// is specific to it.
+    pub backend: &'static str,
     pub rows: HashMap<Entity, Row>,
     /// Objects with no object parent, in handle order.
     pub roots: Vec<Entity>,
@@ -148,6 +163,7 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
         entity,
         id: id.0,
         label: registered.label,
+        shared: registered.shared,
         specs: registered.params,
         params: params.0.clone(),
         colour: colour.clone(),
@@ -200,8 +216,14 @@ pub fn gather(
 
         // Every kind, for every object. What an actor draws is what it binds, so
         // there is nothing about this node that could rule a kind out.
-        let available: Vec<(&'static str, &'static str)> =
-            registry.iter().map(|kind| (kind.id, kind.label)).collect();
+        let available: Vec<KindOption> = registry
+            .iter()
+            .map(|kind| KindOption {
+                id: kind.id,
+                label: kind.label,
+                shared: kind.shared,
+            })
+            .collect();
 
         // An object owns no arrays now. The only thing still tied to one is an
         // actor's selection, which the actor holds rather than the store —
@@ -260,6 +282,7 @@ pub fn gather(
         .sum();
 
     Gathered {
+        backend: registry.backend(),
         rows,
         roots,
         ordered,

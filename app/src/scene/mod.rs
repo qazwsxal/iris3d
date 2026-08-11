@@ -18,7 +18,9 @@
 //!
 //! Nothing here knows about gRPC, and nothing here draws. A rendering backend
 //! plugs in by consuming actors and their bindings — see [`crate::draw`], which
-//! is one such backend and deliberately not the only possible one.
+//! holds the pathways and the part they share. Which one is running is a launch
+//! choice; this module is the same either way, and that is the point of the
+//! split.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -139,6 +141,10 @@ pub struct SubsetSummary {
 pub struct KindSummary {
     pub id: String,
     pub label: String,
+    /// Whether this id exists under every backend. See
+    /// [`ActorKind::shared`](registry::ActorKind::shared) — a script using a
+    /// kind that is not shared stops working if the pathway changes.
+    pub shared: bool,
     pub params: &'static [registry::ParamSpec],
 }
 
@@ -162,8 +168,17 @@ pub enum SceneError {
         /// What is wrong, in the words of the input's own declaration.
         reason: String,
     },
-    /// No backend registered a kind by that name, so nothing could draw it.
-    UnknownKind(String),
+    /// The running backend registered no kind by that name, so nothing could
+    /// draw it.
+    ///
+    /// Carries the pathway as well as the name, because a kind can be perfectly
+    /// real under another backend and simply absent here. Saying which one is
+    /// running is the difference between "you mistyped it" and "you are on the
+    /// wrong pathway".
+    UnknownKind {
+        kind: String,
+        backend: &'static str,
+    },
     /// The requested parent is the object itself or one of its descendants.
     ///
     /// Rejecting this is not optional: Bevy's transform propagation *panics* on
@@ -195,10 +210,10 @@ impl Display for SceneError {
                 f,
                 "the array bound to \"{input}\" of actor kind \"{kind}\" {reason}"
             ),
-            SceneError::UnknownKind(kind) => write!(
+            SceneError::UnknownKind { kind, backend } => write!(
                 f,
-                "no actor kind \"{kind}\" — ask ListActorKinds \
-                 for the ones this build supports"
+                "the {backend} backend has no actor kind \"{kind}\" — ask \
+                 ListActorKinds for the ones this pathway draws"
             ),
             SceneError::WouldCycle { object, parent } => write!(
                 f,
@@ -652,6 +667,7 @@ pub fn apply_scene_commands(
                     .map(|kind| KindSummary {
                         id: kind.id.to_string(),
                         label: kind.label.to_string(),
+                        shared: kind.shared,
                         params: kind.params,
                     })
                     .collect();
@@ -740,7 +756,7 @@ fn add_actor(
 
     // The caller names the kind. There is no default to fall back on: which
     // representation suits some data is a judgement, and the server has no
-    // basis for it beyond the order its backends registered in.
+    // basis for it beyond the order the kinds happened to register in.
     //
     // Nor is there a check that the kind suits the object any more. It used to
     // ask `supports(DatasetKind)`, which only meant anything while an actor took
@@ -750,7 +766,10 @@ fn add_actor(
     // rather than about the node.
     let registered = registry
         .get(&kind)
-        .ok_or_else(|| SceneError::UnknownKind(kind.clone()))?;
+        .ok_or_else(|| SceneError::UnknownKind {
+            kind: kind.clone(),
+            backend: registry.backend(),
+        })?;
 
     // Unset parameters take the kind's default: this is a new actor, so there
     // is no previous value to preserve.
@@ -850,7 +869,10 @@ fn set_actor(
 
     let registered = registry
         .get(item.2.0)
-        .ok_or_else(|| SceneError::UnknownKind(item.2.0.to_string()))?;
+        .ok_or_else(|| SceneError::UnknownKind {
+            kind: item.2.0.to_string(),
+            backend: registry.backend(),
+        })?;
 
     // Merge rather than replace: a client changing one setting should not have
     // to restate the others, and omitting them must not silently reset them.
@@ -902,7 +924,7 @@ fn set_actor(
 /// Choosing how to draw something is not the server's decision to make. It
 /// used to pick the first registered kind that supported the dataset, which
 /// meant the server answered a question only the caller can — and answered it
-/// out of whatever order the backends happened to register in. A client that
+/// out of whatever order the kinds happened to register in. A client that
 /// wants the obvious representation asks `ListActorKinds` and names one.
 fn spawn_object(
     commands: &mut Commands,
@@ -1169,6 +1191,11 @@ mod tests {
         app.init_resource::<DataStore>();
         app.init_resource::<GlobalIDCounter>();
         app.init_resource::<ActorRegistry>();
+        // No pathway is added here, so nothing would otherwise name one, and the
+        // messages that quote the backend would read "the no backend has...".
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .served_by("test");
         app.init_resource::<KeepAwake>();
         app.init_resource::<GrpcBridge>();
         // Placements follow the parents the drain writes, so the whole chain
@@ -1237,6 +1264,7 @@ mod tests {
             .register(registry::ActorKind {
                 id: "marker",
                 label: "Marker",
+                shared: true,
                 params: &[],
                 apply: |_, _| {},
             });
@@ -1449,10 +1477,20 @@ mod tests {
             reply,
         });
         app.update();
+        let refusal = added.try_recv().expect("a reply").err();
         assert_eq!(
-            added.try_recv().expect("a reply").err(),
-            Some(SceneError::UnknownKind("no-such-kind".into()))
+            refusal,
+            Some(SceneError::UnknownKind {
+                kind: "no-such-kind".into(),
+                backend: "test",
+            })
         );
+        // The pathway belongs in the message, not only in the variant. A kind
+        // can be perfectly real under another backend, and a client that cannot
+        // tell "you mistyped it" from "you are on the wrong pathway" has to
+        // guess.
+        let said = refusal.expect("a refusal").to_string();
+        assert!(said.contains("test backend"), "{said}");
 
         let mut listed = send(&app, |reply| SceneCommand::ListObjects { reply });
         app.update();
@@ -1460,6 +1498,36 @@ mod tests {
             listed.try_recv().expect("a reply").is_empty(),
             "a refusal must not leave an empty object behind"
         );
+    }
+
+    /// Portability reaches a client, so a script can tell a kind that survives
+    /// a change of backend from one that does not. The UI reads the same field.
+    #[test]
+    fn listing_kinds_reports_whether_each_is_shared() {
+        let mut app = app();
+        marker(&mut app);
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(registry::ActorKind {
+                id: "only-here",
+                label: "Only here",
+                shared: false,
+                params: &[],
+                apply: |_, _| {},
+            });
+
+        let mut listed = send(&app, |reply| SceneCommand::ListActorKinds { reply });
+        app.update();
+        let kinds = listed.try_recv().expect("a reply");
+
+        let shared = |id: &str| {
+            kinds
+                .iter()
+                .find(|kind| kind.id == id)
+                .map(|kind| kind.shared)
+        };
+        assert_eq!(shared("marker"), Some(true));
+        assert_eq!(shared("only-here"), Some(false));
     }
 
     /// One actor under two objects is drawn twice and stays one actor.

@@ -426,7 +426,7 @@ fn scene_error(error: SceneError) -> Status {
         }
         // The caller named something that does not exist in this build, which
         // it could have discovered with ListActorKinds.
-        SceneError::UnknownKind(_) => Status::invalid_argument(error.to_string()),
+        SceneError::UnknownKind { .. } => Status::invalid_argument(error.to_string()),
         // The request was well-formed but the scene is not in a state where it
         // can be honoured.
         SceneError::WouldCycle { .. } => Status::failed_precondition(error.to_string()),
@@ -595,6 +595,7 @@ fn kind_info(summary: &KindSummary) -> ActorKindInfo {
     ActorKindInfo {
         id: summary.id.clone(),
         label: summary.label.clone(),
+        shared: summary.shared,
         params: summary
             .params
             .iter()

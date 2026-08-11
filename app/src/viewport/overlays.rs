@@ -42,7 +42,11 @@ const GRID: Color = Color::srgb(0.24, 0.25, 0.29);
 pub fn draw_overlays(
     mut gizmos: Gizmos,
     settings: Res<OverlaySettings>,
-    state: Res<UiState>,
+    // Optional because the overlays are a viewport concern and the selection is
+    // a UI one: the grid and axes are worth drawing whether or not a UI is
+    // running, and requiring the resource made the viewport panic in any build
+    // without `UiPlugin`. Nothing is selected when there is no UI to select in.
+    state: Option<Res<UiState>>,
     objects: Query<(Entity, &GlobalTransform, Option<&Children>), With<SceneObject>>,
     bounds: Query<(&Aabb, &GlobalTransform)>,
 ) {
@@ -70,7 +74,7 @@ pub fn draw_overlays(
     }
 
     for (entity, transform, children) in &objects {
-        let selected = state.selected == Some(entity);
+        let selected = state.as_ref().and_then(|state| state.selected) == Some(entity);
         if !selected && !settings.all_bounds {
             continue;
         }
