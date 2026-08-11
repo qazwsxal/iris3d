@@ -6,13 +6,13 @@
 //! appear once.
 //!
 //! They are separate now. The actor entity holds the definition — its kind, its
-//! parameters, its bindings — and owns the mesh and material assets a backend
-//! builds for it. It is not in the tree and it never renders. A [`Placement`]
+//! parameters, its bindings — and owns whatever drawable output its kind builds
+//! for it. It is not in the tree and it never renders. A [`Placement`]
 //! entity per parent is a child of an object and carries *clones of those
 //! handles*, which is what puts one drawing in several places for the cost of
 //! one mesh.
 //!
-//! Sharing the handles rather than the geometry is the whole point. A backend
+//! Sharing the handles rather than the geometry is the whole point. A kind
 //! rebuilds into the asset it already owns, so one rebuild updates every
 //! placement, and editing an actor edits every copy of it at once. Two actors
 //! binding the same array can do neither: they are two definitions, changed one
@@ -81,14 +81,14 @@ impl Default for Shown {
 
 /// Spawns an actor to be drawn under `parents`.
 ///
-/// `Visibility::Hidden`, always and permanently. An actor owns the mesh a
-/// backend builds for it, and a mesh on a visible entity is drawn — the actor
-/// is a root, so it would appear at the origin as a second copy of everything.
+/// `Visibility::Hidden`, always and permanently. An actor owns the mesh its
+/// kind builds for it, and a mesh on a visible entity is drawn — the actor is a
+/// root, so it would appear at the origin as a second copy of everything.
 ///
 /// Leaving `Visibility` off does not work, however much it looks like it
 /// should. `Mesh3d`'s derive requires only `Transform`, but `VisibilityPlugin`
 /// adds `Mesh3d -> Visibility` as a *runtime* required component, so the moment
-/// a backend inserts a mesh Bevy supplies a default `Visibility::Inherited` and
+/// a kind inserts a mesh Bevy supplies a default `Visibility::Inherited` and
 /// the actor renders. A required component is only filled in when absent, so
 /// carrying `Hidden` from the start is what holds.
 ///
@@ -97,7 +97,7 @@ impl Default for Shown {
 /// comes from [`Shown`] via [`apply_shown`].
 ///
 /// `subset` is a parameter rather than something the caller folds into `extra`
-/// because every backend queries one, so it cannot be optional — and a bundle
+/// because every kind queries one, so it cannot be optional — and a bundle
 /// carrying the same component twice is a panic, not a last-write-wins.
 pub fn spawn_actor(
     commands: &mut Commands,
@@ -127,7 +127,7 @@ pub fn spawn_actor(
 /// what notices and drops the entry so nothing tries to rebuild them.
 ///
 /// Adds and removes rather than rebuilding the set. A placement's mesh handle
-/// is written by whichever backend owns the actor, so respawning them each
+/// is written by whichever kind owns the actor, so respawning them each
 /// frame would throw that away and flicker.
 pub fn sync_placements(
     mut commands: Commands,
@@ -156,7 +156,21 @@ pub fn sync_placements(
             }
         }
         for parent in wanted.difference(&held) {
-            commands.spawn((Placement(actor), ChildOf(*parent), Visibility::default()));
+            // `Transform` explicitly, not as a side effect of something a
+            // backend adds later. A placement is a *place* — that is the whole
+            // of what it is — so it carries one whatever ends up drawn there.
+            //
+            // It used to arrive only because `Mesh3d` requires `Transform`, and
+            // the default backend always inserts one. A backend that puts its
+            // instances *under* the placement rather than on it left the
+            // placement with no `GlobalTransform` for them to inherit, and Bevy
+            // warned once per instance.
+            commands.spawn((
+                Placement(actor),
+                ChildOf(*parent),
+                Transform::default(),
+                Visibility::default(),
+            ));
         }
     }
 }
@@ -236,10 +250,10 @@ mod tests {
     /// It is a root, so a visible one puts a copy of everything at the origin
     /// alongside the real placements — which is exactly what happened when this
     /// relied on the actor simply having no `Visibility`. `VisibilityPlugin`
-    /// registers `Mesh3d -> Visibility` at runtime, so the first backend to
-    /// draw handed it a default `Inherited`.
+    /// registers `Mesh3d -> Visibility` at runtime, so the first kind to draw
+    /// handed it a default `Inherited`.
     #[test]
-    fn an_actor_stays_hidden_once_a_backend_gives_it_a_mesh() {
+    fn an_actor_stays_hidden_once_a_kind_gives_it_a_mesh() {
         let mut app = app();
         let object = object(&mut app);
         let actor = actor(&mut app, vec![object]);

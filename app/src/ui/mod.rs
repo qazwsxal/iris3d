@@ -160,6 +160,9 @@ fn draw_ui(
     store: Res<crate::scene::DataStore>,
     mut captured: ResMut<PointerCaptured>,
     mut overlays: ResMut<crate::viewport::OverlaySettings>,
+    // Only the raytracing pathway inserts this, so the UI asks rather than
+    // assumes. See `scene::list`.
+    mut accumulation: Option<ResMut<crate::draw::Accumulation>>,
     // Filtered on Camera3d, not `Without<EguiContext>` as bevy_egui's own
     // example does: with a single camera, bevy_egui puts the egui context on
     // that same entity, so excluding it matches nothing. A `Single` param that
@@ -272,7 +275,14 @@ fn draw_ui(
                     .show(ui, |ui| match tab {
                         Tab::Data => data::list(ui, &world, &state, &mut actions, &arrays),
                         Tab::Actors => actors::list(ui, &world, &state, &mut actions),
-                        Tab::Scene => scene::list(ui, &world, &state, &mut actions, &mut overlays),
+                        Tab::Scene => scene::list(
+                            ui,
+                            &world,
+                            &state,
+                            &mut actions,
+                            &mut overlays,
+                            accumulation.as_deref_mut(),
+                        ),
                     });
             })
             .response

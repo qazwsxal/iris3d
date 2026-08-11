@@ -1,36 +1,97 @@
 //! Rendering backends.
 //!
-//! Each backend is a system that picks up actor entities of one kind, reads the
-//! arrays that actor has *bound* — not whatever the node it hangs under happens
-//! to hold — and builds something drawable onto the actor entity itself. Nothing
-//! in [`crate::scene`] knows these exist, so a backend can be replaced or run
-//! alongside another.
+//! A **backend** is a whole rendering pathway: one pipeline, together with the
+//! actor kinds built for it. Backends are mutually exclusive, and which one
+//! runs is decided once at launch — not per camera, not per object, not per
+//! actor. Two techniques that composite differently cannot share a frame
+//! correctly, so choosing once removes the whole class of interop questions
+//! rather than answering them one at a time.
+//!
+//! This module is the part every backend shares, and it draws nothing itself:
+//! what makes an actor out of date, how a bound handle resolves to an array,
+//! how values become colours, and what order the per-frame work runs in. Each
+//! backend lives in its own directory below, owns whatever GPU data it
+//! produces, and registers its own actor kinds. How a dataset is best mapped
+//! onto GPU primitives depends on the pipeline, which is why the actors belong
+//! to the backend rather than sitting above it.
 //!
 //! What each kind needs is declared, not assumed: a kind states its inputs as
 //! array parameters, so a client is told that `points` wants `float32 [n, 3]`
-//! rather than having to name an array "positions" and hope.
+//! rather than having to name an array "positions" and hope. Kind ids are a
+//! shared vocabulary where they can be — `points` under two backends is the
+//! same physical thing drawn two ways, as a raytraced and a rasterised mesh
+//! are one mesh. A kind only one backend can provide says so, and
+//! [`ActorKind::shared`](crate::scene::registry::ActorKind::shared) is how.
 //!
-//! This is the straightforward `Mesh3d`-per-actor baseline. It is deliberately
-//! the simple option: it gets every sample dataset on screen and gives a
-//! reference image to check more ambitious approaches against. It will not
-//! scale — see the notes on each backend for where it gives out.
+//! [`default`] is the only backend today: a straightforward `Mesh3d`-per-actor
+//! baseline on Bevy's standard pipeline. It is deliberately the simple option —
+//! it gets every sample dataset on screen and gives a reference image to check
+//! more ambitious pathways against.
 
-use bevy::asset::embedded_asset;
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::render::settings::WgpuFeatures;
+use bevy::solari::prelude::SolariPlugins;
 
 use crate::scene::actor::ColorMap;
 
-use crate::scene::link::Placement;
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
-mod molecule;
-mod points;
-mod surface;
-mod volume;
+mod default;
+mod elements;
+mod probe;
+mod solari;
 
-pub use points::PointQuadMaterial;
-pub use volume::VolumeMaterial;
+/// How long the raytracing pathway keeps drawing to let its image settle.
+///
+/// Re-exported because the UI offers it as a control, and a control belongs
+/// where the settings are rather than behind a module path. Present as a
+/// resource only when that backend is running.
+pub use solari::Accumulation;
+
+/// Which rendering pathway to run.
+///
+/// Chosen once from `--backend` and never changed while the app is up. A
+/// pathway this machine cannot run must **refuse** rather than quietly fall
+/// back to another — see [`probe`], which enforces that.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    // Plain prose, no rustdoc link: clap prints these doc comments verbatim in
+    // `--help`, where a `[`default`]` would render as literal brackets.
+    /// Bevy's standard pipeline, drawing one mesh and material per actor.
+    #[default]
+    Default,
+    /// Raytraced lighting on bevy_solari. No transparency and no volumes.
+    Solari,
+}
+
+impl Backend {
+    /// What to call this pathway in a message. Also what the registry reports
+    /// as the backend a kind came from.
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Default => "default",
+            Backend::Solari => "solari",
+        }
+    }
+
+    /// GPU features without which this pathway cannot run at all.
+    ///
+    /// Asked once at startup and answered by refusing, never by degrading. The
+    /// standard pipeline needs nothing beyond the WebGPU baseline, so it is
+    /// always available; Solari names its own set, which is the honest source
+    /// for it. A moment pathway will want `FLOAT32_BLENDABLE` here, to blend
+    /// into a 32-bit float target.
+    pub fn requires(self) -> WgpuFeatures {
+        match self {
+            Backend::Default => WgpuFeatures::empty(),
+            Backend::Solari => SolariPlugins::required_wgpu_features(),
+        }
+    }
+}
 
 /// What about an actor's drawable output is out of date.
 ///
@@ -39,7 +100,7 @@ pub use volume::VolumeMaterial;
 /// meant rebuilding a merged mesh of tens of thousands of vertices per frame to
 /// change four bytes each.
 ///
-/// Flags accumulate and are cleared together once every backend has had its
+/// Flags accumulate and are cleared together once the backend has had its
 /// turn. Geometry subsumes colour: a rebuild produces vertex colours anyway.
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Dirty {
@@ -85,9 +146,9 @@ impl Dirty {
 /// Records that part of an actor needs redoing.
 ///
 /// Merges rather than overwrites: several systems mark independently in one
-/// tick — the generic classifier and each backend's own — and an `insert` would
-/// let whichever ran last drop the others' findings. `or_default` also means no
-/// backend has to arrange for the component to exist first.
+/// tick — the generic classifier and each actor kind's own — and an `insert`
+/// would let whichever ran last drop the others' findings. `or_default` also
+/// means no kind has to arrange for the component to exist first.
 pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
     commands
         .entity(entity)
@@ -100,19 +161,20 @@ pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
         });
 }
 
-/// What every backend needs to redraw one actor: its own style, how it is
-/// coloured, whose data it draws, what is out of date, and whatever it
-/// produced last time — which is what makes reuse rather than reallocation
-/// possible.
-pub(crate) type Drawable<'a, Style, Material> = (
+/// What every actor has, whichever backend is running: its own style, how it is
+/// coloured, how much of the data it draws, what it draws, and what is out of
+/// date.
+///
+/// A backend extends this with whatever *it* produced last time, which is what
+/// makes reuse rather than reallocation possible — and is precisely the part
+/// that depends on the pipeline. See [`default::Drawable`].
+pub(crate) type Actor<'a, Style> = (
     Entity,
     &'a Style,
     &'a ColorBy,
     &'a Subset,
     &'a Bindings,
     &'a Dirty,
-    Option<&'a Mesh3d>,
-    Option<&'a MeshMaterial3d<Material>>,
 );
 
 /// Resolves one of an actor's bound inputs to the array behind it.
@@ -131,202 +193,81 @@ pub(crate) fn bound<'a>(
 }
 
 /// Ordering label for the systems that decide what is out of date, so every one
-/// of them has marked before any backend reads the result.
+/// of them has marked before anything reads the result.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Invalidate;
 
-/// Ordering label for the backends, so dirty marking runs before them and
-/// clearing runs after.
+/// Ordering label for the systems that build an actor's drawable output.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-struct Backends;
+pub(crate) struct Draw;
 
-/// Replaces a mesh in place when the actor already has one.
+/// Ordering label for giving each placement whatever the actor it copies now
+/// holds. After [`Draw`], so a placement picks up a handle on the same frame
+/// the actor gets one rather than a frame late.
 ///
-/// Reusing the handle keeps the entity pointing at the same asset — and, more
-/// to the point, stops every rebuild leaking a fresh `Mesh` into `Assets`.
-pub(crate) fn ensure_mesh(
-    commands: &mut Commands,
-    entity: Entity,
-    meshes: &mut Assets<Mesh>,
-    existing: Option<&Mesh3d>,
-    mesh: Mesh,
-) {
-    if let Some(Mesh3d(handle)) = existing
-        && let Some(mut slot) = meshes.get_mut(handle)
-    {
-        *slot = mesh;
-        return;
-    }
-    commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
-}
+/// Not called `Copy`: a type of that name would shadow the trait for the whole
+/// module, and `Dirty` derives it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Place;
 
-/// As [`ensure_mesh`], for the material.
-pub(crate) fn ensure_material<M: Material>(
-    commands: &mut Commands,
-    entity: Entity,
-    materials: &mut Assets<M>,
-    existing: Option<&MeshMaterial3d<M>>,
-    material: M,
-) {
-    if let Some(MeshMaterial3d(handle)) = existing
-        && let Some(mut slot) = materials.get_mut(handle)
-    {
-        *slot = material;
-        return;
-    }
-    commands
-        .entity(entity)
-        .insert(MeshMaterial3d(materials.add(material)));
-}
-
-/// Overwrites a mesh's vertex colours without touching anything else.
+/// Runs one backend, plus the work every backend shares.
 ///
-/// Only legal when the vertex count is unchanged, which is exactly when the
-/// geometry is not also dirty.
-pub(crate) fn repaint(
-    meshes: &mut Assets<Mesh>,
-    existing: Option<&Mesh3d>,
-    colours: Vec<[f32; 4]>,
-) {
-    let Some(Mesh3d(handle)) = existing else {
-        return;
-    };
-    let Some(mut mesh) = meshes.get_mut(handle) else {
-        return;
-    };
-    if mesh.count_vertices() != colours.len() {
-        // Should not happen, and silently painting a prefix would be worse than
-        // waiting for the rebuild that is evidently coming.
-        warn!(
-            "draw: {} vertex colours for a mesh of {} vertices; skipping the repaint",
-            colours.len(),
-            mesh.count_vertices()
-        );
-        return;
-    }
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+/// Which one is a launch-time choice the caller has already made; see
+/// [`Backend`] and `crate::cli`.
+pub struct DrawPlugin {
+    pub backend: Backend,
 }
-
-pub struct DrawPlugin;
 
 impl Plugin for DrawPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "point_quad.wgsl");
-        embedded_asset!(app, "volume.wgsl");
-
         // Declaring the kinds is what makes them exist at all — `scene` holds
-        // no list of its own. `init_resource` rather than `insert_resource` so
-        // a second backend plugin can register alongside this one whichever
-        // order they are added in. Registration order decides which kind an
-        // upload of each dataset shape is drawn with.
+        // no list of its own. `init_resource` rather than `insert_resource`
+        // so the backend plugin can register into it whichever order the two
+        // are added in.
         app.init_resource::<ActorRegistry>();
-        {
-            let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
-            points::register(&mut registry);
-            surface::register(&mut registry);
-            molecule::register(&mut registry);
-            volume::register(&mut registry);
-        }
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .served_by(self.backend.name());
 
-        app.add_plugins((
-            MaterialPlugin::<PointQuadMaterial>::default(),
-            MaterialPlugin::<VolumeMaterial>::default(),
-        ))
-        .add_systems(
+        // The order lives in sets rather than one `.chain()`, because the
+        // systems being ordered are added by two different plugins and neither
+        // can name the other's.
+        app.configure_sets(
             Update,
             (
-                // Actors are spawned by the scene during Update, so this whole
-                // chain runs after it to pick them up on the frame they
-                // appear.
-                //
-                // Each backend classifies its own style changes: only it
-                // knows whether one of its parameters feeds the geometry or
-                // a material uniform, and centralising that would put
-                // backend knowledge back in shared code.
-                (
-                    mark_dirty,
-                    points::invalidate,
-                    surface::invalidate,
-                    molecule::invalidate,
-                    volume::invalidate,
-                )
-                    .in_set(Invalidate),
-                (
-                    points::draw_points,
-                    surface::draw_surfaces,
-                    molecule::draw_molecules,
-                    volume::draw_volumes,
-                )
-                    .in_set(Backends),
-                // After the backends, so a placement picks up a handle on the
-                // same frame the actor gets one rather than a frame late.
-                //
-                // No `VolumeMaterial` here: a volume's uniform holds the world
-                // transform of the copy being drawn, so its placements each get
-                // their own material rather than a copy of one. See `volume`.
-                (
-                    copy_meshes,
-                    copy_materials::<StandardMaterial>,
-                    copy_materials::<PointQuadMaterial>,
-                ),
-                clear_dirty,
-            )
-                .chain()
-                // Style components are derived from the parameters, so an
-                // actor has no style at all until that has run.
-                .after(crate::scene::registry::apply_actor_params),
+                // Actors are spawned by the scene during Update, and their
+                // style components are derived from the parameters, so an actor
+                // has no style at all until this has run.
+                Invalidate.after(crate::scene::registry::apply_actor_params),
+                Draw.after(Invalidate),
+                Place.after(Draw),
+            ),
+        )
+        .add_systems(
+            Update,
+            (mark_dirty.in_set(Invalidate), clear_dirty.after(Place)),
         );
-    }
-}
 
-/// Gives every placement of an actor the mesh that actor owns.
-///
-/// The handle, not the geometry. A backend rebuilds into the asset it already
-/// holds, so the copies never need touching again — this only has to run when
-/// an actor's handle is first created or genuinely replaced, and the comparison
-/// makes that the common case. Several placements sharing one mesh and one
-/// material is also what lets Bevy batch them into a single draw.
-fn copy_meshes(
-    mut commands: Commands,
-    actors: Query<&Mesh3d>,
-    placements: Query<(Entity, &Placement, Option<&Mesh3d>)>,
-) {
-    for (entity, placement, current) in &placements {
-        let Ok(mesh) = actors.get(placement.0) else {
-            // The actor has not been drawn yet. Nothing to copy, and it will be
-            // here next frame.
-            continue;
+        // Exactly one. Backends are pathways, not layers, so this is a choice
+        // rather than a list.
+        match self.backend {
+            Backend::Default => app.add_plugins(default::DefaultBackendPlugin),
+            Backend::Solari => app.add_plugins(solari::SolariBackendPlugin),
         };
-        if current.map(|Mesh3d(handle)| handle.id()) != Some(mesh.0.id()) {
-            commands.entity(entity).insert(mesh.clone());
-        }
     }
-}
 
-/// As [`copy_meshes`], for the material.
-///
-/// Generic because the material type is the backend's choice, so this is
-/// registered once per material the build knows about.
-fn copy_materials<M: Material>(
-    mut commands: Commands,
-    actors: Query<&MeshMaterial3d<M>>,
-    placements: Query<(Entity, &Placement, Option<&MeshMaterial3d<M>>)>,
-) {
-    for (entity, placement, current) in &placements {
-        let Ok(material) = actors.get(placement.0) else {
-            continue;
-        };
-        if current.map(|MeshMaterial3d(handle)| handle.id()) != Some(material.0.id()) {
-            commands.entity(entity).insert(material.clone());
-        }
+    /// Runs after every plugin has built, which is the first moment the render
+    /// app holds the adapter this pathway will actually draw with.
+    fn finish(&self, app: &mut App) {
+        probe::refuse_unsupported(app, self.backend);
     }
 }
 
 /// Flags what needs redoing, for the reasons any backend would agree on.
 ///
-/// Style parameters are not among them — what a parameter affects is the
-/// backend's business, so each classifies its own. See the `invalidate` system
-/// in each of them.
+/// Style parameters are not among them — what a parameter affects is the actor
+/// kind's business, so each classifies its own. See the `invalidate` system in
+/// each of them.
 #[allow(clippy::too_many_arguments)]
 fn mark_dirty(
     mut commands: Commands,
@@ -389,12 +330,12 @@ fn mark_dirty(
     }
 }
 
-/// Clears the flags once every backend has had a chance at them.
+/// Clears the flags once the backend has had a chance at them.
 ///
-/// Done centrally rather than per-backend because an actor is only handled by
-/// the one backend that understands it, and the others must not clear flags
-/// they ignored. Cleared in place rather than removed, so the component stays
-/// put and marking never costs an archetype move.
+/// Done here rather than in each actor kind because an actor is only handled by
+/// the one kind that understands it, and the others must not clear flags they
+/// ignored. Cleared in place rather than removed, so the component stays put and
+/// marking never costs an archetype move.
 fn clear_dirty(mut dirty: Query<&mut Dirty>) {
     for mut dirty in &mut dirty {
         if dirty.any() {
@@ -418,20 +359,24 @@ pub(crate) fn bound_colours(
     colour: &ColorBy,
     count: usize,
 ) -> Option<Vec<[f32; 4]>> {
-    let raw = array.to_f32();
-    let components = array.components().max(1) as usize;
-    let values: Vec<f32> = if components == 1 {
-        raw
-    } else {
-        raw.chunks_exact(components)
-            .map(|element| element.iter().map(|v| v * v).sum::<f32>().sqrt())
-            .collect()
-    };
-    scale_into_map(&values, colour, count)
+    Some(
+        normalised(array, colour, count)?
+            .into_iter()
+            .map(|t| sample(colour.map, t))
+            .collect(),
+    )
 }
 
-/// Scales values into the colour map, autoscaling unless a range is set.
-fn scale_into_map(values: &[f32], colour: &ColorBy, count: usize) -> Option<Vec<[f32; 4]>> {
+/// Where each element falls along the colour map, as 0..1.
+///
+/// The half of [`bound_colours`] that decides *how far along* rather than *what
+/// colour*. Split out because a backend may need the position rather than the
+/// colour: Solari cannot read vertex colours at all, so it writes this into a
+/// texture coordinate and lets a ramp texture supply the colour instead.
+///
+/// Autoscales over the drawn elements unless `ColorBy::range` pins it.
+pub(crate) fn normalised(array: &DataArray, colour: &ColorBy, count: usize) -> Option<Vec<f32>> {
+    let values = scalars(array);
     if values.len() < count {
         return None;
     }
@@ -456,9 +401,63 @@ fn scale_into_map(values: &[f32], colour: &ColorBy, count: usize) -> Option<Vec<
     Some(
         values[..count]
             .iter()
-            .map(|value| sample(colour.map, ((value - low) / span).clamp(0.0, 1.0)))
+            .map(|value| ((value - low) / span).clamp(0.0, 1.0))
             .collect(),
     )
+}
+
+/// One number per element, reducing a multi-component array to magnitude.
+fn scalars(array: &DataArray) -> Vec<f32> {
+    let raw = array.to_f32();
+    let components = array.components().max(1) as usize;
+    if components == 1 {
+        return raw;
+    }
+    raw.chunks_exact(components)
+        .map(|element| element.iter().map(|v| v * v).sum::<f32>().sqrt())
+        .collect()
+}
+
+/// How many steps a ramp texture carries. Also the number of buckets a backend
+/// quantises into when it has to colour per instance rather than per vertex, so
+/// the two routes to a colour agree to within one step.
+pub(crate) const RAMP_STEPS: usize = 256;
+
+/// The colour map as a 1D image, for a pipeline that cannot read vertex colours.
+///
+/// `Rgba8Unorm` rather than `Rgba8UnormSrgb`: [`sample`] already returns linear
+/// values, and the sRGB format would convert them a second time and wash the
+/// ramp out. Eight bits is enough because [`RAMP_STEPS`] is the resolution the
+/// map is quoted at anyway.
+///
+/// The caller must clamp to edge in both axes. Repeating wraps the top of the
+/// map onto the bottom, which shows up as a hard seam at the extremes.
+pub(crate) fn ramp_texture(map: ColorMap) -> Image {
+    let mut data = Vec::with_capacity(RAMP_STEPS * 4);
+    for step in 0..RAMP_STEPS {
+        let rgba = sample(map, step as f32 / (RAMP_STEPS - 1) as f32);
+        data.extend(rgba.iter().map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+    }
+
+    let mut image = Image::new(
+        Extent3d {
+            width: RAMP_STEPS as u32,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::default(),
+    );
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    image
 }
 
 /// Nine evenly spaced stops, linearly interpolated. Enough to be perceptually

@@ -77,7 +77,7 @@ pub enum Subset {
 impl Subset {
     /// Element indices to keep, or `None` for all of them.
     ///
-    /// `None` is the fast path and means exactly "no filtering", so a backend
+    /// `None` is the fast path and means exactly "no filtering", so a kind
     /// can skip the remap entirely rather than build the identity permutation.
     ///
     /// A selection that does not fit the data — the wrong length, or nothing

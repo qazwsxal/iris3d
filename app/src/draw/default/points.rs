@@ -72,6 +72,9 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "points",
         label: "points",
+        // A point cloud is a point cloud whichever pathway draws it. Camera-
+        // facing quads are this backend's answer, not part of what the id means.
+        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(PointsStyle {
@@ -92,7 +95,7 @@ pub fn register(registry: &mut ActorRegistry) {
 /// would then be the only thing missing, because everything else uses built-in
 /// materials. Embedding removes the failure mode and the runtime file
 /// dependency along with it.
-const SHADER: &str = "embedded://app/draw/point_quad.wgsl";
+const SHADER: &str = "embedded://app/draw/default/point_quad.wgsl";
 
 /// Corner offsets in UV space, running -0.5..0.5 so the inscribed disc has
 /// radius 0.5 and the quad's width equals the requested size.
@@ -141,7 +144,7 @@ pub fn draw_points(
     store: Res<DataStore>,
     dirty: Query<Drawable<PointsStyle, PointQuadMaterial>>,
 ) {
-    for (entity, style, colour, subset, bound, dirty, mesh3d, material3d) in &dirty {
+    for ((entity, style, colour, subset, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -246,8 +249,14 @@ mod tests {
     use crate::scene::{ActorKindId, ColorBy, SceneObject, Subset};
     use bevy::platform::collections::HashMap;
 
-    /// Runs the invalidation chain and this backend, with no renderer behind
-    /// it: everything being asserted is about assets, not pixels.
+    /// Runs the invalidation chain and this kind, with no renderer behind it:
+    /// everything being asserted is about assets, not pixels.
+    ///
+    /// Chained by hand rather than through the plugin's sets, because the point
+    /// is one kind in isolation — adding `DrawPlugin` would drag in every other
+    /// kind and a `MaterialPlugin` besides. The shared halves come from
+    /// `crate::draw`, which is two levels up now that this kind belongs to a
+    /// backend.
     fn app() -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
@@ -258,9 +267,9 @@ mod tests {
         app.add_systems(
             Update,
             (
-                (super::super::mark_dirty, invalidate),
+                (crate::draw::mark_dirty, invalidate),
                 draw_points,
-                super::super::clear_dirty,
+                crate::draw::clear_dirty,
             )
                 .chain(),
         );

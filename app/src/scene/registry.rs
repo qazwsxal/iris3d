@@ -9,9 +9,9 @@
 //! Each kind declares its parameters, and that one declaration is what the UI
 //! builds controls from, what the wire format carries, and what fills in
 //! defaults. An actor's parameters live in [`ActorParams`] as the single
-//! source of truth; [`apply_actor_params`] regenerates the backend's own typed
-//! component from them whenever they change. Backends therefore read plain
-//! typed fields and never touch the map, and nothing has to keep two copies in
+//! source of truth; [`apply_actor_params`] regenerates the kind's own typed
+//! component from them whenever they change. A kind therefore reads plain typed
+//! fields and never touches the map, and nothing has to keep two copies in
 //! agreement — the derived one is rewritten, never edited.
 
 use bevy::ecs::system::EntityCommands;
@@ -140,9 +140,6 @@ pub fn vector(params: &ParamMap, id: &str, components: usize) -> Vec<f64> {
 }
 
 /// Reads a three-component vector parameter. See [`float`].
-// Waiting on the volume backend, which is where a grid's origin and spacing
-// arrive as parameters.
-#[allow(dead_code)]
 pub fn vec3(params: &ParamMap, id: &str, fallback: Vec3) -> Vec3 {
     params
         .get(id)
@@ -157,8 +154,6 @@ pub fn vec3(params: &ParamMap, id: &str, fallback: Vec3) -> Vec3 {
 /// Negative or fractional components round towards a usable count rather than
 /// wrapping: a dimension of -1 is nonsense, and silently becoming 4294967295
 /// would ask for an allocation the size of the address space.
-// As for `vec3`: the volume backend is where a grid's dims arrive.
-#[allow(dead_code)]
 pub fn uvec3(params: &ParamMap, id: &str, fallback: UVec3) -> UVec3 {
     params
         .get(id)
@@ -197,11 +192,6 @@ pub enum ParamKind {
     /// for two. Every component shares one range, which is true of everything
     /// wanted so far — a spacing is positive on all three axes, an origin
     /// unbounded on all three.
-    ///
-    // Declared before the volume backend that needs it, for the same reason as
-    // `Array`: a declaration nothing consumes would be a control that does
-    // nothing, so the two land together.
-    #[allow(dead_code)]
     Vector {
         components: usize,
         default: &'static [f64],
@@ -211,13 +201,7 @@ pub enum ParamKind {
         /// should offer an integer control rather than a fractional one.
         integral: bool,
     },
-    /// An array the backend reads: positions, indices, a scalar field.
-    ///
-    // No backend declares one yet, on purpose. A declared input that nothing
-    // consumes is a control that silently does nothing — the exact fault this
-    // registry exists to prevent — so declaring and consuming land together,
-    // one backend at a time.
-    #[allow(dead_code)]
+    /// An array the kind reads: positions, indices, a scalar field.
     ///
     /// This is how a kind says what it needs in order to draw anything, and it
     /// replaces guessing from buffer names. A client asks `ListActorKinds`, sees
@@ -372,8 +356,22 @@ pub struct ActorKind {
     pub id: &'static str,
     pub label: &'static str,
 
+    /// Whether this id means the same thing under every backend.
+    ///
+    /// `true` promises that a script naming this kind gets the same physical
+    /// thing whichever pathway is running, drawn by whatever technique that
+    /// pathway uses — as a raytraced and a rasterised mesh are one mesh. The
+    /// parameters may still differ, which is why a client asks
+    /// `ListActorKinds` rather than assuming.
+    ///
+    /// `false` marks a kind only one backend can offer, so a script using it
+    /// stops working when the pathway changes. Said here, next to the id it
+    /// describes, rather than in a table somewhere that would drift against
+    /// what is actually registered.
+    pub shared: bool,
+
     pub params: &'static [ParamSpec],
-    /// Writes the backend's own typed style component from the parameters.
+    /// Writes the kind's own typed style component from the parameters.
     ///
     /// Called for a complete map, so an implementation may read every declared
     /// parameter and expect it to be there.
@@ -405,7 +403,7 @@ impl ActorKind {
     ///
     /// Missing parameters take their default, out-of-range ones are clamped,
     /// and anything not declared is dropped. Every route into the scene goes
-    /// through here, so no backend has to defend against a partial or hostile
+    /// through here, so no kind has to defend against a partial or hostile
     /// map.
     // Unused until a client can supply a map at all; the UI edits one value at
     // a time and goes through `ParamKind::sanitise` directly.
@@ -427,35 +425,63 @@ impl ActorKind {
     }
 }
 
-/// Every actor kind some backend has registered.
+/// Every actor kind the running backend has registered.
 ///
-/// Order is registration order, and it is presentation order only — what the
-/// UI lists and what `ListActorKinds` returns. Nothing here picks a kind on a
-/// caller's behalf: the registry answers what exists, and the caller decides.
-#[derive(Resource, Default)]
-pub struct ActorRegistry(Vec<ActorKind>);
+/// Only one backend runs, so this holds one pathway's kinds and nothing has to
+/// be filtered by which. Order is registration order, and it is presentation
+/// order only — what the UI lists and what `ListActorKinds` returns. Nothing
+/// here picks a kind on a caller's behalf: the registry answers what exists,
+/// and the caller decides.
+#[derive(Resource)]
+pub struct ActorRegistry {
+    kinds: Vec<ActorKind>,
+    backend: &'static str,
+}
+
+impl Default for ActorRegistry {
+    fn default() -> Self {
+        Self {
+            kinds: Vec::new(),
+            // Overwritten before any backend registers. Only stays this way in
+            // tests that exercise the scene with no pathway added at all.
+            backend: "no",
+        }
+    }
+}
 
 impl ActorRegistry {
     /// Adds a kind. A duplicate id replaces the earlier registration, so a
     /// backend can deliberately take over a name from another.
     pub fn register(&mut self, kind: ActorKind) {
-        if let Some(existing) = self.0.iter_mut().find(|existing| existing.id == kind.id) {
+        if let Some(existing) = self.kinds.iter_mut().find(|existing| existing.id == kind.id) {
             warn!("draw: actor kind \"{}\" re-registered", kind.id);
             *existing = kind;
             return;
         }
-        self.0.push(kind);
+        self.kinds.push(kind);
+    }
+
+    /// Records which backend these kinds came from, for messages that should
+    /// say which pathway refused. A name rather than the type, so `scene` needs
+    /// no knowledge of the backends themselves.
+    pub fn served_by(&mut self, backend: &'static str) {
+        self.backend = backend;
+    }
+
+    /// The running backend's name.
+    pub fn backend(&self) -> &'static str {
+        self.backend
     }
 
     pub fn get(&self, id: &str) -> Option<&ActorKind> {
-        self.0.iter().find(|kind| kind.id == id)
+        self.kinds.iter().find(|kind| kind.id == id)
     }
 
     // Wanted by the RPC that lets a client ask what kinds exist rather than
     // carrying its own table of them.
     #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &ActorKind> {
-        self.0.iter()
+        self.kinds.iter()
     }
 }
 
@@ -472,10 +498,10 @@ pub struct ActorParams(pub ParamMap);
 
 /// The arrays an actor has bound, by input id.
 ///
-/// Derived from [`ActorParams`], like a backend's style component, and for the
-/// same reason: a backend reads a plain typed field rather than searching the
+/// Derived from [`ActorParams`], like a kind's style component, and for the
+/// same reason: a kind reads a plain typed field rather than searching the
 /// map. One component for every kind rather than one per kind, because a
-/// binding means the same thing everywhere and every backend resolves it the
+/// binding means the same thing everywhere and every kind resolves it the
 /// same way — look the handle up in [`DataStore`](super::DataStore).
 ///
 /// Written only when it actually differs, which is what keeps a slider drag from
@@ -490,10 +516,10 @@ impl Bindings {
     }
 }
 
-/// Regenerates backends' typed style components from the parameters.
+/// Regenerates the kinds' typed style components from the parameters.
 ///
 /// `Changed` covers insertion, so an actor gets its style component on the
-/// tick it is spawned. Backends never write these components, which is what
+/// tick it is spawned. A kind never writes these components, which is what
 /// keeps the map authoritative rather than merely one of two opinions.
 pub fn apply_actor_params(
     mut commands: Commands,
@@ -502,11 +528,15 @@ pub fn apply_actor_params(
 ) {
     for (entity, kind, params, bound) in &changed {
         let Some(registered) = registry.get(kind.0) else {
-            warn!("draw: no backend registered for actor kind \"{}\"", kind.0);
+            warn!(
+                "draw: the {} backend registered no actor kind \"{}\"",
+                registry.backend(),
+                kind.0
+            );
             continue;
         };
 
-        // Bindings before the style component, so a backend that reads both in
+        // Bindings before the style component, so a kind that reads both in
         // the same tick sees them agree.
         let wanted = Bindings(
             registered
@@ -552,6 +582,7 @@ mod tests {
         ActorKind {
             id: "test",
             label: "test",
+            shared: true,
             params: SPECS,
             apply: |_, _| {},
         }
@@ -582,6 +613,7 @@ mod tests {
         ActorKind {
             id: "bound",
             label: "bound",
+            shared: true,
             params: WITH_INPUTS,
             apply: |_, _| {},
         }
@@ -743,7 +775,7 @@ mod tests {
     }
 
     /// Wrong type and unknown name both fall back rather than reaching a
-    /// backend that would then have to cope with them.
+    /// kind that would then have to cope with them.
     #[test]
     fn nonsense_is_dropped() {
         let mut given = ParamMap::default();
@@ -830,8 +862,9 @@ mod tests {
         );
     }
 
-    /// A kind no backend registered leaves the entity without a style, so the
-    /// backends simply never match it. Nothing should panic on the way there.
+    /// A kind nothing registered leaves the entity without a style, so the
+    /// backend's systems simply never match it. Nothing should panic on the way
+    /// there.
     #[test]
     fn an_unregistered_kind_is_survivable() {
         let mut app = app();
@@ -842,6 +875,36 @@ mod tests {
 
         app.update();
         assert!(app.world().get::<TestStyle>(entity).is_none());
+    }
+
+    /// Portability travels with the registration, so whatever asks — the UI,
+    /// `ListActorKinds` — gets the kind's own answer rather than a guess from a
+    /// table that could disagree with what was actually registered.
+    #[test]
+    fn a_kind_says_whether_it_is_shared_vocabulary() {
+        let mut registry = ActorRegistry::default();
+        registry.register(kind());
+        registry.register(ActorKind {
+            id: "only-here",
+            shared: false,
+            ..kind()
+        });
+
+        assert_eq!(registry.get("test").map(|kind| kind.shared), Some(true));
+        assert_eq!(
+            registry.get("only-here").map(|kind| kind.shared),
+            Some(false)
+        );
+    }
+
+    /// Which pathway registered these kinds, so a refusal can say so. Untouched
+    /// it reads "no", which is only ever true in a test with no backend added.
+    #[test]
+    fn the_registry_names_the_backend_that_filled_it() {
+        let mut registry = ActorRegistry::default();
+        assert_eq!(registry.backend(), "no");
+        registry.served_by("default");
+        assert_eq!(registry.backend(), "default");
     }
 
     #[test]

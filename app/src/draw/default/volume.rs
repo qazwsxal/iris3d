@@ -42,7 +42,7 @@ use crate::scene::{DataArray, DataStore};
 
 use super::{Dirty, Drawable, mark};
 
-const SHADER: &str = "embedded://app/draw/volume.wgsl";
+const SHADER: &str = "embedded://app/draw/default/volume.wgsl";
 
 /// How the samples along one ray become one colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +209,11 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "volume",
         label: "volume",
+        // A scalar grid drawn as participating media. Raymarching is this
+        // backend's transport; the moment pathway would reach the same picture
+        // another way. Solari has no volumetrics at all, so it would simply not
+        // register this — which is what a missing kind is for.
+        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert((
@@ -283,7 +288,7 @@ pub struct VolumeTexture {
 ///
 /// Moving the object counts too: `uvw_from_world` is built from the world
 /// transform of the copy being drawn, so it goes stale the moment that copy
-/// moves. This is the one backend where a transform change is a redraw rather
+/// moves. This is the one kind here where a transform change is a redraw rather
 /// than something the scene graph handles on its own — and the transform to
 /// watch is the *placement's*, since that is the one that ends up in the
 /// uniform. It also covers a placement that has just appeared, whose transform
@@ -496,7 +501,7 @@ pub fn draw_volumes(
     placements: Query<&Placements>,
     drawn: Query<(&GlobalTransform, Option<&MeshMaterial3d<VolumeMaterial>>)>,
 ) {
-    for (entity, style, colour, _subset, bound, dirty, mesh3d, _) in &dirty {
+    for ((entity, style, colour, _subset, bound, dirty), mesh3d, _) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -554,7 +559,7 @@ pub fn draw_volumes(
             );
         }
 
-        // One material per placement, unlike every other backend.
+        // One material per placement, unlike every other kind in this backend.
         //
         // The uniform folds world -> local -> unit cube into a single matrix so
         // the shader needs no inverse and no mesh instance data — which means

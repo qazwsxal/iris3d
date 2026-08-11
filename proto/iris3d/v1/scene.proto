@@ -571,6 +571,19 @@ message ActorKindInfo {
   reserved 3;
 
   repeated ParamSpec params = 4;
+
+  // Whether this id means the same thing under every rendering backend.
+  //
+  // True promises that naming this kind gets the same physical thing whichever
+  // pathway the server is running, drawn by whatever technique that pathway
+  // uses — a raytraced and a rasterised mesh are one mesh. The parameters may
+  // still differ between pathways, which is why this reply is worth asking for
+  // rather than assuming.
+  //
+  // False marks a kind only the running backend offers. It draws fine here, but
+  // a script that names it stops working against a server launched on another
+  // pathway. Prefer a shared kind when either would do.
+  bool shared = 5;
 }
 
 message AddActorRequest {

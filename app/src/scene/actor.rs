@@ -6,16 +6,17 @@
 //! also makes it possible to run two rendering approaches over the same data
 //! side by side and compare them, which is a goal rather than an accident.
 //!
-//! What kinds of actor exist is not decided here: backends declare them, and
-//! [`registry`](super::registry) holds the declarations. This module keeps
-//! only what every kind has regardless of backend, which today is colouring.
+//! What kinds of actor exist is not decided here: the running backend declares
+//! them, and [`registry`](super::registry) holds the declarations. This module
+//! keeps only what every kind has regardless of pathway, which today is
+//! colouring.
 //!
-//! Nothing here draws anything. A rendering backend is a plugin that queries
-//! its own style component alongside `&ActorOf`, reads the *source* object's
-//! dataset — not necessarily the transform parent's — and produces whatever it
-//! produces. [`crate::draw`] is the current one, a straightforward
-//! `Mesh3d`-per-actor baseline, and the split exists so a second can run
-//! beside it rather than replace it.
+//! Nothing here draws anything. A kind is a pair of systems inside a backend:
+//! one queries its own style component alongside the actor's bindings and
+//! builds whatever that pathway draws, the other says what a change to its
+//! parameters invalidated. How the same arrays are best mapped onto GPU
+//! primitives depends on the pipeline, which is why kinds belong to a backend
+//! rather than sitting above them all. See [`crate::draw`].
 
 use bevy::prelude::*;
 
@@ -25,7 +26,7 @@ use bevy::prelude::*;
 /// colour input. This is only the presentation — which ramp, over what range,
 /// and what to paint when nothing is bound. It used to carry a `field` naming a
 /// field on the object being drawn, which stopped meaning anything once the
-/// backends read bound arrays instead.
+/// kinds read bound arrays instead.
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct ColorBy {
     pub map: ColorMap,
@@ -46,7 +47,10 @@ impl Default for ColorBy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+// `Hash` so a backend can key a cache by map: the solari pathway builds a
+// palette of materials and a ramp texture per map and must not rebuild them
+// every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ColorMap {
     /// Perceptually uniform; a safe default for scalar fields.
     #[default]

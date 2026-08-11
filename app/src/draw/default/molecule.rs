@@ -159,6 +159,9 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "ball-and-stick",
         label: "ball and stick",
+        // Ball and stick is a convention about what a molecule looks like, not
+        // about how the spheres and cylinders reach the screen.
+        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(BallAndStickStyle {
@@ -289,7 +292,7 @@ pub fn draw_molecules(
     dirty: Query<Drawable<BallAndStickStyle, StandardMaterial>>,
     layouts: Query<&MoleculeLayout>,
 ) {
-    for (entity, style, colour, subset, bound, dirty, mesh3d, material3d) in &dirty {
+    for ((entity, style, colour, subset, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }

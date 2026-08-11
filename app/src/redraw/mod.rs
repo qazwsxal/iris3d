@@ -80,10 +80,22 @@ fn keep_awake(
     time: Res<Time>,
     mut awake: ResMut<KeepAwake>,
     settling: Query<(), Or<(Added<Aabb>, Changed<GlobalTransform>)>>,
+    mut resized: MessageReader<bevy::window::WindowResized>,
     mut redraw: MessageWriter<RequestRedraw>,
 ) {
     // The same signals framing waits on: new geometry, and anything moving.
     if !settling.is_empty() {
+        awake.nudge();
+    }
+
+    // A resize changes every pixel without moving anything in the scene, so
+    // none of the signals above notice it. Winit wakes the loop for the resize
+    // itself, but one frame is not always enough: the render targets are
+    // rebuilt at the new size, and a pathway that accumulates over frames has
+    // just had its history invalidated. Without a tail here the previous
+    // frame's interface stays on screen next to the new one.
+    if !resized.is_empty() {
+        resized.clear();
         awake.nudge();
     }
 

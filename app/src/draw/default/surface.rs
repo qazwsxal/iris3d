@@ -81,6 +81,8 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "surface",
         label: "surface",
+        // A triangle mesh is one mesh, rasterised or raytraced.
+        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(SurfaceStyle {
@@ -105,7 +107,7 @@ pub fn draw_surfaces(
     store: Res<DataStore>,
     dirty: Query<Drawable<SurfaceStyle, StandardMaterial>>,
 ) {
-    for (entity, style, colour, subset, bound, dirty, mesh3d, material3d) in &dirty {
+    for ((entity, style, colour, subset, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
