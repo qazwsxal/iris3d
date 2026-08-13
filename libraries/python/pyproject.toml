@@ -19,4 +19,5 @@ dependencies = [
 dev = [
     "biotite>=1.7.1",
     "grpcio-tools>=1.78.1",
+    "trimesh>=5.0.0",
 ]
