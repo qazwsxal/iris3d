@@ -45,6 +45,86 @@ pub struct ExtractedVolume {
 #[derive(Resource, Default)]
 pub struct ExtractedVolumes(pub Vec<ExtractedVolume>);
 
+/// One sampled grid, ready to draw.
+///
+/// Kept in its own list rather than folded into [`ExtractedVolume`] because the
+/// two are drawn by different pipelines with different bind groups: a mesh is
+/// geometry with a shared instance buffer, a grid is a fullscreen pass with a
+/// texture of its own. Sharing a list would mean every consumer branching on
+/// which kind it had.
+pub struct ExtractedGrid {
+    /// Maps the unit cube onto the grid's box in world space, and its inverse.
+    /// Both are carried rather than inverted in the shader: it is one inversion
+    /// per grid per frame here against one per pixel there.
+    pub world_from_local: Mat4,
+    pub local_from_world: Mat4,
+    pub tint: Vec3,
+    pub sigma: f32,
+    pub steps: f32,
+    pub emission: f32,
+    pub field: Handle<Image>,
+    pub ramp: Handle<Image>,
+    /// The eight world-space corners of the box, for fitting the moment domain.
+    /// Taken from the grid rather than an `Aabb`, which is exact and available
+    /// on the first frame — a grid states its own extent, so unlike a mesh it
+    /// never has to wait to be measured.
+    pub corners: [Vec3; 8],
+}
+
+#[derive(Resource, Default)]
+pub struct ExtractedGrids(pub Vec<ExtractedGrid>);
+
+/// Copies every visible sampled grid into the render world.
+///
+/// Handles rather than `AssetId`s, because the render world resolves them
+/// through `RenderAssets<GpuImage>` and a bare id would not keep the asset
+/// alive against a scene that drops the actor mid-frame.
+#[allow(clippy::type_complexity)]
+pub fn extract_grids(
+    mut commands: Commands,
+    grids: Extract<
+        Query<(
+            &super::volume::GridField,
+            &super::volume::GridStyle,
+            &super::volume::GridBox,
+            &GlobalTransform,
+            &InheritedVisibility,
+        )>,
+    >,
+) {
+    let extracted = grids
+        .iter()
+        .filter(|(_, _, _, _, visibility)| visibility.get())
+        .map(|(field, style, grid, transform, _)| {
+            let world_from_local = transform.to_matrix() * grid.cube_to_box();
+            ExtractedGrid {
+                world_from_local,
+                local_from_world: world_from_local.inverse(),
+                tint: field.tint,
+                sigma: style.sigma,
+                steps: style.steps,
+                emission: style.emission,
+                field: field.field.clone(),
+                ramp: field.ramp.clone(),
+                corners: cube_corners(world_from_local),
+            }
+        })
+        .collect();
+
+    commands.insert_resource(ExtractedGrids(extracted));
+}
+
+/// The world-space corners of the unit cube under a transform.
+fn cube_corners(world_from_local: Mat4) -> [Vec3; 8] {
+    let mut corners = [Vec3::ZERO; 8];
+    for (index, corner) in corners.iter_mut().enumerate() {
+        let pick = |bit: usize| if index & (1 << bit) == 0 { 0.0 } else { 1.0 };
+        *corner =
+            world_from_local.transform_point3(Vec3::new(pick(0), pick(1), pick(2)));
+    }
+    corners
+}
+
 /// Copies every visible absorbing volume into the render world.
 ///
 /// Visibility is the inherited flag rather than the per-view one. The list is

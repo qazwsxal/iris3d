@@ -89,7 +89,9 @@ use bevy::core_pipeline::core_3d::main_transparent_pass_3d;
 use bevy::core_pipeline::schedule::{Core3d, Core3dSystems};
 use bevy::prelude::*;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
-use bevy::render::render_resource::{SpecializedMeshPipelines, TextureUsages};
+use bevy::render::render_resource::{
+    SpecializedMeshPipelines, SpecializedRenderPipelines, TextureUsages,
+};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::shader::load_shader_library;
 
@@ -101,17 +103,20 @@ mod pass;
 mod pipeline;
 mod prepare;
 mod surface;
+mod volume;
 
 // Re-exported rather than imported separately in each kind module, exactly as
 // the other two backends do it: whether a helper is shared or belongs to this
 // pathway is a fact about the pathway, not something each kind should track.
 pub(crate) use super::{Actor, Dirty, Draw, Invalidate, Place, bound, mark};
 
-use pass::{moment_pass, moment_resolve, shell_pass};
-use pipeline::{init_moment_pipelines, queue_moment_pipelines, queue_shell_pipelines};
+use pass::{grid_emit_pass, moment_pass, moment_resolve, shell_pass};
+use pipeline::{
+    init_moment_pipelines, queue_grid_pipelines, queue_moment_pipelines, queue_shell_pipelines,
+};
 use prepare::{
-    prepare_moment_bind_groups, prepare_moment_instances, prepare_moment_textures,
-    prepare_shell_bind_groups, prepare_shell_lighting,
+    prepare_grid_bind_groups, prepare_moment_bind_groups, prepare_moment_instances,
+    prepare_moment_textures, prepare_shell_bind_groups, prepare_shell_lighting,
 };
 
 /// Marks a view the moment passes run on.
@@ -251,6 +256,8 @@ impl Plugin for MomentRenderPlugin {
         embedded_asset!(app, "moment.wgsl");
         embedded_asset!(app, "resolve.wgsl");
         embedded_asset!(app, "shell.wgsl");
+        embedded_asset!(app, "volume.wgsl");
+        embedded_asset!(app, "emit.wgsl");
         // Imported by nothing yet: the fullscreen resolve applies the total
         // absorbance, which is exact at its own query point. This earns its
         // place when something asks at an intermediate depth. See the header of
@@ -283,17 +290,25 @@ impl Plugin for MomentRenderPlugin {
             // shader, so they are built in `RenderStartup`. Everything else here
             // is a plain default and is better declared than constructed.
             .init_resource::<extract::ExtractedVolumes>()
+            .init_resource::<extract::ExtractedGrids>()
             .init_resource::<extract::ExtractedShellLighting>()
             .init_resource::<prepare::MomentInstances>()
+            .init_resource::<prepare::GridBindGroups>()
             .init_resource::<prepare::ShellLightingBuffer>()
             .init_resource::<pipeline::QueuedMomentPipelines>()
             .init_resource::<pipeline::QueuedShellPipelines>()
+            .init_resource::<pipeline::QueuedGridPipelines>()
             .init_resource::<SpecializedMeshPipelines<pipeline::MomentMeshPipeline>>()
             .init_resource::<SpecializedMeshPipelines<pipeline::ShellMeshPipeline>>()
+            .init_resource::<SpecializedRenderPipelines<pipeline::GridPipelines>>()
             .add_systems(RenderStartup, init_moment_pipelines)
             .add_systems(
                 ExtractSchedule,
-                (extract::extract_volumes, extract::extract_shell_lighting),
+                (
+                    extract::extract_volumes,
+                    extract::extract_grids,
+                    extract::extract_shell_lighting,
+                ),
             )
             .add_systems(
                 Render,
@@ -304,8 +319,19 @@ impl Plugin for MomentRenderPlugin {
                         prepare_shell_lighting,
                     )
                         .in_set(RenderSystems::PrepareResources),
-                    (queue_moment_pipelines, queue_shell_pipelines).in_set(RenderSystems::Queue),
-                    (prepare_moment_bind_groups, prepare_shell_bind_groups)
+                    (
+                        queue_moment_pipelines,
+                        queue_shell_pipelines,
+                        queue_grid_pipelines,
+                    )
+                        .in_set(RenderSystems::Queue),
+                    (
+                        prepare_moment_bind_groups,
+                        prepare_shell_bind_groups,
+                        // After the queue, because the grid layout it builds
+                        // against is owned by the pipeline resource.
+                        prepare_grid_bind_groups,
+                    )
                         .in_set(RenderSystems::PrepareBindGroups),
                 ),
             )
@@ -323,9 +349,14 @@ impl Plugin for MomentRenderPlugin {
             // The shell comes last, after the resolve has dimmed the target.
             // A reflection off a glass surface never entered the medium, so it
             // must not be attenuated by it — see [`pass::shell_pass`].
+            // The emission pass joins the shell after the resolve. Both add
+            // light the medium never absorbed — a reflection off the near face
+            // in one case, the volume's own glow in the other — so both must
+            // escape the dimming the resolve applies. Their order between
+            // themselves does not matter, because both blend additively.
             .add_systems(
                 Core3d,
-                (moment_pass, moment_resolve, shell_pass)
+                (moment_pass, moment_resolve, grid_emit_pass, shell_pass)
                     .chain()
                     .after(main_transparent_pass_3d)
                     .in_set(Core3dSystems::MainPass),
@@ -343,14 +374,15 @@ impl Plugin for ExperimentalBackendPlugin {
         {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             surface::register(&mut registry);
+            volume::register(&mut registry);
         }
 
         app.add_systems(
             Update,
             (
-                surface::invalidate.in_set(Invalidate),
-                surface::draw_surfaces.in_set(Draw),
-                place_volumes.in_set(Place),
+                (surface::invalidate, volume::invalidate).in_set(Invalidate),
+                (surface::draw_surfaces, volume::draw_volumes).in_set(Draw),
+                (place_volumes, volume::place_grids).in_set(Place),
             ),
         );
     }

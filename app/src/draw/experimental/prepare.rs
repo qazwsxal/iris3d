@@ -7,12 +7,13 @@ use bevy::render::render_resource::{
     BindGroup, BindGroupEntries, Extent3d, PipelineCache, ShaderType, StorageBuffer,
     TextureDescriptor, TextureDimension, TextureUsages, UniformBuffer,
 };
+use bevy::render::render_asset::RenderAssets;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
-use bevy::render::texture::{CachedTexture, TextureCache};
+use bevy::render::texture::{CachedTexture, GpuImage, TextureCache};
 use bevy::render::view::{ExtractedView, Msaa, ViewDepthTexture, ViewUniforms};
 
 use super::MomentView;
-use super::extract::{ExtractedShellLighting, ExtractedVolumes, ShellLighting};
+use super::extract::{ExtractedGrids, ExtractedShellLighting, ExtractedVolumes, ShellLighting};
 use super::pipeline::{MOMENT_FORMAT, MomentPipelines};
 
 /// What one volume needs in the vertex and fragment stages.
@@ -105,6 +106,7 @@ pub fn prepare_moment_textures(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     volumes: Res<ExtractedVolumes>,
+    grids: Res<ExtractedGrids>,
     views: Query<(Entity, &ExtractedCamera, &ExtractedView, &Msaa), With<MomentView>>,
 ) {
     for (entity, camera, view, msaa) in &views {
@@ -135,7 +137,7 @@ pub fn prepare_moment_textures(
             )
         };
 
-        let mut bounds = UniformBuffer::from(depth_bounds(&volumes, view));
+        let mut bounds = UniformBuffer::from(depth_bounds(&volumes, &grids, view));
         bounds.write_buffer(&render_device, &render_queue);
 
         commands.entity(entity).insert((
@@ -156,19 +158,32 @@ pub fn prepare_moment_textures(
 /// exactly 0 or 1 sits on the edge of the domain the reconstruction is
 /// conditioned over, and a fragment landing precisely there is the one most
 /// likely to produce a degenerate Hankel matrix.
-fn depth_bounds(volumes: &ExtractedVolumes, view: &ExtractedView) -> MomentBounds {
+///
+/// Grids count as much as meshes. They accumulate into the same buffer, so a
+/// domain fitted to the meshes alone would clamp a grid sitting outside it to
+/// `w = 0` or `w = 1` and deposit its entire absorbance at one end of the
+/// domain — which reads as a volume that is present but has no depth structure
+/// at all.
+fn depth_bounds(
+    volumes: &ExtractedVolumes,
+    grids: &ExtractedGrids,
+    view: &ExtractedView,
+) -> MomentBounds {
     let view_from_world = view.world_from_view.to_matrix().inverse();
 
     let mut near = f32::INFINITY;
     let mut far = f32::NEG_INFINITY;
-    for volume in &volumes.0 {
-        for corner in volume.corners {
-            // Negated because the view looks down its own -Z, and the moment
-            // domain wants a distance that grows away from the camera.
-            let depth = -view_from_world.transform_point3(corner).z;
-            near = near.min(depth);
-            far = far.max(depth);
-        }
+    let corners = volumes
+        .0
+        .iter()
+        .flat_map(|volume| volume.corners)
+        .chain(grids.0.iter().flat_map(|grid| grid.corners));
+    for corner in corners {
+        // Negated because the view looks down its own -Z, and the moment
+        // domain wants a distance that grows away from the camera.
+        let depth = -view_from_world.transform_point3(corner).z;
+        near = near.min(depth);
+        far = far.max(depth);
     }
 
     // No volumes, or none measured yet. Any non-degenerate interval will do;
@@ -296,6 +311,97 @@ pub fn prepare_shell_bind_groups(
             )),
         );
         commands.entity(entity).insert(ShellBindGroup(bind_group));
+    }
+}
+
+/// What one sampled grid needs in both of its passes.
+///
+/// Field for field with `Grid` in `volume.wgsl` and `emit.wgsl`. The two shaders
+/// read the *same* uniform deliberately: `emit.wgsl` recomputes this volume's own
+/// moment contribution in order to subtract it from the buffer, and that
+/// subtraction is only exact while both passes agree about `sigma`, `steps` and
+/// the box. One uniform makes disagreeing impossible.
+#[derive(Clone, Copy, ShaderType)]
+pub struct GridUniform {
+    pub world_from_local: Mat4,
+    pub local_from_world: Mat4,
+    pub tint: Vec3,
+    pub sigma: f32,
+    pub steps: f32,
+    pub emission: f32,
+    pub _pad: UVec2,
+}
+
+/// Bind group 1 for one grid: its uniform, its field, and its colour ramp.
+///
+/// A grid gets its own group rather than joining the shared instance buffer
+/// because a texture cannot live in a storage buffer. That makes each grid its
+/// own draw, which is why this is a list rather than a per-view component — the
+/// pass walks it and binds each in turn.
+pub struct GridBinding {
+    pub bind_group: BindGroup,
+    /// Held only so the buffer outlives the bind group referencing it.
+    pub _uniform: UniformBuffer<GridUniform>,
+}
+
+#[derive(Resource, Default)]
+pub struct GridBindGroups(pub Vec<GridBinding>);
+
+/// Builds one bind group per grid, dropping any whose textures are not resident.
+///
+/// A grid whose images have not finished uploading is skipped rather than drawn
+/// with a placeholder: a missing field would march a texture of zeroes and
+/// deposit nothing, which is indistinguishable from an empty volume and would
+/// hide a real upload failure.
+pub fn prepare_grid_bind_groups(
+    mut bindings: ResMut<GridBindGroups>,
+    grids: Res<ExtractedGrids>,
+    pipelines: Res<MomentPipelines>,
+    pipeline_cache: Res<PipelineCache>,
+    images: Res<RenderAssets<GpuImage>>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+) {
+    bindings.0.clear();
+    if grids.0.is_empty() {
+        return;
+    }
+    let layout = pipeline_cache.get_bind_group_layout(pipelines.grid_layout());
+
+    for grid in &grids.0 {
+        let (Some(field), Some(ramp)) = (images.get(&grid.field), images.get(&grid.ramp)) else {
+            continue;
+        };
+
+        let mut uniform = UniformBuffer::from(GridUniform {
+            world_from_local: grid.world_from_local,
+            local_from_world: grid.local_from_world,
+            tint: grid.tint,
+            sigma: grid.sigma,
+            steps: grid.steps,
+            emission: grid.emission,
+            _pad: UVec2::ZERO,
+        });
+        uniform.write_buffer(&render_device, &render_queue);
+        let Some(binding) = uniform.binding() else {
+            continue;
+        };
+
+        let bind_group = render_device.create_bind_group(
+            "moment_grid_bind_group",
+            &layout,
+            &BindGroupEntries::sequential((
+                binding,
+                &field.texture_view,
+                &field.sampler,
+                &ramp.texture_view,
+                &ramp.sampler,
+            )),
+        );
+        bindings.0.push(GridBinding {
+            bind_group,
+            _uniform: uniform,
+        });
     }
 }
 

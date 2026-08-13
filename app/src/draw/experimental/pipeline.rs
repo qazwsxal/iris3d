@@ -10,15 +10,16 @@ use bevy::render::camera::ExtractedCamera;
 use bevy::render::mesh::RenderMesh;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{
-    storage_buffer_read_only_sized, texture_2d, texture_2d_multisampled, texture_depth_2d,
-    texture_depth_2d_multisampled, uniform_buffer,
+    sampler, storage_buffer_read_only_sized, texture_2d, texture_2d_multisampled, texture_3d,
+    texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer,
 };
 use bevy::render::render_resource::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent, BlendFactor, BlendOperation,
     BlendState, CachedRenderPipelineId, ColorTargetState, ColorWrites, FragmentState,
     CompareFunction, DepthStencilState, MultisampleState, PipelineCache, PrimitiveState,
-    RenderPipelineDescriptor, ShaderStages,
-    SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines, TextureFormat,
+    RenderPipelineDescriptor, SamplerBindingType, ShaderStages,
+    SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
+    SpecializedRenderPipeline, SpecializedRenderPipelines, TextureFormat,
     TextureSampleType, VertexState,
 };
 use bevy::platform::collections::HashMap;
@@ -26,8 +27,8 @@ use bevy::render::view::{ExtractedView, Msaa, ViewUniform};
 use bevy::shader::Shader;
 
 use super::MomentView;
-use super::extract::{ExtractedVolumes, ShellLighting};
-use super::prepare::MomentBounds;
+use super::extract::{ExtractedGrids, ExtractedVolumes, ShellLighting};
+use super::prepare::{GridUniform, MomentBounds};
 
 /// The moment target's format, fixed here so the pipeline and the texture
 /// cannot disagree.
@@ -144,11 +145,40 @@ fn shell_layout(multisampled: bool) -> BindGroupLayoutDescriptor {
     )
 }
 
+/// Bind group 1 of both grid passes: the grid's uniform, its field, and its
+/// colour ramp.
+///
+/// Independent of the sample count, unlike every other layout here — these are
+/// the grid's own assets rather than view-sized targets, so nothing about them
+/// changes when MSAA does.
+///
+/// Both textures are declared filterable, and that is load-bearing rather than
+/// incidental: hardware filtering on the field is the entire mechanism behind
+/// "nearest neighbour versus linear is a sampler setting". Neither shader picks
+/// a reconstruction filter; the `ImageSampler` on the asset does.
+fn grid_layout() -> BindGroupLayoutDescriptor {
+    let filterable = TextureSampleType::Float { filterable: true };
+    BindGroupLayoutDescriptor::new(
+        "moment_grid_bind_group_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                uniform_buffer::<GridUniform>(false),
+                texture_3d(filterable),
+                sampler(SamplerBindingType::Filtering),
+                texture_2d(filterable),
+                sampler(SamplerBindingType::Filtering),
+            ),
+        ),
+    )
+}
+
 #[derive(Resource)]
 pub struct MomentPipelines {
     moment_layouts: [BindGroupLayoutDescriptor; 2],
     resolve_layouts: [BindGroupLayoutDescriptor; 2],
     shell_layouts: [BindGroupLayoutDescriptor; 2],
+    grid_layout: BindGroupLayoutDescriptor,
     pub resolve_shader: Handle<Shader>,
     pub fullscreen: FullscreenShader,
 }
@@ -164,6 +194,119 @@ impl MomentPipelines {
 
     pub fn shell_layout(&self, samples: u32) -> &BindGroupLayoutDescriptor {
         &self.shell_layouts[usize::from(multisampled(samples))]
+    }
+
+    pub fn grid_layout(&self) -> &BindGroupLayoutDescriptor {
+        &self.grid_layout
+    }
+}
+
+/// The two grid pipelines: accumulate into the moment target, then emit into the
+/// view target.
+///
+/// Plain [`SpecializedRenderPipeline`]s rather than mesh ones, because a grid
+/// has no geometry. Both draw a fullscreen triangle — see the header of
+/// `volume.wgsl` for why a bounding box is the wrong shape for this — so there
+/// is no vertex layout to specialise over and the key is only what the targets
+/// demand.
+#[derive(Resource)]
+pub struct GridPipelines {
+    moment_layouts: [BindGroupLayoutDescriptor; 2],
+    resolve_layouts: [BindGroupLayoutDescriptor; 2],
+    grid_layout: BindGroupLayoutDescriptor,
+    accumulate_shader: Handle<Shader>,
+    emit_shader: Handle<Shader>,
+    fullscreen: FullscreenShader,
+}
+
+/// Which grid pipeline is wanted, and what it has to match.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GridKey {
+    pub samples: u32,
+    /// The view target's format. Only the emission pass uses it — the
+    /// accumulation writes into [`MOMENT_FORMAT`], which is fixed.
+    pub format: TextureFormat,
+    pub emit: bool,
+}
+
+impl SpecializedRenderPipeline for GridPipelines {
+    type Key = GridKey;
+
+    fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
+        let multisampled = multisampled(key.samples);
+        let shader_defs = if multisampled {
+            vec!["MULTISAMPLED".into()]
+        } else {
+            vec![]
+        };
+
+        // The emission pass adds light to the view target; the accumulation adds
+        // absorbance to the moment target. Both are additive, and for the same
+        // reason: addition commutes, so neither needs anything sorted.
+        let targets = if key.emit {
+            vec![Some(ColorTargetState {
+                format: key.format,
+                blend: Some(BlendState {
+                    color: ADDITIVE,
+                    alpha: ADDITIVE,
+                }),
+                write_mask: ColorWrites::COLOR,
+            })]
+        } else {
+            let moment_target = || {
+                Some(ColorTargetState {
+                    format: MOMENT_FORMAT,
+                    blend: Some(BlendState {
+                        color: ADDITIVE,
+                        alpha: ADDITIVE,
+                    }),
+                    write_mask: ColorWrites::ALL,
+                })
+            };
+            vec![moment_target(), moment_target()]
+        };
+
+        // Group 0 is borrowed wholesale rather than declared again: the
+        // accumulation wants exactly what `moment.wgsl` gets, and the emission
+        // wants exactly what `resolve.wgsl` gets. A shader may leave a binding in
+        // the layout undeclared, which is what lets the grid passes ignore the
+        // mesh instance buffer without a layout of their own.
+        let view_layout = if key.emit {
+            self.resolve_layouts[usize::from(multisampled)].clone()
+        } else {
+            self.moment_layouts[usize::from(multisampled)].clone()
+        };
+
+        let shader = if key.emit {
+            self.emit_shader.clone()
+        } else {
+            self.accumulate_shader.clone()
+        };
+
+        RenderPipelineDescriptor {
+            label: Some(if key.emit {
+                "moment_grid_emit_pipeline".into()
+            } else {
+                "moment_grid_pipeline".into()
+            }),
+            layout: vec![view_layout, self.grid_layout.clone()],
+            vertex: self.fullscreen.to_vertex_state(),
+            fragment: Some(FragmentState {
+                shader,
+                shader_defs,
+                targets,
+                ..default()
+            }),
+            // No depth attachment on either. The accumulation clamps against the
+            // depth buffer in the shader rather than testing, and the emission
+            // does the same — a volume's contribution has to be *truncated* at an
+            // occluder, not rejected by it.
+            multisample: MultisampleState {
+                count: key.samples,
+                ..default()
+            },
+            ..default()
+        }
     }
 }
 
@@ -182,13 +325,68 @@ pub fn init_moment_pipelines(
         layouts: [shell_layout(false), shell_layout(true)],
         shader: load_embedded_asset!(asset_server.as_ref(), "shell.wgsl"),
     });
+    commands.insert_resource(GridPipelines {
+        moment_layouts: [moment_layout(false), moment_layout(true)],
+        resolve_layouts: [resolve_layout(false), resolve_layout(true)],
+        grid_layout: grid_layout(),
+        accumulate_shader: load_embedded_asset!(asset_server.as_ref(), "volume.wgsl"),
+        emit_shader: load_embedded_asset!(asset_server.as_ref(), "emit.wgsl"),
+        fullscreen: fullscreen.clone(),
+    });
     commands.insert_resource(MomentPipelines {
         moment_layouts: [moment_layout(false), moment_layout(true)],
         resolve_layouts: [resolve_layout(false), resolve_layout(true)],
         shell_layouts: [shell_layout(false), shell_layout(true)],
+        grid_layout: grid_layout(),
         resolve_shader: load_embedded_asset!(asset_server.as_ref(), "resolve.wgsl"),
         fullscreen: fullscreen.clone(),
     });
+}
+
+/// The grid pipelines queued for each view, keyed the same way the mesh ones
+/// are.
+#[derive(Resource, Default)]
+pub struct QueuedGridPipelines(pub EntityHashMap<(CachedRenderPipelineId, CachedRenderPipelineId)>);
+
+/// Queues both grid pipelines for every view that has grids to draw.
+///
+/// Keyed on the view rather than cached globally because the emission pass
+/// writes into the view's own target, whose format is the view's business.
+pub fn queue_grid_pipelines(
+    mut queued: ResMut<QueuedGridPipelines>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<GridPipelines>>,
+    pipeline: Res<GridPipelines>,
+    pipeline_cache: Res<PipelineCache>,
+    grids: Res<ExtractedGrids>,
+    views: Query<(Entity, &ExtractedView, &Msaa), With<MomentView>>,
+) {
+    queued.0.clear();
+    if grids.0.is_empty() {
+        return;
+    }
+    for (entity, view, msaa) in &views {
+        let format = view.target_format;
+        let samples = msaa.samples();
+        let accumulate = pipelines.specialize(
+            &pipeline_cache,
+            &pipeline,
+            GridKey {
+                samples,
+                format,
+                emit: false,
+            },
+        );
+        let emit = pipelines.specialize(
+            &pipeline_cache,
+            &pipeline,
+            GridKey {
+                samples,
+                format,
+                emit: true,
+            },
+        );
+        queued.0.insert(entity, (accumulate, emit));
+    }
 }
 
 /// What the shell pipeline has to be specialised over.

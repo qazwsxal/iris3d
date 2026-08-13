@@ -34,11 +34,14 @@ use bevy::render::render_resource::{
 use bevy::render::renderer::{RenderContext, ViewQuery};
 use bevy::render::view::{ExtractedView, Msaa, ViewDepthTexture, ViewTarget, ViewUniformOffset};
 
-use super::extract::ExtractedVolumes;
+use super::extract::{ExtractedGrids, ExtractedVolumes};
 use super::pipeline::{
-    MomentResolvePipelineId, QueuedMomentPipelines, QueuedShellPipelines, ShellKey,
+    MomentResolvePipelineId, QueuedGridPipelines, QueuedMomentPipelines, QueuedShellPipelines,
+    ShellKey,
 };
-use super::prepare::{MomentBindGroup, MomentResolveBindGroup, MomentTexture, ShellBindGroup};
+use super::prepare::{
+    GridBindGroups, MomentBindGroup, MomentResolveBindGroup, MomentTexture, ShellBindGroup,
+};
 
 /// One of the accumulation attachments, cleared and kept.
 fn attachment(view: &TextureView) -> RenderPassColorAttachment<'_> {
@@ -53,26 +56,41 @@ fn attachment(view: &TextureView) -> RenderPassColorAttachment<'_> {
     }
 }
 
+/// What the accumulation needs of the view it is drawing for.
+///
+/// The entity comes first so the per-view grid pipeline can be looked up; the
+/// mesh half needs only the sample count, which [`MomentTexture`] carries.
+type AccumulateView = (
+    Entity,
+    &'static ExtractedCamera,
+    &'static MomentTexture,
+    &'static MomentBindGroup,
+    &'static ViewUniformOffset,
+    Option<&'static MainPassResolutionOverride>,
+);
+
 /// Accumulates every volume's signed optical depth into the moment target.
+#[allow(clippy::too_many_arguments)]
 pub fn moment_pass(
-    view: ViewQuery<(
-        &ExtractedCamera,
-        &MomentTexture,
-        &MomentBindGroup,
-        &ViewUniformOffset,
-        Option<&MainPassResolutionOverride>,
-    )>,
+    view: ViewQuery<AccumulateView>,
     volumes: Res<ExtractedVolumes>,
+    grids: Res<ExtractedGrids>,
+    grid_bindings: Res<GridBindGroups>,
     queued: Res<QueuedMomentPipelines>,
+    queued_grids: Res<QueuedGridPipelines>,
     pipeline_cache: Res<PipelineCache>,
     meshes: Res<RenderAssets<RenderMesh>>,
     mesh_allocator: Res<MeshAllocator>,
     mut ctx: RenderContext,
 ) {
-    if volumes.0.is_empty() {
+    // Both kinds accumulate into the same target, so either one alone is reason
+    // enough to run. Testing only the meshes left a scene of pure volumes
+    // clearing no target and resolving against stale contents.
+    if volumes.0.is_empty() && grids.0.is_empty() {
         return;
     }
-    let (camera, moments, bind_group, view_uniform, resolution_override) = view.into_inner();
+    let (view_entity, camera, moments, bind_group, view_uniform, resolution_override) =
+        view.into_inner();
 
     // The list built for this view's sample count: a pipeline written for a
     // single-sample target cannot draw into a multisampled one. Looked up
@@ -144,6 +162,19 @@ pub fn moment_pass(
             RenderMeshBufferInfo::NonIndexed => {
                 pass.draw(vertices.range.clone(), instance);
             }
+        }
+    }
+
+    // Grids, into the same target and under the same group 0. Each is its own
+    // draw because each has its own field texture, and each is a fullscreen
+    // triangle rather than geometry — see the header of `volume.wgsl`.
+    if let Some((accumulate, _)) = queued_grids.0.get(&view_entity)
+        && let Some(pipeline) = pipeline_cache.get_render_pipeline(*accumulate)
+    {
+        pass.set_render_pipeline(pipeline);
+        for binding in &grid_bindings.0 {
+            pass.set_bind_group(1, &binding.bind_group, &[]);
+            pass.draw(0..3, 0..1);
         }
     }
 
@@ -284,10 +315,13 @@ type ResolveView = (
 pub fn moment_resolve(
     view: ViewQuery<ResolveView>,
     volumes: Res<ExtractedVolumes>,
+    grids: Res<ExtractedGrids>,
     pipeline_cache: Res<PipelineCache>,
     mut ctx: RenderContext,
 ) {
-    if volumes.0.is_empty() {
+    // Either kind deposited absorbance worth applying. Guarding on the meshes
+    // alone would leave a scene of pure volumes accumulated but never resolved.
+    if volumes.0.is_empty() && grids.0.is_empty() {
         return;
     }
     let (camera, target, bind_group, pipeline_id, view_uniform, resolution_override) =
@@ -319,6 +353,85 @@ pub fn moment_resolve(
     pass.set_render_pipeline(pipeline);
     pass.set_bind_group(0, &bind_group.0, &[view_uniform.offset]);
     pass.draw(0..3, 0..1);
+
+    pass_span.end(&mut pass);
+}
+
+/// What the emission pass needs of the view it is drawing into.
+///
+/// The resolve's bindings exactly, because `emit.wgsl` reuses that layout — see
+/// the note on group 0 in the shader. The entity comes along so the per-view
+/// pipeline can be looked up.
+type EmitView = (
+    Entity,
+    &'static ExtractedCamera,
+    &'static ViewTarget,
+    &'static MomentResolveBindGroup,
+    &'static ViewUniformOffset,
+    Option<&'static MainPassResolutionOverride>,
+);
+
+/// Adds what each volume emits, attenuated by whatever stands in front of it.
+///
+/// After the resolve, and for the same physical reason the shell is: the resolve
+/// has already dimmed everything *behind* the volume by `exp(-A)`, and this is
+/// the light the volume puts back on top. Running it before the resolve would
+/// multiply the volume's own emission by its own absorbance a second time —
+/// `emit.wgsl` already accounts for that internally, marching front to back.
+///
+/// Beside the shell rather than before or after it. Both are additive, so their
+/// order between themselves does not matter; what matters is that both come
+/// after the resolve.
+///
+/// One draw per grid, each a fullscreen triangle. There is no depth attachment
+/// here either: the emission integral is *truncated* at an occluder rather than
+/// rejected by it, which the shader does by clamping against the depth texture.
+pub fn grid_emit_pass(
+    view: ViewQuery<EmitView>,
+    grids: Res<ExtractedGrids>,
+    grid_bindings: Res<GridBindGroups>,
+    queued_grids: Res<QueuedGridPipelines>,
+    pipeline_cache: Res<PipelineCache>,
+    mut ctx: RenderContext,
+) {
+    if grids.0.is_empty() || grid_bindings.0.is_empty() {
+        return;
+    }
+    let (view_entity, camera, target, bind_group, view_uniform, resolution_override) =
+        view.into_inner();
+
+    let Some((_, emit)) = queued_grids.0.get(&view_entity) else {
+        return;
+    };
+    let Some(pipeline) = pipeline_cache.get_render_pipeline(*emit) else {
+        return;
+    };
+
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+
+    let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
+        label: Some("moment_grid_emit"),
+        color_attachments: &[Some(target.get_color_attachment())],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    let pass_span = diagnostics.pass_span(&mut pass, "moment_grid_emit");
+
+    if let Some(viewport) =
+        Viewport::from_viewport_and_override(camera.viewport.as_ref(), resolution_override)
+    {
+        pass.set_camera_viewport(&viewport);
+    }
+
+    pass.set_render_pipeline(pipeline);
+    pass.set_bind_group(0, &bind_group.0, &[view_uniform.offset]);
+    for binding in &grid_bindings.0 {
+        pass.set_bind_group(1, &binding.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
 
     pass_span.end(&mut pass);
 }
