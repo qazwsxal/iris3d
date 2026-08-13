@@ -23,10 +23,12 @@
 //! are one mesh. A kind only one backend can provide says so, and
 //! [`ActorKind::shared`](crate::scene::registry::ActorKind::shared) is how.
 //!
-//! [`default`] is the only backend today: a straightforward `Mesh3d`-per-actor
-//! baseline on Bevy's standard pipeline. It is deliberately the simple option —
-//! it gets every sample dataset on screen and gives a reference image to check
-//! more ambitious pathways against.
+//! Three pathways today. [`default`] is a straightforward `Mesh3d`-per-actor
+//! baseline on Bevy's standard pipeline, and is deliberately the simple option
+//! — it gets every sample dataset on screen and gives a reference image to
+//! check the more ambitious ones against. [`solari`] raytraces the lighting.
+//! [`experimental`] accumulates moments, so a closed mesh is drawn as the
+//! absorbing solid it bounds and overlapping ones need no sorting.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -42,6 +44,7 @@ use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
 mod default;
 mod elements;
+mod experimental;
 mod probe;
 mod solari;
 
@@ -66,6 +69,9 @@ pub enum Backend {
     Default,
     /// Raytraced lighting on bevy_solari. No transparency and no volumes.
     Solari,
+    /// Moment-based order-independent transparency: a closed mesh is drawn as
+    /// the absorbing solid it bounds, and overlapping ones need no sorting.
+    Experimental,
 }
 
 impl Backend {
@@ -75,6 +81,7 @@ impl Backend {
         match self {
             Backend::Default => "default",
             Backend::Solari => "solari",
+            Backend::Experimental => "experimental",
         }
     }
 
@@ -83,12 +90,18 @@ impl Backend {
     /// Asked once at startup and answered by refusing, never by degrading. The
     /// standard pipeline needs nothing beyond the WebGPU baseline, so it is
     /// always available; Solari names its own set, which is the honest source
-    /// for it. A moment pathway will want `FLOAT32_BLENDABLE` here, to blend
-    /// into a 32-bit float target.
+    /// for it.
     pub fn requires(self) -> WgpuFeatures {
         match self {
             Backend::Default => WgpuFeatures::empty(),
             Backend::Solari => SolariPlugins::required_wgpu_features(),
+            // Additive blending into a 32-bit float target is what the whole
+            // method rests on, and it is not in the WebGPU baseline. fp32 is
+            // not negotiable here: a moment is a difference of two O(1) values,
+            // so a thin shell cancels catastrophically in fp16 — see
+            // `ref/mboit-bevy-reference.md` §8. Without the feature there is no
+            // degraded version to fall back to, only a wrong one.
+            Backend::Experimental => WgpuFeatures::FLOAT32_BLENDABLE,
         }
     }
 }
@@ -253,6 +266,7 @@ impl Plugin for DrawPlugin {
         match self.backend {
             Backend::Default => app.add_plugins(default::DefaultBackendPlugin),
             Backend::Solari => app.add_plugins(solari::SolariBackendPlugin),
+            Backend::Experimental => app.add_plugins(experimental::ExperimentalBackendPlugin),
         };
     }
 
