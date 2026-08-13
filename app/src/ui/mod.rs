@@ -142,6 +142,20 @@ enum UiAction {
     /// Change one parameter of an actor, leaving the rest alone.
     SetParam(Entity, &'static str, ParamValue),
     SetColourMap(Entity, ColorMap),
+    /// The colour used when no array is bound to the kind's colour input.
+    ///
+    /// What that *means* is the kind's business, and it differs more than the
+    /// name suggests: for a mesh or a point cloud it is simply what the thing
+    /// is painted, but the moment backend reads it as the medium's
+    /// transmission — the fraction of each channel a volume lets through — and
+    /// reads it whether or not a colour array is bound. So this is not a
+    /// cosmetic control everywhere; on a volume it decides how much is
+    /// absorbed.
+    SetColourFlat(Entity, Color),
+    /// Where the colour map starts and ends. `None` autoscales to the bound
+    /// array's own extremes, which is the default and usually what is wanted;
+    /// pinning it is what makes two actors comparable to each other.
+    SetColourRange(Entity, Option<(f32, f32)>),
 }
 
 #[derive(Resource, Default)]
@@ -430,6 +444,16 @@ fn apply_actions(
             UiAction::SetColourMap(entity, map) => {
                 if let Ok(mut colour) = colours.get_mut(entity) {
                     colour.map = map;
+                }
+            }
+            UiAction::SetColourFlat(entity, flat) => {
+                if let Ok(mut colour) = colours.get_mut(entity) {
+                    colour.flat = flat;
+                }
+            }
+            UiAction::SetColourRange(entity, range) => {
+                if let Ok(mut colour) = colours.get_mut(entity) {
+                    colour.range = range;
                 }
             }
         }
