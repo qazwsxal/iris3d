@@ -19,5 +19,7 @@ dependencies = [
 dev = [
     "biotite>=1.7.1",
     "grpcio-tools>=1.78.1",
+    "pooch>=1.9.0",
+    "scikit-image>=0.26.0",
     "trimesh>=5.0.0",
 ]
