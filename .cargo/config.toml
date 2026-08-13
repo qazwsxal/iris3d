@@ -1,0 +1,7 @@
+[build]
+# A global rustc-wrapper build cache (kache) breaks this project: it does not cache
+# dylibs, so bevy_dylib is rebuilt locally while the rlibs that depend on its exported
+# generics are restored from cache. The two disagree and the link fails with
+# "unresolved external symbol". Bevy's dynamic_linking feature is worth more than the
+# cache, so opt this repo out.
+rustc-wrapper = ""
