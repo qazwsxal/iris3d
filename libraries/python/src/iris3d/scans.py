@@ -24,7 +24,16 @@ import numpy as np
 
 from .client import Grid
 
-__all__ = ["cell_nuclei", "mri_head"]
+__all__ = ["cell_nuclei", "ct_head", "mri_head"]
+
+#: The Stanford volume data archive's CTHead, and the hash of the exact archive
+#: these loaders were written against.
+#:
+#: Pinned rather than left open. `pooch` will refuse a file that does not match,
+#: which is the point: this is a third-party host, and a volume that quietly
+#: changed shape would show up as a rendering bug rather than as a bad download.
+_CTHEAD_URL = "https://graphics.stanford.edu/data/voldata/cthead-8bit.tar.gz"
+_CTHEAD_SHA256 = "sha256:a0b3414faf1236e94eb3f1f8785f65b51a2c9dfb15dc42e6125f4a2fc5334137"
 
 
 def _require_skimage():
@@ -107,6 +116,59 @@ def mri_head(size: float = 8.0, clip: float | None = 99.5) -> tuple[dict[str, np
     # In-plane is fine and through-plane is coarse, which is the whole shape of
     # a thick-slice acquisition.
     spacing, origin = _fit(dims, (1.0, 1.0, 10.0), size)
+    return {"intensity": _to_wire(volume, clip)}, Grid(
+        dims=dims, origin=origin, spacing=spacing
+    )
+
+
+def ct_head(size: float = 8.0, clip: float | None = None) -> tuple[dict[str, np.ndarray], Grid]:
+    """A CT of a head, skull included — the Stanford archive's CTHead.
+
+    Ninety-nine slices of 256x256, which is the volume-rendering benchmark of
+    record: nearly every paper on the subject since the late eighties has shown
+    this head. Unlike :func:`mri_head` it has the depth to be worth marching
+    through, and unlike :func:`cell_nuclei` it has a hard, bright, thin
+    structure inside a soft one — which is the case a smooth analytic blob
+    cannot pose at all.
+
+    Downloaded from `graphics.stanford.edu` rather than from scikit-image's
+    registry, and the archive hash is pinned; see :data:`_CTHEAD_SHA256`.
+
+    `clip` defaults to *off*, unlike the other two. The bright end of a CT is
+    the bone, and it is a small fraction of the voxels — so an upper-percentile
+    clip would crush exactly the structure this dataset is worth having for.
+
+    The slice spacing is **chosen**, not read: these are bare 8-bit TIFFs with
+    no metadata, and the rescaling to 8 bits has already discarded the
+    Hounsfield mapping. 1:1:2 is a plausible clinical ratio. Nothing metric
+    should be read off this render.
+
+    Returns ``(arrays, grid)`` with one field, ``intensity``. There is no
+    separate bone field to bind to ``emissive``, because any threshold that
+    produced one would be invented rather than measured — pin the colour range
+    in the Actors tab instead, which is what that control is for.
+    """
+    try:
+        import pooch
+        from skimage.io import imread
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise ImportError(
+            "iris3d.scans needs the dev dependency group: "
+            "run `uv sync --group dev` in libraries/python"
+        ) from exc
+
+    paths = pooch.retrieve(
+        url=_CTHEAD_URL,
+        known_hash=_CTHEAD_SHA256,
+        processor=pooch.Untar(),
+    )
+    # Zero-padded, so lexicographic order is slice order. Worth being explicit
+    # about: an unpadded scheme would put slice 10 before slice 2 and shuffle
+    # the head into nonsense that still renders.
+    volume = np.stack([np.asarray(imread(path)) for path in sorted(paths)])
+    nz, ny, nx = volume.shape
+    dims = (nx, ny, nz)
+    spacing, origin = _fit(dims, (1.0, 1.0, 2.0), size)
     return {"intensity": _to_wire(volume, clip)}, Grid(
         dims=dims, origin=origin, spacing=spacing
     )
