@@ -142,6 +142,31 @@ class SceneServiceStub(object):
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsRequest.SerializeToString,
                 response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsResponse.FromString,
                 _registered_method=True)
+        self.AddFilter = channel.unary_unary(
+                '/iris3d.v1.SceneService/AddFilter',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.AddFilterRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.AddFilterResponse.FromString,
+                _registered_method=True)
+        self.SetFilter = channel.unary_unary(
+                '/iris3d.v1.SceneService/SetFilter',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.SetFilterRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.SetFilterResponse.FromString,
+                _registered_method=True)
+        self.RemoveFilter = channel.unary_unary(
+                '/iris3d.v1.SceneService/RemoveFilter',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveFilterRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveFilterResponse.FromString,
+                _registered_method=True)
+        self.ListFilters = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListFilters',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListFiltersRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListFiltersResponse.FromString,
+                _registered_method=True)
+        self.ListFilterKinds = channel.unary_unary(
+                '/iris3d.v1.SceneService/ListFilterKinds',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsResponse.FromString,
+                _registered_method=True)
 
 
 class SceneServiceServicer(object):
@@ -356,6 +381,63 @@ class SceneServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AddFilter(self, request, context):
+        """Adds a filter: something that reads arrays and writes arrays, and draws
+        nothing.
+
+        A filter is how derived data is made — a colour map applied to a field, a
+        ribbon swept through a backbone, a surface extracted from a grid. What
+        comes out are ordinary arrays with ordinary handles, so an actor binds them
+        exactly as it binds an upload and cannot tell the two apart.
+
+        That separation is the point. Generating geometry and displaying it are
+        different jobs, so one generated result can feed several actors — drawn as
+        a lit mesh and as an absorbing medium at once, built once — and adding a
+        way to display something does not multiply the ways of generating it.
+
+        The reply carries a handle for each declared output, allocated by this
+        call. They are bindable immediately: until the first run finishes they name
+        empty arrays, and an actor bound to one draws nothing rather than failing.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetFilter(self, request, context):
+        """Changes an existing filter. Only what is named is altered.
+
+        Refused with FAILED_PRECONDITION if the binding would feed a filter its own
+        output, directly or through others. Such a graph could never come to rest.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RemoveFilter(self, request, context):
+        """Removes a filter and forgets the arrays it was writing.
+
+        This is the only way those handles go away: ReleaseData refuses them one at
+        a time, because releasing an array something is still generating leaves the
+        filter producing into nothing.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListFilters(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListFilterKinds(self, request, context):
+        """Lists the ways of deriving data this build supports, and what each takes
+        and produces. As with ListActorKinds, ask rather than assume.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SceneServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -423,6 +505,31 @@ def add_SceneServiceServicer_to_server(servicer, server):
                     servicer.ListActorKinds,
                     request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsRequest.FromString,
                     response_serializer=iris3d_dot_v1_dot_scene__pb2.ListActorKindsResponse.SerializeToString,
+            ),
+            'AddFilter': grpc.unary_unary_rpc_method_handler(
+                    servicer.AddFilter,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.AddFilterRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.AddFilterResponse.SerializeToString,
+            ),
+            'SetFilter': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetFilter,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.SetFilterRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.SetFilterResponse.SerializeToString,
+            ),
+            'RemoveFilter': grpc.unary_unary_rpc_method_handler(
+                    servicer.RemoveFilter,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.RemoveFilterRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.RemoveFilterResponse.SerializeToString,
+            ),
+            'ListFilters': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListFilters,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListFiltersRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListFiltersResponse.SerializeToString,
+            ),
+            'ListFilterKinds': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListFilterKinds,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -839,6 +946,141 @@ class SceneService(object):
             '/iris3d.v1.SceneService/ListActorKinds',
             iris3d_dot_v1_dot_scene__pb2.ListActorKindsRequest.SerializeToString,
             iris3d_dot_v1_dot_scene__pb2.ListActorKindsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AddFilter(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/AddFilter',
+            iris3d_dot_v1_dot_scene__pb2.AddFilterRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.AddFilterResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetFilter(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/SetFilter',
+            iris3d_dot_v1_dot_scene__pb2.SetFilterRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.SetFilterResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RemoveFilter(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/RemoveFilter',
+            iris3d_dot_v1_dot_scene__pb2.RemoveFilterRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.RemoveFilterResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListFilters(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/ListFilters',
+            iris3d_dot_v1_dot_scene__pb2.ListFiltersRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListFiltersResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListFilterKinds(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/iris3d.v1.SceneService/ListFilterKinds',
+            iris3d_dot_v1_dot_scene__pb2.ListFilterKindsRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.ListFilterKindsResponse.FromString,
             options,
             channel_credentials,
             insecure,

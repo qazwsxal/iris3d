@@ -10,8 +10,9 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::scene::actor::ColorMap;
 use crate::scene::data::Association;
 
-use crate::scene::registry::{ParamKind, ParamMap, ParamValue};
+use crate::scene::registry::{ParamKind, ParamMap, ParamSpec, ParamValue};
 use crate::scene::subset::SubsetRequest;
+use crate::filter::{FilterKindSummary, FilterSummary};
 use crate::scene::{
     ActorSummary, BufferMeta, ColorBy, DataSummary, Dtype, KindSummary, NamedBuffer, ObjectSummary,
     SceneCommand, SceneError, SubsetEncoding,
@@ -19,18 +20,21 @@ use crate::scene::{
 
 use super::SceneSender;
 use super::proto::{
-    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, ArrayParam,
-    BoolParam, BufferSpec, ChoiceParam, Chunk, Color, ColorSpec, CreateObjectRequest,
-    CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest, DeleteObjectResponse,
-    Dtype as ProtoDtype, FloatParam, ListActorKindsRequest, ListActorKindsResponse,
-    ListActorsRequest, ListActorsResponse, ListDataRequest, ListDataResponse, ListObjectsRequest,
-    ListObjectsResponse, ObjectHandle, ObjectInfo, ParamSpec as ProtoSpec,
-    ParamValue as ProtoParam, Range, ReleaseDataRequest, ReleaseDataResponse, RemoveActorRequest,
-    RemoveActorResponse, SetActorRequest, SetActorResponse, SetParentRequest, SetParentResponse,
-    SetTransformRequest, SetTransformResponse, Subset as ProtoSubset, SubsetInfo,
-    UploadDataRequest, UploadDataResponse, VectorParam, VectorValue, param_spec,
-    param_value::Value, scene_service_server::SceneService, subset as subset_proto,
-    upload_data_request::Payload as DataPayload,
+    ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, AddFilterRequest,
+    AddFilterResponse, ArrayParam, BoolParam, BufferSpec, ChoiceParam, Chunk, Color, ColorSpec,
+    CreateObjectRequest, CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest,
+    DeleteObjectResponse, Dtype as ProtoDtype, FilterHandle, FilterInfo, FilterKindInfo,
+    FilterOutput, FloatParam, ListActorKindsRequest, ListActorKindsResponse, ListActorsRequest,
+    ListActorsResponse, ListDataRequest, ListDataResponse, ListFilterKindsRequest,
+    ListFilterKindsResponse, ListFiltersRequest, ListFiltersResponse, ListObjectsRequest,
+    ListObjectsResponse, ObjectHandle, ObjectInfo, OutputSpec as ProtoOutputSpec,
+    ParamSpec as ProtoSpec, ParamValue as ProtoParam, Range, ReleaseDataRequest,
+    ReleaseDataResponse, RemoveActorRequest, RemoveActorResponse, RemoveFilterRequest,
+    RemoveFilterResponse, SetActorRequest, SetActorResponse, SetFilterRequest, SetFilterResponse,
+    SetParentRequest, SetParentResponse, SetTransformRequest, SetTransformResponse,
+    Subset as ProtoSubset, SubsetInfo, UploadDataRequest, UploadDataResponse, VectorParam,
+    VectorValue, param_spec, param_value::Value, scene_service_server::SceneService,
+    subset as subset_proto, upload_data_request::Payload as DataPayload,
 };
 use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
 use bevy::math::{Quat, Vec3};
@@ -426,13 +430,107 @@ impl SceneService for SceneBridgeService {
                 .collect(),
         }))
     }
+
+    async fn add_filter(
+        &self,
+        request: Request<AddFilterRequest>,
+    ) -> Result<Response<AddFilterResponse>, Status> {
+        let request = request.into_inner();
+        if request.kind.is_empty() {
+            return Err(Status::invalid_argument(
+                "kind is required; ask ListFilterKinds for the ones this build has",
+            ));
+        }
+        let params = params_from_proto(request.params)?;
+
+        let summary = self
+            .submit(|reply| SceneCommand::AddFilter {
+                kind: request.kind,
+                params,
+                reply,
+            })
+            .await?
+            .map_err(scene_error)?;
+
+        Ok(Response::new(AddFilterResponse {
+            filter: Some(filter_info(&summary)),
+        }))
+    }
+
+    async fn set_filter(
+        &self,
+        request: Request<SetFilterRequest>,
+    ) -> Result<Response<SetFilterResponse>, Status> {
+        let request = request.into_inner();
+        let id = request
+            .handle
+            .ok_or_else(|| Status::invalid_argument("handle is required"))?
+            .id;
+        let params = params_from_proto(request.params)?;
+
+        let summary = self
+            .submit(|reply| SceneCommand::SetFilter { id, params, reply })
+            .await?
+            .map_err(scene_error)?;
+
+        Ok(Response::new(SetFilterResponse {
+            filter: Some(filter_info(&summary)),
+        }))
+    }
+
+    async fn remove_filter(
+        &self,
+        request: Request<RemoveFilterRequest>,
+    ) -> Result<Response<RemoveFilterResponse>, Status> {
+        let id = request
+            .into_inner()
+            .handle
+            .ok_or_else(|| Status::invalid_argument("handle is required"))?
+            .id;
+
+        let removed = self
+            .submit(|reply| SceneCommand::RemoveFilter { id, reply })
+            .await?;
+
+        Ok(Response::new(RemoveFilterResponse { removed }))
+    }
+
+    async fn list_filters(
+        &self,
+        _request: Request<ListFiltersRequest>,
+    ) -> Result<Response<ListFiltersResponse>, Status> {
+        let listing = self
+            .submit(|reply| SceneCommand::ListFilters { reply })
+            .await?;
+
+        Ok(Response::new(ListFiltersResponse {
+            filters: listing.iter().map(filter_info).collect(),
+        }))
+    }
+
+    async fn list_filter_kinds(
+        &self,
+        _request: Request<ListFilterKindsRequest>,
+    ) -> Result<Response<ListFilterKindsResponse>, Status> {
+        let kinds = self
+            .submit(|reply| SceneCommand::ListFilterKinds { reply })
+            .await?;
+
+        Ok(Response::new(ListFilterKindsResponse {
+            kinds: kinds
+                .iter()
+                .map(|kind| (kind.id.clone(), filter_kind_info(kind)))
+                .collect(),
+        }))
+    }
 }
 
 fn scene_error(error: SceneError) -> Status {
     match error {
-        SceneError::NoSuchObject(_) | SceneError::NoSuchActor(_) | SceneError::NoSuchData(_) => {
-            Status::not_found(error.to_string())
-        }
+        SceneError::NoSuchObject(_)
+        | SceneError::NoSuchActor(_)
+        | SceneError::NoSuchData(_)
+        | SceneError::NoSuchFilter(_) => Status::not_found(error.to_string()),
         // The caller's own request is at fault, and the declaration it needed in
         // order to get it right is in ListActorKinds.
         SceneError::MissingInput { .. } | SceneError::BadBinding { .. } => {
@@ -440,10 +538,15 @@ fn scene_error(error: SceneError) -> Status {
         }
         // The caller named something that does not exist in this build, which
         // it could have discovered with ListActorKinds.
-        SceneError::UnknownKind { .. } => Status::invalid_argument(error.to_string()),
+        SceneError::UnknownKind { .. } | SceneError::UnknownFilterKind { .. } => {
+            Status::invalid_argument(error.to_string())
+        }
         // The request was well-formed but the scene is not in a state where it
-        // can be honoured.
-        SceneError::WouldCycle { .. } => Status::failed_precondition(error.to_string()),
+        // can be honoured. Both cycles land here for the same reason: the call
+        // is legible, and it is the *existing* graph that makes it impossible.
+        SceneError::WouldCycle { .. }
+        | SceneError::FilterCycle { .. }
+        | SceneError::StillGenerated { .. } => Status::failed_precondition(error.to_string()),
     }
 }
 
@@ -605,63 +708,100 @@ fn subset_from_proto(subset: ProtoSubset) -> Result<SubsetRequest, Status> {
     })
 }
 
+/// One declared parameter, for the wire.
+///
+/// Shared by actor kinds and filter kinds, which declare their settings and
+/// their array inputs with the same [`ParamSpec`] — so a client that can read
+/// one listing can read the other.
+fn spec_to_proto(spec: &ParamSpec) -> ProtoSpec {
+    ProtoSpec {
+        id: spec.id.to_string(),
+        label: spec.label.to_string(),
+        kind: Some(match spec.kind {
+            ParamKind::Float {
+                default,
+                min,
+                max,
+                logarithmic,
+            } => param_spec::Kind::Number(FloatParam {
+                default_value: default as f64,
+                min: min as f64,
+                max: max as f64,
+                logarithmic,
+            }),
+            ParamKind::Bool { default } => param_spec::Kind::Flag(BoolParam {
+                default_value: default,
+            }),
+            ParamKind::Choice { options, default } => param_spec::Kind::Choice(ChoiceParam {
+                options: options.iter().map(|option| option.to_string()).collect(),
+                default_value: default.to_string(),
+            }),
+            ParamKind::Vector {
+                components,
+                default,
+                min,
+                max,
+                integral,
+            } => param_spec::Kind::Vector(VectorParam {
+                components: components as u32,
+                default_value: default.to_vec(),
+                min,
+                max,
+                integral,
+            }),
+            ParamKind::Array {
+                dtypes,
+                shape,
+                required,
+            } => param_spec::Kind::Array(ArrayParam {
+                dtypes: dtypes
+                    .iter()
+                    .map(|dtype| proto_dtype(*dtype) as i32)
+                    .collect(),
+                shape: shape.to_vec(),
+                required,
+            }),
+        }),
+    }
+}
+
 fn kind_info(summary: &KindSummary) -> ActorKindInfo {
     ActorKindInfo {
         id: summary.id.clone(),
         label: summary.label.clone(),
-        params: summary
-            .params
+        params: summary.params.iter().map(spec_to_proto).collect(),
+    }
+}
+
+fn filter_info(summary: &FilterSummary) -> FilterInfo {
+    FilterInfo {
+        handle: Some(FilterHandle { id: summary.id }),
+        kind: summary.kind.clone(),
+        params: params_to_proto(&summary.params),
+        outputs: summary
+            .outputs
             .iter()
-            .map(|spec| ProtoSpec {
+            .map(|(id, handle)| FilterOutput {
+                id: id.clone(),
+                handle: Some(DataHandle { id: *handle }),
+            })
+            .collect(),
+    }
+}
+
+fn filter_kind_info(summary: &FilterKindSummary) -> FilterKindInfo {
+    FilterKindInfo {
+        id: summary.id.clone(),
+        label: summary.label.clone(),
+        params: summary.params.iter().map(spec_to_proto).collect(),
+        outputs: summary
+            .outputs
+            .iter()
+            .map(|spec| ProtoOutputSpec {
                 id: spec.id.to_string(),
                 label: spec.label.to_string(),
-                kind: Some(match spec.kind {
-                    ParamKind::Float {
-                        default,
-                        min,
-                        max,
-                        logarithmic,
-                    } => param_spec::Kind::Number(FloatParam {
-                        default_value: default as f64,
-                        min: min as f64,
-                        max: max as f64,
-                        logarithmic,
-                    }),
-                    ParamKind::Bool { default } => param_spec::Kind::Flag(BoolParam {
-                        default_value: default,
-                    }),
-                    ParamKind::Choice { options, default } => {
-                        param_spec::Kind::Choice(ChoiceParam {
-                            options: options.iter().map(|option| option.to_string()).collect(),
-                            default_value: default.to_string(),
-                        })
-                    }
-                    ParamKind::Vector {
-                        components,
-                        default,
-                        min,
-                        max,
-                        integral,
-                    } => param_spec::Kind::Vector(VectorParam {
-                        components: components as u32,
-                        default_value: default.to_vec(),
-                        min,
-                        max,
-                        integral,
-                    }),
-                    ParamKind::Array {
-                        dtypes,
-                        shape,
-                        required,
-                    } => param_spec::Kind::Array(ArrayParam {
-                        dtypes: dtypes
-                            .iter()
-                            .map(|dtype| proto_dtype(*dtype) as i32)
-                            .collect(),
-                        shape: shape.to_vec(),
-                        required,
-                    }),
-                }),
+                dtype: proto_dtype(spec.dtype) as i32,
+                shape: spec.shape.to_vec(),
             })
             .collect(),
     }

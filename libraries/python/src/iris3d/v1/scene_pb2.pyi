@@ -417,6 +417,144 @@ class ListActorsResponse(_message.Message):
     actors: _containers.RepeatedCompositeFieldContainer[ActorInfo]
     def __init__(self, actors: _Optional[_Iterable[_Union[ActorInfo, _Mapping]]] = ...) -> None: ...
 
+class FilterHandle(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    def __init__(self, id: _Optional[int] = ...) -> None: ...
+
+class FilterInfo(_message.Message):
+    __slots__ = ("handle", "kind", "params", "outputs")
+    class ParamsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ParamValue
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUTS_FIELD_NUMBER: _ClassVar[int]
+    handle: FilterHandle
+    kind: str
+    params: _containers.MessageMap[str, ParamValue]
+    outputs: _containers.RepeatedCompositeFieldContainer[FilterOutput]
+    def __init__(self, handle: _Optional[_Union[FilterHandle, _Mapping]] = ..., kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., outputs: _Optional[_Iterable[_Union[FilterOutput, _Mapping]]] = ...) -> None: ...
+
+class FilterOutput(_message.Message):
+    __slots__ = ("id", "handle")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    handle: DataHandle
+    def __init__(self, id: _Optional[str] = ..., handle: _Optional[_Union[DataHandle, _Mapping]] = ...) -> None: ...
+
+class FilterKindInfo(_message.Message):
+    __slots__ = ("id", "label", "params", "outputs")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUTS_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    label: str
+    params: _containers.RepeatedCompositeFieldContainer[ParamSpec]
+    outputs: _containers.RepeatedCompositeFieldContainer[OutputSpec]
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[OutputSpec, _Mapping]]] = ...) -> None: ...
+
+class OutputSpec(_message.Message):
+    __slots__ = ("id", "label", "dtype", "shape")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    LABEL_FIELD_NUMBER: _ClassVar[int]
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    label: str
+    dtype: Dtype
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class AddFilterRequest(_message.Message):
+    __slots__ = ("kind", "params")
+    class ParamsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ParamValue
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    kind: str
+    params: _containers.MessageMap[str, ParamValue]
+    def __init__(self, kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ...) -> None: ...
+
+class AddFilterResponse(_message.Message):
+    __slots__ = ("filter",)
+    FILTER_FIELD_NUMBER: _ClassVar[int]
+    filter: FilterInfo
+    def __init__(self, filter: _Optional[_Union[FilterInfo, _Mapping]] = ...) -> None: ...
+
+class SetFilterRequest(_message.Message):
+    __slots__ = ("handle", "params")
+    class ParamsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: ParamValue
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    handle: FilterHandle
+    params: _containers.MessageMap[str, ParamValue]
+    def __init__(self, handle: _Optional[_Union[FilterHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ...) -> None: ...
+
+class SetFilterResponse(_message.Message):
+    __slots__ = ("filter",)
+    FILTER_FIELD_NUMBER: _ClassVar[int]
+    filter: FilterInfo
+    def __init__(self, filter: _Optional[_Union[FilterInfo, _Mapping]] = ...) -> None: ...
+
+class RemoveFilterRequest(_message.Message):
+    __slots__ = ("handle",)
+    HANDLE_FIELD_NUMBER: _ClassVar[int]
+    handle: FilterHandle
+    def __init__(self, handle: _Optional[_Union[FilterHandle, _Mapping]] = ...) -> None: ...
+
+class RemoveFilterResponse(_message.Message):
+    __slots__ = ("removed",)
+    REMOVED_FIELD_NUMBER: _ClassVar[int]
+    removed: bool
+    def __init__(self, removed: _Optional[bool] = ...) -> None: ...
+
+class ListFiltersRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ListFiltersResponse(_message.Message):
+    __slots__ = ("filters",)
+    FILTERS_FIELD_NUMBER: _ClassVar[int]
+    filters: _containers.RepeatedCompositeFieldContainer[FilterInfo]
+    def __init__(self, filters: _Optional[_Iterable[_Union[FilterInfo, _Mapping]]] = ...) -> None: ...
+
+class ListFilterKindsRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ListFilterKindsResponse(_message.Message):
+    __slots__ = ("kinds",)
+    class KindsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: FilterKindInfo
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[FilterKindInfo, _Mapping]] = ...) -> None: ...
+    KINDS_FIELD_NUMBER: _ClassVar[int]
+    kinds: _containers.MessageMap[str, FilterKindInfo]
+    def __init__(self, kinds: _Optional[_Mapping[str, FilterKindInfo]] = ...) -> None: ...
+
 class ListActorKindsRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...

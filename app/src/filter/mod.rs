@@ -65,6 +65,10 @@ use crate::scene::registry::{Bindings, ParamMap, ParamSpec, data as bound_handle
 use crate::scene::{DataArray, DataStore};
 
 pub(crate) mod colormap;
+mod wire;
+
+pub use wire::{FilterKindSummary, FilterSummary, Filters, Graph};
+pub(crate) use wire::{add, list, list_kinds, remove, set};
 
 /// One array a filter writes.
 ///
@@ -138,15 +142,6 @@ impl FilterKind {
             .filter(|spec| matches!(spec.kind, crate::scene::registry::ParamKind::Array { .. }))
     }
 
-    /// Settings at their starting values, array inputs absent. See
-    /// [`ActorKind::defaults`](crate::scene::registry::ActorKind::defaults).
-    pub fn defaults(&self) -> ParamMap {
-        self.params
-            .iter()
-            .filter_map(|spec| Some((spec.id.to_string(), spec.kind.default_value()?)))
-            .collect()
-    }
-
     /// A complete, in-range parameter map built from whatever was supplied. See
     /// [`ActorKind::normalise`](crate::scene::registry::ActorKind::normalise).
     pub fn normalise(&self, given: &ParamMap) -> ParamMap {
@@ -161,10 +156,6 @@ impl FilterKind {
                 Some((spec.id.to_string(), value))
             })
             .collect()
-    }
-
-    pub fn output(&self, id: &str) -> Option<&OutputSpec> {
-        self.outputs.iter().find(|spec| spec.id == id)
     }
 }
 
@@ -243,6 +234,25 @@ pub struct Running {
     started_at: Generation,
 }
 
+/// A filter whose settings or bindings moved this tick.
+///
+/// Insertion counts as a change, so a filter spawned this tick is caught here
+/// rather than needing an `Added` filter of its own.
+type Reconfigured = (
+    With<FilterKindId>,
+    Or<(Changed<FilterParams>, Changed<Bindings>)>,
+);
+
+/// A filter waiting to be started: everything [`start`] needs to build a
+/// [`Request`] from it.
+type Startable<'a> = (
+    Entity,
+    &'a FilterKindId,
+    &'a FilterParams,
+    &'a Bindings,
+    &'a Generation,
+);
+
 /// Ordering label for everything in this module, so a backend can put its own
 /// work after it.
 ///
@@ -313,18 +323,12 @@ fn apply_filter_params(
 fn mark_stale(
     mut commands: Commands,
     mut generations: Query<&mut Generation>,
-    added: Query<Entity, Added<FilterKindId>>,
-    reparameterised: Query<Entity, (With<FilterKindId>, Changed<FilterParams>)>,
-    rebound: Query<Entity, (With<FilterKindId>, Changed<Bindings>)>,
+    reconfigured: Query<Entity, Reconfigured>,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
     store: Res<DataStore>,
     bindings: Query<(Entity, &Bindings), With<FilterKindId>>,
 ) {
-    let mut stale: Vec<Entity> = added
-        .iter()
-        .chain(reparameterised.iter())
-        .chain(rebound.iter())
-        .collect();
+    let mut stale: Vec<Entity> = reconfigured.iter().collect();
 
     let modified: Vec<_> = array_events
         .read()
@@ -369,10 +373,7 @@ fn start(
     registry: Res<FilterRegistry>,
     arrays: Res<Assets<DataArray>>,
     store: Res<DataStore>,
-    stale: Query<
-        (Entity, &FilterKindId, &FilterParams, &Bindings, &Generation),
-        (With<Stale>, Without<Running>),
-    >,
+    stale: Query<Startable, (With<Stale>, Without<Running>)>,
 ) {
     let pool = AsyncComputeTaskPool::get();
     for (entity, kind, params, bound, generation) in &stale {

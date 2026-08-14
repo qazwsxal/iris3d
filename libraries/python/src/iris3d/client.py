@@ -26,6 +26,7 @@ from .v1.scene_pb2 import (
     ActorInfo,
     ActorKindInfo,
     AddActorRequest,
+    AddFilterRequest,
     BufferSpec,
     Chunk,
     Color,
@@ -36,9 +37,14 @@ from .v1.scene_pb2 import (
     DataInfo,
     DeleteObjectRequest,
     Dtype,
+    FilterHandle,
+    FilterInfo,
+    FilterKindInfo,
     ListActorKindsRequest,
     ListActorsRequest,
     ListDataRequest,
+    ListFilterKindsRequest,
+    ListFiltersRequest,
     ListObjectsRequest,
     ObjectHandle,
     ObjectHandles,
@@ -48,7 +54,9 @@ from .v1.scene_pb2 import (
     Range,
     ReleaseDataRequest,
     RemoveActorRequest,
+    RemoveFilterRequest,
     SetActorRequest,
+    SetFilterRequest,
     SetParentRequest,
     SetTransformRequest,
     Subset,
@@ -297,6 +305,54 @@ class ActorKindSummary:
     params: tuple[ParamInfo, ...]
 
 
+@dataclass(frozen=True)
+class OutputInfo:
+    """One array a filter kind writes."""
+
+    id: str
+    label: str
+    dtype: np.dtype
+    #: Declared shape, where 0 is an axis decided when it runs. A colour output
+    #: reads ``(0, 3)``: three components per element, however many elements
+    #: there turn out to be.
+    shape: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class FilterKindSummary:
+    """A way of deriving data that the server supports."""
+
+    id: str
+    label: str
+    #: Settings and array inputs together, as for an actor kind.
+    params: tuple[ParamInfo, ...]
+    outputs: tuple[OutputInfo, ...]
+
+
+@dataclass(frozen=True)
+class FilterSummary:
+    """One filter, and where to find what it makes."""
+
+    handle: int
+    #: Registered kind id, e.g. "colormap".
+    kind: str
+    params: dict[str, float | bool | str | int | tuple[float, ...]]
+    #: Data handle per output id, in the kind's declaration order.
+    #:
+    #: **These are what you bind.** They belong to the filter and live as long
+    #: as it does: re-running rewrites the arrays behind them rather than
+    #: replacing them, so a binding made once stays valid.
+    outputs: dict[str, int]
+
+    def __getitem__(self, output: str) -> int:
+        """The handle for one output, so binding reads as one expression::
+
+        colours = client.add_filter("colormap", params={"values": Bind(field)})
+        client.add_actor("mesh", params={"colour": Bind(colours["colour"])})
+        """
+        return self.outputs[output]
+
+
 def _param_value(value: RawParamValue) -> ParamValue:
     """Wraps a Python value for the wire.
 
@@ -435,9 +491,15 @@ def _data(info: DataInfo) -> DataSummary:
     )
 
 
-def _kind(info: ActorKindInfo) -> ActorKindSummary:
+def _param_infos(specs) -> tuple[ParamInfo, ...]:
+    """Reads a kind's declared parameters.
+
+    Shared by actor kinds and filter kinds: both declare their settings and
+    their array inputs with the same ``ParamSpec``, so a caller that can read
+    one listing can read the other.
+    """
     params = []
-    for spec in info.params:
+    for spec in specs:
         kind = spec.WhichOneof("kind")
         if kind == "flag":
             params.append(
@@ -494,10 +556,40 @@ def _kind(info: ActorKindInfo) -> ActorKindSummary:
                     logarithmic=spec.number.logarithmic,
                 )
             )
+    return tuple(params)
+
+
+def _kind(info: ActorKindInfo) -> ActorKindSummary:
     return ActorKindSummary(
         id=info.id,
         label=info.label,
-        params=tuple(params),
+        params=_param_infos(info.params),
+    )
+
+
+def _filter_kind(info: FilterKindInfo) -> FilterKindSummary:
+    return FilterKindSummary(
+        id=info.id,
+        label=info.label,
+        params=_param_infos(info.params),
+        outputs=tuple(
+            OutputInfo(
+                id=output.id,
+                label=output.label,
+                dtype=from_proto_dtype(output.dtype),
+                shape=tuple(output.shape),
+            )
+            for output in info.outputs
+        ),
+    )
+
+
+def _filter(info: FilterInfo) -> FilterSummary:
+    return FilterSummary(
+        handle=info.handle.id,
+        kind=info.kind,
+        params={key: _read_param(value) for key, value in info.params.items()},
+        outputs={output.id: output.handle.id for output in info.outputs},
     )
 
 
@@ -951,3 +1043,90 @@ class Client:
         """
         response = self._scene.ListActorKinds(ListActorKindsRequest())
         return {key: _kind(info) for key, info in response.kinds.items()}
+
+    def add_filter(
+        self,
+        kind: str,
+        *,
+        params: Mapping[str, float | bool | str] | None = None,
+    ) -> FilterSummary:
+        """Derives arrays from arrays. Draws nothing.
+
+        A filter is how derived data is made — a colour map over a field, a
+        ribbon through a backbone, a surface out of a grid. What comes out are
+        ordinary arrays with ordinary handles, so an actor binds them exactly as
+        it binds an upload and cannot tell the two apart::
+
+            field = client.upload_data({"b_factor": values})["b_factor"]
+            colours = client.add_filter("colormap",
+                                        params={"values": Bind(field)})
+            client.add_actor("mesh", params={
+                "positions": Bind(xyz),
+                "indices": Bind(tris),
+                "colour": Bind(colours["colour"]),
+            })
+
+        That separation is the point: one generated result can feed several
+        actors, so drawing a ribbon as a lit mesh *and* as an absorbing medium
+        builds it once rather than twice.
+
+        The returned handles are usable immediately. Until the first run
+        finishes they name empty arrays, and an actor bound to one draws nothing
+        rather than failing.
+
+        Parameters left out take the kind's default. Ask :meth:`filter_kinds`
+        what a kind takes and what it produces.
+        """
+        request = AddFilterRequest(kind=kind, params=_params(params))
+        return _filter(self._scene.AddFilter(request).filter)
+
+    def set_filter(
+        self,
+        handle: int,
+        params: Mapping[str, float | bool | str] | None = None,
+    ) -> FilterSummary:
+        """Changes a filter, leaving anything unnamed alone.
+
+        Parameters are merged, the opposite of :meth:`add_filter` where an
+        absent one takes its default. The output handles do not change, so
+        everything bound to this filter picks up the new result on its own::
+
+            client.set_filter(colours.handle, {"map": "cool-warm"})
+
+        Raises ``FAILED_PRECONDITION`` if the binding would feed the filter its
+        own output, directly or through others — such a graph could never come
+        to rest.
+        """
+        request = SetFilterRequest(
+            handle=FilterHandle(id=handle), params=_params(params)
+        )
+        return _filter(self._scene.SetFilter(request).filter)
+
+    def remove_filter(self, handle: int) -> bool:
+        """Removes a filter and forgets the arrays it was writing.
+
+        This is the only way those handles go away: :meth:`release_data` refuses
+        them one at a time, because releasing an array something is still
+        generating leaves the filter producing into nothing.
+
+        Returns False if the handle was already gone.
+        """
+        request = RemoveFilterRequest(handle=FilterHandle(id=handle))
+        return self._scene.RemoveFilter(request).removed
+
+    def filters(self) -> list[FilterSummary]:
+        """Every filter in the scene, in handle order."""
+        response = self._scene.ListFilters(ListFiltersRequest())
+        return [_filter(info) for info in response.filters]
+
+    def filter_kinds(self) -> dict[str, FilterKindSummary]:
+        """The ways of deriving data this server supports, keyed by kind id.
+
+        Ask rather than assuming, as with :meth:`actor_kinds`. A kind's
+        ``outputs`` say what it writes before you have run it::
+
+            colormap = client.filter_kinds()["colormap"]
+            [(o.id, o.dtype, o.shape) for o in colormap.outputs]
+        """
+        response = self._scene.ListFilterKinds(ListFilterKindsRequest())
+        return {key: _filter_kind(info) for key, info in response.kinds.items()}

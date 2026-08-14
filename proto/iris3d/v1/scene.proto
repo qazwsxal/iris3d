@@ -159,6 +159,43 @@ service SceneService {
   // choice that silently does nothing — and needs no hardcoded table of its
   // own.
   rpc ListActorKinds(ListActorKindsRequest) returns (ListActorKindsResponse);
+
+  // Adds a filter: something that reads arrays and writes arrays, and draws
+  // nothing.
+  //
+  // A filter is how derived data is made — a colour map applied to a field, a
+  // ribbon swept through a backbone, a surface extracted from a grid. What
+  // comes out are ordinary arrays with ordinary handles, so an actor binds them
+  // exactly as it binds an upload and cannot tell the two apart.
+  //
+  // That separation is the point. Generating geometry and displaying it are
+  // different jobs, so one generated result can feed several actors — drawn as
+  // a lit mesh and as an absorbing medium at once, built once — and adding a
+  // way to display something does not multiply the ways of generating it.
+  //
+  // The reply carries a handle for each declared output, allocated by this
+  // call. They are bindable immediately: until the first run finishes they name
+  // empty arrays, and an actor bound to one draws nothing rather than failing.
+  rpc AddFilter(AddFilterRequest) returns (AddFilterResponse);
+
+  // Changes an existing filter. Only what is named is altered.
+  //
+  // Refused with FAILED_PRECONDITION if the binding would feed a filter its own
+  // output, directly or through others. Such a graph could never come to rest.
+  rpc SetFilter(SetFilterRequest) returns (SetFilterResponse);
+
+  // Removes a filter and forgets the arrays it was writing.
+  //
+  // This is the only way those handles go away: ReleaseData refuses them one at
+  // a time, because releasing an array something is still generating leaves the
+  // filter producing into nothing.
+  rpc RemoveFilter(RemoveFilterRequest) returns (RemoveFilterResponse);
+
+  rpc ListFilters(ListFiltersRequest) returns (ListFiltersResponse);
+
+  // Lists the ways of deriving data this build supports, and what each takes
+  // and produces. As with ListActorKinds, ask rather than assume.
+  rpc ListFilterKinds(ListFilterKindsRequest) returns (ListFilterKindsResponse);
 }
 
 // Dtype is the element type of a buffer's raw bytes. Encoding is always
@@ -776,6 +813,110 @@ message ListActorsRequest {
 
 message ListActorsResponse {
   repeated ActorInfo actors = 1;
+}
+
+message FilterHandle {
+  uint64 id = 1;
+}
+
+// FilterInfo describes one filter and, crucially, where to find what it makes.
+message FilterInfo {
+  FilterHandle handle = 1;
+
+  // Registered kind id, e.g. "colormap". See ListFilterKinds.
+  string kind = 2;
+
+  // Complete and in range, whatever was sent to produce it. Array inputs appear
+  // here as `data` values, exactly as an actor's bindings do.
+  map<string, ParamValue> params = 3;
+
+  // Where each declared output can be found, in the kind's declaration order.
+  //
+  // **This is what you bind.** These handles belong to the filter and live as
+  // long as it does: a run rewrites the arrays behind them rather than
+  // replacing them, so a binding made once stays valid however many times the
+  // filter re-runs.
+  repeated FilterOutput outputs = 4;
+}
+
+message FilterOutput {
+  // Output id as declared by the kind, e.g. "colour" or "positions".
+  string id = 1;
+  DataHandle handle = 2;
+}
+
+// FilterKindInfo is a way of deriving data, and what it takes and produces.
+message FilterKindInfo {
+  string id = 1;
+  string label = 2;
+
+  // Settings and array inputs together, as for an actor kind.
+  repeated ParamSpec params = 3;
+
+  // What this kind writes. Declared rather than discovered, so a caller knows
+  // an output is float32 [n, 3] before running anything.
+  repeated OutputSpec outputs = 4;
+}
+
+// OutputSpec describes one array a filter writes.
+message OutputSpec {
+  string id = 1;
+  string label = 2;
+  Dtype dtype = 3;
+
+  // Shape, where 0 is an axis decided at run time: [0, 3] is three components
+  // per element, however many elements there turn out to be. This is the form
+  // of the output, never its size.
+  repeated uint64 shape = 4;
+}
+
+message AddFilterRequest {
+  // Registered kind id. REQUIRED: ask ListFilterKinds and name one.
+  string kind = 1;
+
+  // Settings and bindings. Anything unset takes the kind's default; a required
+  // array input left unbound is refused.
+  map<string, ParamValue> params = 2;
+}
+
+message AddFilterResponse {
+  FilterInfo filter = 1;
+}
+
+message SetFilterRequest {
+  FilterHandle handle = 1;
+
+  // Settings to change. Anything not named keeps its current value — unlike
+  // AddFilter, where it takes the default.
+  map<string, ParamValue> params = 2;
+}
+
+message SetFilterResponse {
+  FilterInfo filter = 1;
+}
+
+message RemoveFilterRequest {
+  FilterHandle handle = 1;
+}
+
+message RemoveFilterResponse {
+  // False if no filter with that handle was present.
+  bool removed = 1;
+}
+
+message ListFiltersRequest {}
+
+message ListFiltersResponse {
+  // In handle order, so a listing is stable between calls.
+  repeated FilterInfo filters = 1;
+}
+
+message ListFilterKindsRequest {}
+
+message ListFilterKindsResponse {
+  // Keyed by kind id, as ListActorKinds is, and for the same reason: every
+  // caller is looking one up by name.
+  map<string, FilterKindInfo> kinds = 1;
 }
 
 message ListActorKindsRequest {}
