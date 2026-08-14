@@ -7,8 +7,8 @@
 //! comparable by diffing their images.
 //!
 //! Frames rather than seconds because the thing being waited for is frames:
-//! assets upload, acceleration structures build, and a raytraced image needs
-//! several frames of accumulation before it settles.
+//! arrays arrive over gRPC, assets upload, and the moment buffer needs the
+//! frame it was written in to have resolved.
 
 use std::path::PathBuf;
 

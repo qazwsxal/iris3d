@@ -609,7 +609,6 @@ fn kind_info(summary: &KindSummary) -> ActorKindInfo {
     ActorKindInfo {
         id: summary.id.clone(),
         label: summary.label.clone(),
-        shared: summary.shared,
         params: summary
             .params
             .iter()

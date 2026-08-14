@@ -9,9 +9,14 @@
 //! triangles and getting something it had not asked for. Same geometry, two
 //! different claims about what it is, so two names.
 //!
-//! `shared: false`. A lit mesh means the same thing under any pathway, which is
-//! why `mesh` is shared vocabulary; an absorbing one is this pathway's whole
-//! premise, and there is nothing for a raytracer to register under the name.
+//! They are two kinds and not one kind with a mode, because they go through
+//! different passes: `mesh` through Bevy's ordinary opaque pass with a
+//! `StandardMaterial`, this one through [`moment_pass`](super::pass) and
+//! [`shell_pass`](super::pass) with [`MomentVolume`](super::MomentVolume). A
+//! mode inside a kind is right when the pass is the same — `solid` against
+//! `film`, below, is exactly that — and wrong when it is not. Their parameters
+//! are disjoint too: `sigma` means nothing to a lit mesh and `double_sided`
+//! nothing to a medium.
 //!
 //! There is no `double_sided` here, unlike `mesh`: it is a lighting choice,
 //! and both faces are always drawn — they *have* to be, since the two of them
@@ -197,7 +202,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "solid",
         label: "absorbing solid",
-        shared: false,
         params: PARAMS,
         apply: |entity, params| {
             let depiction = match text(params, "mode", "solid") {

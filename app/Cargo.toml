@@ -4,10 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# `bevy_solari` is the raytracing pathway; see `draw::solari`. It is an optional
-# feature because it pulls in BLAS building and the raytraced lighting passes,
-# which only one backend uses.
-bevy = { version = "0.19.0", features = ["dynamic_linking", "bevy_solari"] }
+bevy = { version = "0.19.0", features = ["dynamic_linking"] }
 bevy_egui = "0.41.1"
 clap = { version = "4.5", features = ["derive"] }
 prost = "0.14.3"

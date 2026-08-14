@@ -102,7 +102,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "glycan",
         label: "glycan (SNFG)",
-        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(GlycanStyle(Style {

@@ -1,15 +1,15 @@
 //! Chemistry every backend agrees on.
 //!
 //! An element's radius and its conventional colour are facts about the periodic
-//! table, not about a pipeline. Two backends drawing a molecule disagree about
-//! *how* to put a sphere on screen and agree completely about how big it is and
-//! what colour it should be, so this sits in the shared layer.
+//! table, not about a pipeline. Any two pathways drawing a molecule disagree
+//! about *how* to put a sphere on screen and agree completely about how big it
+//! is and what colour it should be, so this sits in the shared layer.
 //!
-//! Tessellation deliberately does **not** live here. The default backend merges
-//! spheres and cylinders into one mesh; the `rt` backend instances a single
-//! sphere. They share no geometry code because they are not doing the same
-//! thing — which is the usual outcome, and the reason actors belong to a
-//! backend.
+//! Tessellation deliberately does **not** live here. This backend merges spheres
+//! and cylinders into one mesh; one that instanced a single sphere per atom, or
+//! raytraced analytic ones, would share no geometry code with it, because they
+//! are not doing the same thing. That is the usual outcome, and the reason
+//! actors belong to a backend.
 
 use bevy::prelude::*;
 

@@ -295,17 +295,6 @@ class ActorKindSummary:
     id: str
     label: str
     params: tuple[ParamInfo, ...]
-    shared: bool
-    """Whether this id means the same thing under every rendering backend.
-
-    The server runs one backend, chosen when it was launched, and that decides
-    which kinds exist at all. ``True`` promises the same physical thing whichever
-    backend a script meets — a raytraced and a rasterised mesh are one mesh — so
-    the call keeps working against another server. ``False`` marks a kind only
-    the running backend offers; it draws fine here and is simply absent
-    elsewhere. Prefer a shared kind when either would do, and read ``params``
-    rather than assuming: a shared id may still take different settings.
-    """
 
 
 def _param_value(value: RawParamValue) -> ParamValue:
@@ -509,7 +498,6 @@ def _kind(info: ActorKindInfo) -> ActorKindSummary:
         id=info.id,
         label=info.label,
         params=tuple(params),
-        shared=info.shared,
     )
 
 
@@ -950,9 +938,9 @@ class Client:
     def actor_kinds(self) -> dict[str, ActorKindSummary]:
         """The ways of drawing this server supports, keyed by kind id.
 
-        Kinds come from whichever rendering backends the server was built with,
-        so ask rather than assuming: a hardcoded list here would eventually
-        offer something that silently does nothing.
+        Kinds come from the rendering pathway the server was built with, so ask
+        rather than assuming: a hardcoded list here would eventually offer
+        something that silently does nothing.
 
         A kind's ``params`` include its array inputs, each saying what element
         types and shape it takes and whether the kind can draw without it. That

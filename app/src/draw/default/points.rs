@@ -85,9 +85,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "points",
         label: "points",
-        // A point cloud is a point cloud whichever pathway draws it. Camera-
-        // facing quads are this backend's answer, not part of what the id means.
-        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(PointsStyle {

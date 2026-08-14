@@ -17,31 +17,34 @@
 //!
 //! What each kind needs is declared, not assumed: a kind states its inputs as
 //! array parameters, so a client is told that `points` wants `float32 [n, 3]`
-//! rather than having to name an array "positions" and hope. Kind ids are a
-//! shared vocabulary where they can be — `points` under two backends is the
-//! same physical thing drawn two ways, as a raytraced and a rasterised mesh
-//! are one mesh. A kind only one backend can provide says so, and
-//! [`ActorKind::shared`](crate::scene::registry::ActorKind::shared) is how.
+//! rather than having to name an array "positions" and hope.
 //!
-//! Two pathways. [`default`] accumulates moments: opaque geometry goes through
-//! Bevy's ordinary passes, and anything transmitting deposits absorbance into a
-//! shared buffer instead of blending, so a structure inside the density map it
-//! was built from composes correctly with nothing sorted. [`rt`] raytraces the
-//! lighting, and is on the back burner.
+//! # One pathway
 //!
-//! There used to be a third — a plain `Mesh3d`-per-actor baseline on the
-//! standard pipeline, which held the name `default` while the moment pathway
-//! was still called `experimental`. It has been removed rather than kept as a
-//! fallback: it could not compose a mesh with a volume correctly, which is the
-//! thing this project is actually for, and maintaining two opaque paths to keep
-//! a reference image was paying for a picture nobody used.
+//! [`default`] is the only one, and it accumulates moments: opaque geometry
+//! goes through Bevy's ordinary passes, and anything transmitting deposits
+//! absorbance into a shared buffer instead of blending, so a structure inside
+//! the density map it was built from composes correctly with nothing sorted.
+//!
+//! Two others have been and gone. A plain `Mesh3d`-per-actor baseline on the
+//! standard pipeline could not compose a mesh with a volume correctly, which is
+//! the thing this project is actually for. A `bevy_solari` raytracing pathway
+//! had no transparency and no volumes, and having to keep every kind working
+//! under both was shaping the design of things that had nothing to do with
+//! raytracing. Both are recoverable from history.
+//!
+//! The **seam stays** even with one pathway behind it: this module is the shared
+//! layer and [`default`] is a pathway directory. Which technique iris3d should
+//! settle on is still an open question, and flattening the two together would
+//! answer it by accident. What has gone is only the machinery for reconciling
+//! *two at once* — the `Backend` enum, the `--backend` flag, and the `shared`
+//! flag on a kind.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::settings::WgpuFeatures;
-use bevy::solari::prelude::SolariPlugins;
 
 use crate::scene::actor::ColorMap;
 
@@ -54,64 +57,28 @@ mod default;
 mod elements;
 mod glycan;
 mod probe;
-mod rt;
 #[cfg(test)]
 mod smoke;
 
-/// How long the raytracing pathway keeps drawing to let its image settle.
+/// What to call the running pathway in a message. Also what the registry
+/// reports as the backend a kind came from.
 ///
-/// Re-exported because the UI offers it as a control, and a control belongs
-/// where the settings are rather than behind a module path. Present as a
-/// resource only when that backend is running.
-pub use rt::Accumulation;
+/// A constant rather than a method on an enum of one. It stays a *name* rather
+/// than becoming implicit, because the registry reports it to clients and
+/// "which pathway refused" is a question that outlives any particular pathway.
+pub const BACKEND: &str = "default";
 
-/// Which rendering pathway to run.
+/// GPU features without which the running pathway cannot draw at all.
 ///
-/// Chosen once from `--backend` and never changed while the app is up. A
-/// pathway this machine cannot run must **refuse** rather than quietly fall
-/// back to another — see [`probe`], which enforces that.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Backend {
-    // Plain prose, no rustdoc link: clap prints these doc comments verbatim in
-    // `--help`, where a `[`default`]` would render as literal brackets.
-    /// Moment-based order-independent transparency. Opaque geometry is lit
-    /// normally; anything transmitting deposits absorbance instead of blending,
-    /// so meshes and volumes compose correctly with nothing sorted.
-    #[default]
-    Default,
-    /// Raytraced lighting on bevy_solari. No transparency and no volumes.
-    Rt,
-}
-
-impl Backend {
-    /// What to call this pathway in a message. Also what the registry reports
-    /// as the backend a kind came from.
-    pub fn name(self) -> &'static str {
-        match self {
-            Backend::Default => "default",
-            Backend::Rt => "rt",
-        }
-    }
-
-    /// GPU features without which this pathway cannot run at all.
-    ///
-    /// Asked once at startup and answered by refusing, never by degrading. The
-    /// standard pipeline needs nothing beyond the WebGPU baseline, so it is
-    /// always available; Solari names its own set, which is the honest source
-    /// for it.
-    pub fn requires(self) -> WgpuFeatures {
-        match self {
-            Backend::Rt => SolariPlugins::required_wgpu_features(),
-            // Additive blending into a 32-bit float target is what the whole
-            // method rests on, and it is not in the WebGPU baseline. fp32 is
-            // not negotiable here: a moment is a difference of two O(1) values,
-            // so a thin shell cancels catastrophically in fp16 — see
-            // `ref/mboit-bevy-reference.md` §8. Without the feature there is no
-            // degraded version to fall back to, only a wrong one.
-            Backend::Default => WgpuFeatures::FLOAT32_BLENDABLE,
-        }
-    }
-}
+/// Asked once at startup and answered by refusing, never by degrading — see
+/// [`probe`], which enforces that.
+///
+/// Additive blending into a 32-bit float target is what the whole method rests
+/// on, and it is not in the WebGPU baseline. fp32 is not negotiable here: a
+/// moment is a difference of two O(1) values, so a thin shell cancels
+/// catastrophically in fp16 — see `ref/mboit-bevy-reference.md` §8. Without the
+/// feature there is no degraded version to fall back to, only a wrong one.
+pub const REQUIRES: WgpuFeatures = WgpuFeatures::FLOAT32_BLENDABLE;
 
 /// What about an actor's drawable output is out of date.
 ///
@@ -230,13 +197,8 @@ pub(crate) struct Draw;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Place;
 
-/// Runs one backend, plus the work every backend shares.
-///
-/// Which one is a launch-time choice the caller has already made; see
-/// [`Backend`] and `crate::cli`.
-pub struct DrawPlugin {
-    pub backend: Backend,
-}
+/// Runs the backend, plus the work that sits above whichever one it is.
+pub struct DrawPlugin;
 
 impl Plugin for DrawPlugin {
     fn build(&self, app: &mut App) {
@@ -247,7 +209,7 @@ impl Plugin for DrawPlugin {
         app.init_resource::<ActorRegistry>();
         app.world_mut()
             .resource_mut::<ActorRegistry>()
-            .served_by(self.backend.name());
+            .served_by(BACKEND);
 
         // The order lives in sets rather than one `.chain()`, because the
         // systems being ordered are added by two different plugins and neither
@@ -268,18 +230,15 @@ impl Plugin for DrawPlugin {
             (mark_dirty.in_set(Invalidate), clear_dirty.after(Place)),
         );
 
-        // Exactly one. Backends are pathways, not layers, so this is a choice
-        // rather than a list.
-        match self.backend {
-            Backend::Default => app.add_plugins(default::MomentBackendPlugin),
-            Backend::Rt => app.add_plugins(rt::RtBackendPlugin),
-        };
+        // Exactly one. Backends are pathways, not layers, so adding a second
+        // here would be a mistake rather than a feature.
+        app.add_plugins(default::MomentBackendPlugin);
     }
 
     /// Runs after every plugin has built, which is the first moment the render
     /// app holds the adapter this pathway will actually draw with.
     fn finish(&self, app: &mut App) {
-        probe::refuse_unsupported(app, self.backend);
+        probe::refuse_unsupported(app);
     }
 }
 
@@ -390,12 +349,12 @@ pub(crate) fn bound_colours(
 /// Where each element falls along the colour map, as 0..1.
 ///
 /// The half of [`bound_colours`] that decides *how far along* rather than *what
-/// colour*. Split out because a backend may need the position rather than the
-/// colour: Solari cannot read vertex colours at all, so it writes this into a
-/// texture coordinate and lets a ramp texture supply the colour instead.
+/// colour*. Still split out, because a pathway that cannot read vertex colours
+/// wants the position instead — to write into a texture coordinate and let a
+/// ramp texture supply the colour. Nothing needs that today, so it is private.
 ///
 /// Autoscales over the drawn elements unless `ColorBy::range` pins it.
-pub(crate) fn normalised(array: &DataArray, colour: &ColorBy, count: usize) -> Option<Vec<f32>> {
+fn normalised(array: &DataArray, colour: &ColorBy, count: usize) -> Option<Vec<f32>> {
     let values = scalars(array);
     if values.len() < count {
         return None;

@@ -21,9 +21,8 @@ use ui::UiPlugin;
 use viewport::ViewportPlugin;
 
 fn main() {
-    // Before the app is built: `--help` should print and exit without opening a
-    // window, and the backend has to be known before any rendering plugin is
-    // added.
+    // Before the app is built, so `--help` prints and exits without opening a
+    // window.
     let cli = Cli::parse();
 
     let mut app = App::new();
@@ -34,10 +33,8 @@ fn main() {
         .add_plugins(GrpcPlugin { addr: cli.listen })
         .add_plugins(ScenePlugin)
         .add_plugins(ViewportPlugin)
-        // Exactly one rendering pathway, chosen here and never changed.
-        .add_plugins(DrawPlugin {
-            backend: cli.backend,
-        })
+        // Exactly one rendering pathway. See `draw`.
+        .add_plugins(DrawPlugin)
         .add_plugins(UiPlugin);
 
     if let Some(path) = cli.screenshot {

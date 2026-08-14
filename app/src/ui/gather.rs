@@ -39,18 +39,12 @@ pub struct Row {
 pub struct KindOption {
     pub id: &'static str,
     pub label: &'static str,
-    /// See [`ActorRow::shared`].
-    pub shared: bool,
 }
 
 pub struct ActorRow {
     pub entity: Entity,
     pub id: u64,
     pub label: &'static str,
-    /// Whether this kind exists under every backend. `false` is worth saying
-    /// out loud: the actor draws fine, but it will not survive a switch of
-    /// pathway, and nothing else on screen would reveal that.
-    pub shared: bool,
     /// The controls to show, taken straight from the backend's declaration —
     /// `&'static` so nothing here has to be cloned or borrowed from the world.
     pub specs: &'static [ParamSpec],
@@ -103,9 +97,6 @@ pub type ActorData<'w, 's> = Query<
 
 /// The whole scene as the UI sees it for one frame.
 pub struct Gathered {
-    /// The rendering pathway this build is running, for naming it where a kind
-    /// is specific to it.
-    pub backend: &'static str,
     pub rows: HashMap<Entity, Row>,
     /// Objects with no object parent, in handle order.
     pub roots: Vec<Entity>,
@@ -163,7 +154,6 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
         entity,
         id: id.0,
         label: registered.label,
-        shared: registered.shared,
         specs: registered.params,
         params: params.0.clone(),
         colour: colour.clone(),
@@ -221,7 +211,6 @@ pub fn gather(
             .map(|kind| KindOption {
                 id: kind.id,
                 label: kind.label,
-                shared: kind.shared,
             })
             .collect();
 
@@ -282,7 +271,6 @@ pub fn gather(
         .sum();
 
     Gathered {
-        backend: registry.backend(),
         rows,
         roots,
         ordered,

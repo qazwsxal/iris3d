@@ -6,7 +6,6 @@
 
 use bevy_egui::egui;
 
-use crate::draw::Accumulation;
 use crate::viewport::OverlaySettings;
 
 use super::gather::Gathered;
@@ -18,11 +17,6 @@ pub fn list(
     state: &UiState,
     actions: &mut PendingActions,
     overlays: &mut OverlaySettings,
-    // `Option` because it exists only under the pathway that has something to
-    // converge. A backend that draws a settled image in one frame has no
-    // meaningful setting here, so rather than show a dead control the section
-    // is simply absent.
-    accumulation: Option<&mut Accumulation>,
 ) {
     if scene.roots.is_empty() {
         ui.weak("Nothing loaded. Upload over gRPC.");
@@ -40,22 +34,6 @@ pub fn list(
             ui.checkbox(&mut overlays.selection, "Selection outline");
             ui.checkbox(&mut overlays.all_bounds, "All bounds");
         });
-
-    if let Some(accumulation) = accumulation {
-        egui::CollapsingHeader::new("Raytracing")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.add(
-                    egui::Slider::new(&mut accumulation.frames, 0..=600)
-                        .text("converge frames"),
-                );
-                ui.weak(
-                    "Frames spent refining the image after a change. Higher is \
-                     cleaner and busier; 0 leaves the window fully idle and the \
-                     picture noisy.",
-                );
-            });
-    }
 }
 
 /// One object and its children.

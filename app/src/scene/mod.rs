@@ -141,10 +141,6 @@ pub struct SubsetSummary {
 pub struct KindSummary {
     pub id: String,
     pub label: String,
-    /// Whether this id exists under every backend. See
-    /// [`ActorKind::shared`](registry::ActorKind::shared) — a script using a
-    /// kind that is not shared stops working if the pathway changes.
-    pub shared: bool,
     pub params: &'static [registry::ParamSpec],
 }
 
@@ -668,7 +664,6 @@ pub fn apply_scene_commands(
                     .map(|kind| KindSummary {
                         id: kind.id.to_string(),
                         label: kind.label.to_string(),
-                        shared: kind.shared,
                         params: kind.params,
                     })
                     .collect();
@@ -1265,7 +1260,6 @@ mod tests {
             .register(registry::ActorKind {
                 id: "marker",
                 label: "Marker",
-                shared: true,
                 params: &[],
                 apply: |_, _| {},
             });
@@ -1502,19 +1496,33 @@ mod tests {
         );
     }
 
-    /// Portability reaches a client, so a script can tell a kind that survives
-    /// a change of backend from one that does not. The UI reads the same field.
+    /// Every kind the backend registered reaches a client, with the label and
+    /// the parameters it declared.
+    ///
+    /// This is the only way a script learns what the running build can draw —
+    /// there is no table on the client side to fall back on — so a kind that
+    /// registers but does not list is invisible.
     #[test]
-    fn listing_kinds_reports_whether_each_is_shared() {
+    fn listing_kinds_reports_every_registered_kind() {
+        const PARAMS: &[registry::ParamSpec] = &[registry::ParamSpec {
+            id: "size",
+            label: "size",
+            kind: registry::ParamKind::Float {
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+                logarithmic: false,
+            },
+        }];
+
         let mut app = app();
         marker(&mut app);
         app.world_mut()
             .resource_mut::<ActorRegistry>()
             .register(registry::ActorKind {
-                id: "only-here",
-                label: "Only here",
-                shared: false,
-                params: &[],
+                id: "sized",
+                label: "Sized",
+                params: PARAMS,
                 apply: |_, _| {},
             });
 
@@ -1522,14 +1530,13 @@ mod tests {
         app.update();
         let kinds = listed.try_recv().expect("a reply");
 
-        let shared = |id: &str| {
-            kinds
-                .iter()
-                .find(|kind| kind.id == id)
-                .map(|kind| kind.shared)
-        };
-        assert_eq!(shared("marker"), Some(true));
-        assert_eq!(shared("only-here"), Some(false));
+        let ids: Vec<&str> = kinds.iter().map(|kind| kind.id.as_str()).collect();
+        assert_eq!(ids, vec!["marker", "sized"], "registration order");
+
+        let sized = kinds.iter().find(|kind| kind.id == "sized").expect("listed");
+        assert_eq!(sized.label, "Sized");
+        assert_eq!(sized.params.len(), 1);
+        assert_eq!(sized.params[0].id, "size");
     }
 
     /// One actor under two objects is drawn twice and stays one actor.

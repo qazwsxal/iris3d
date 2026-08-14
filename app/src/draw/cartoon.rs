@@ -8,11 +8,11 @@
 //!
 //! The sweep is here too, which is a deliberate exception to the note in
 //! [`elements`](super::elements) that tessellation belongs to a backend. That
-//! note is right when the backends genuinely differ — the default one merges
-//! spheres into a mesh, `rt` instances one sphere — and here they do not: both
-//! want the same triangles. What each backend still owns is the mapping onto GPU
-//! data, which is what [`Ribbon`] hands over rather than a `Mesh`: one pathway
-//! wants vertex colours, the other wants normals only when a shell is on.
+//! note is right when two pathways genuinely differ over which triangles to
+//! make; a ribbon is the same ribbon whoever draws it. What a backend still owns
+//! is the mapping onto GPU data, which is what [`Ribbon`] hands over rather than
+//! a `Mesh` — an opaque ribbon wants vertex colours, an absorbing one wants
+//! normals only when a shell is on.
 //!
 //! # The construction
 //!

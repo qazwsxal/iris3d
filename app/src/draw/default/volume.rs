@@ -1,9 +1,9 @@
 //! Sampled grids, drawn as an emitting and absorbing medium.
 //!
-//! `shared: true` for
-//! the reason that word exists: a scalar field on a regular grid is one physical
-//! thing whether it is ray marched onto the standard pipeline or integrated into
-//! moments here. What differs is the picture, not the object.
+//! A scalar field on a regular grid is one physical thing whether it is ray
+//! marched onto a standard pipeline or integrated into moments here. What a
+//! pathway decides is the picture, not the object, which is why the id says
+//! `volume` and nothing about the technique.
 //!
 //! # Two passes, because a volume both absorbs and emits
 //!
@@ -222,13 +222,10 @@ const PARAMS: &[ParamSpec] = &[
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "volume",
-        // The same label the default backend gives this id, and plain on
-        // purpose. One volume both absorbs and emits — `opacity` and `emission`
-        // are two controls on one medium, not two kinds of object — so naming it
-        // after either half would describe it wrongly. A shared id should also
-        // read the same whichever backend answers `ListActorKinds`.
+        // Plain on purpose. One volume both absorbs and emits — `opacity` and
+        // `emission` are two controls on one medium, not two kinds of object —
+        // so naming it after either half would describe it wrongly.
         label: "volume",
-        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert((

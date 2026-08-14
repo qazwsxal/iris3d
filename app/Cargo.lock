@@ -1212,7 +1212,6 @@ dependencies = [
  "bevy_render",
  "bevy_scene",
  "bevy_shader",
- "bevy_solari",
  "bevy_sprite",
  "bevy_sprite_render",
  "bevy_state",
@@ -1653,36 +1652,6 @@ dependencies = [
  "tracing",
  "wgpu-naga-bridge",
  "wgpu-types",
-]
-
-[[package]]
-name = "bevy_solari"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b2edac80e47ba799a747eb47c3dff6f9a46a85cf88bb0ceaad8ab5a5c6afdea"
-dependencies = [
- "bevy_anti_alias",
- "bevy_app",
- "bevy_asset",
- "bevy_camera",
- "bevy_color",
- "bevy_core_pipeline",
- "bevy_derive",
- "bevy_diagnostic",
- "bevy_ecs",
- "bevy_image",
- "bevy_math",
- "bevy_mesh",
- "bevy_pbr",
- "bevy_platform",
- "bevy_reflect",
- "bevy_render",
- "bevy_shader",
- "bevy_transform",
- "bevy_utils",
- "bytemuck",
- "derive_more",
- "tracing",
 ]
 
 [[package]]

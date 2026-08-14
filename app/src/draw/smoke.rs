@@ -43,7 +43,7 @@ use crate::scene::registry::{
 };
 use crate::scene::{DataArray, DataStore, SceneObject, Subset};
 
-use super::{Backend, DrawPlugin};
+use super::{BACKEND, DrawPlugin};
 
 /// Elements in every synthesised array.
 ///
@@ -57,7 +57,7 @@ const ELEMENTS: u64 = 8;
 /// registered — in the real app those come from `DefaultPlugins`, which needs a
 /// window and an adapter. Nothing here stands in for the render app: the
 /// backend's `finish` is never called, because `App::update` does not call it.
-fn headless(backend: Backend) -> App {
+fn headless() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
     app.init_asset::<Shader>()
@@ -80,7 +80,7 @@ fn headless(backend: Backend) -> App {
                 .chain(),
         );
 
-    app.add_plugins(DrawPlugin { backend });
+    app.add_plugins(DrawPlugin);
     app
 }
 
@@ -189,8 +189,8 @@ fn spawn(app: &mut App, kind: &'static str) -> Entity {
 ///
 /// One app per kind rather than one holding all of them, so a failure names the
 /// kind that caused it instead of whichever ran first.
-fn stand_up(backend: Backend) {
-    let kinds: Vec<&'static str> = headless(backend)
+fn stand_up() {
+    let kinds: Vec<&'static str> = headless()
         .world()
         .resource::<ActorRegistry>()
         .iter()
@@ -198,8 +198,7 @@ fn stand_up(backend: Backend) {
         .collect();
     assert!(
         !kinds.is_empty(),
-        "the {} backend registered no kinds at all",
-        backend.name()
+        "the {BACKEND} backend registered no kinds at all"
     );
 
     for kind in kinds {
@@ -207,9 +206,9 @@ fn stand_up(backend: Backend) {
         // this test fails is a panic inside the schedule, which never reaches an
         // assertion. Test output is captured unless the test fails, so this
         // costs nothing and names the kind when it matters.
-        println!("{}: standing up {kind}", backend.name());
+        println!("{BACKEND}: standing up {kind}");
 
-        let mut app = headless(backend);
+        let mut app = headless();
         let actor = spawn(&mut app, kind);
 
         // Three frames, because the states differ. The first spawns the actor's
@@ -222,8 +221,7 @@ fn stand_up(backend: Backend) {
 
         assert!(
             app.world().get_entity(actor).is_ok(),
-            "{}: the {kind} actor did not survive three frames",
-            backend.name()
+            "{BACKEND}: the {kind} actor did not survive three frames"
         );
         let dirty = app
             .world()
@@ -232,18 +230,12 @@ fn stand_up(backend: Backend) {
             .unwrap_or_default();
         assert!(
             !dirty.any(),
-            "{}: {kind} was still {dirty:?} after three frames",
-            backend.name()
+            "{BACKEND}: {kind} was still {dirty:?} after three frames"
         );
     }
 }
 
 #[test]
-fn the_default_backend_stands_up_with_every_kind_it_registers() {
-    stand_up(Backend::Default);
-}
-
-#[test]
-fn the_rt_backend_stands_up_with_every_kind_it_registers() {
-    stand_up(Backend::Rt);
+fn the_backend_stands_up_with_every_kind_it_registers() {
+    stand_up();
 }

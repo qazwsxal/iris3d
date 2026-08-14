@@ -1,10 +1,7 @@
 //! Cartoon ribbons, drawn as the boundary of an absorbing solid.
 //!
-//! `shared: true`, because a ribbon through a backbone is one physical thing
-//! whether it is lit or integrated through — [`rt`](crate::draw::rt) can
-//! register the same id whenever it grows the biology kinds. The curve and the
-//! sweep are [`crate::draw::cartoon`]; what is here is the mapping onto the
-//! moment passes.
+//! The curve and the sweep are [`crate::draw::cartoon`], which any pathway would
+//! want unchanged; what is here is the mapping onto the moment passes.
 //!
 //! # Opaque is the point
 //!
@@ -267,7 +264,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "cartoon",
         label: "cartoon",
-        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(CartoonStyle {

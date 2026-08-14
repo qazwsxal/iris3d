@@ -90,9 +90,9 @@
 //! in `absorbing` mode.
 //!
 //! `mesh` and `solid` are the same triangles making different claims. A mesh is
-//! lit and opaque and means the same thing under any pathway, so `shared: true`.
-//! A solid says those triangles *bound a medium*, which is this pathway's
-//! premise and nothing a raytracer would register, so `shared: false`.
+//! lit and opaque; a solid says those triangles *bound a medium*. Two kinds
+//! rather than one with a mode, because they go through different passes and
+//! their parameters are disjoint — see [`solid`].
 //!
 //! Neither is called `surface`, deliberately. In structural biology that word
 //! means a *molecular* surface — solvent-accessible or solvent-excluded — and
@@ -135,9 +135,9 @@ mod prepare;
 mod solid;
 mod volume;
 
-// Re-exported rather than imported separately in each kind module, exactly as
-// the raytracing pathway does it: whether a helper is shared or belongs to this
-// pathway is a fact about the pathway, not something each kind should track.
+// Re-exported rather than imported separately in each kind module: whether a
+// helper is shared or belongs to this pathway is a fact about the pathway, not
+// something each kind should have to track.
 pub(crate) use super::{Actor, Dirty, Draw, Invalidate, Place, bound, mark};
 
 use pass::{grid_emit_pass, moment_pass, moment_resolve, shell_pass};
@@ -277,8 +277,7 @@ pub struct MomentShell {
 ///
 /// Split out from [`MomentBackendPlugin`] so it can be added without the
 /// actor kinds — which is what lets the accumulation be exercised with no
-/// actors, no gRPC and no interface in the way, the same isolation
-/// `examples/solari_smoke.rs` gives the raytracer.
+/// actors, no gRPC and no interface in the way.
 ///
 /// This pathway used to be called `experimental`, and the name survives in the
 /// reference documents under `ref/`.
@@ -465,8 +464,8 @@ impl Plugin for MomentBackendPlugin {
 ///
 /// Nothing else. It does not touch `Msaa`: the moment target takes whatever
 /// sample count the view has, and the two passes are specialised to match — see
-/// [`pipeline`]. Only the `rt` pathway has to force `Msaa::Off`, and it does
-/// that in its own module rather than here.
+/// [`pipeline`]. A pathway that could not tolerate multisampling would have to
+/// force `Msaa::Off` in its own module, which is why this one says so.
 fn moment_cameras(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
     for camera in &cameras {
         commands.entity(camera).insert(MomentView);

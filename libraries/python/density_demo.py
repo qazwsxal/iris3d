@@ -1,6 +1,6 @@
 """A protein cartoon inside the cryo-EM map it was built from.
 
-This is the test the experimental backend exists for. Two objects share one
+This is the test the moment backend exists for. Two objects share one
 coordinate frame — nothing is re-centred, because a map and the model fitted
 into it already agree in ångströms:
 
@@ -16,9 +16,9 @@ participating medium sampled along the ray rather than a surface, so there is no
 single depth to sort it against, and the ribbon threads through it — in front of
 some samples and behind others — within a single pixel.
 
-Run against an app started with the experimental backend::
+Run against a running app::
 
-    cargo run -- --backend experimental
+    cargo run
     uv run python density_demo.py
 
 Defaults to gamma-secretase: EMD-3061 at 3.4 Å with PDB 5A63 fitted into it.
@@ -88,9 +88,8 @@ def main():
         missing = {"cartoon", "volume"} - set(kinds)
         if missing:
             raise SystemExit(
-                f"this backend registers no {', '.join(sorted(missing))}; "
-                f"it has {sorted(kinds)}. Start the app with "
-                "`cargo run -- --backend experimental`."
+                f"this build registers no {', '.join(sorted(missing))}; "
+                f"it has {sorted(kinds)}."
             )
         opaque = any(
             spec.id == "mode" for spec in kinds["cartoon"].params

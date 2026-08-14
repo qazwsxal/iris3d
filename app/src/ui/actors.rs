@@ -135,16 +135,7 @@ fn add(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut Pendi
             .selected_text("choose a kind")
             .show_ui(ui, |ui| {
                 for kind in &row.available {
-                    // A kind only this pathway offers is still perfectly
-                    // drawable — it just will not be here under another
-                    // backend, which is worth knowing before you build a scene
-                    // around it.
-                    let text = if kind.shared {
-                        kind.label.to_string()
-                    } else {
-                        format!("{} · {} only", kind.label, scene.backend)
-                    };
-                    if ui.selectable_label(false, text).clicked() {
+                    if ui.selectable_label(false, kind.label).clicked() {
                         actions.0.push(UiAction::AddActor(row.entity, kind.id));
                     }
                 }
@@ -175,18 +166,6 @@ fn controls(
             None => ui.weak("under no object — not drawn"),
         };
     });
-    // Rare on purpose: a badge here means the actor does not survive a change
-    // of rendering pathway, so it should be worth reading when it appears.
-    if !current.shared {
-        ui.label(
-            egui::RichText::new(format!(
-                "only the {} backend draws this kind",
-                scene.backend
-            ))
-            .weak()
-            .italics(),
-        );
-    }
     // One actor, several places. Every control below changes all of them at
     // once, which is the reason to draw it this way rather than as two actors.
     if current.places > 1 {

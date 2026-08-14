@@ -95,9 +95,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "ball-and-stick",
         label: "ball and stick",
-        // A convention about what a molecule looks like, not about how the
-        // spheres and cylinders reach the screen.
-        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(BallAndStickStyle(Sizes {

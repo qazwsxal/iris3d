@@ -18,15 +18,14 @@ use bevy::prelude::*;
 use bevy::render::RenderApp;
 use bevy::render::renderer::RenderAdapter;
 
-use super::Backend;
+use super::{BACKEND, REQUIRES};
 
 /// Stops the app if the adapter is missing anything the pathway needs.
 ///
 /// Silent when there is no render app at all, which is the headless case in
 /// tests: there is no adapter to judge and nothing will be drawn either way.
-pub(crate) fn refuse_unsupported(app: &App, backend: Backend) {
-    let wanted = backend.requires();
-    if wanted.is_empty() {
+pub(crate) fn refuse_unsupported(app: &App) {
+    if REQUIRES.is_empty() {
         return;
     }
 
@@ -37,21 +36,18 @@ pub(crate) fn refuse_unsupported(app: &App, backend: Backend) {
         return;
     };
 
-    let missing = wanted - adapter.features();
+    let missing = REQUIRES - adapter.features();
     if missing.is_empty() {
         return;
     }
 
-    // Both halves matter: what is missing says whether another machine would
-    // work, and what does run says what to do about it now.
+    // Naming what is missing is what says whether another machine would work.
     error!(
-        "draw: the {} backend needs GPU features this adapter does not have: {:?}",
-        backend.name(),
-        missing
+        "draw: the {BACKEND} backend needs GPU features this adapter does not have: {missing:?}"
     );
     error!(
-        "draw: no fallback — pathways composite differently, so substituting one \
-         would draw a picture that is wrong without saying so. Try --backend default."
+        "draw: no fallback — there is no second pathway to substitute, and one that \
+         composited differently would draw a picture that is wrong without saying so."
     );
     std::process::exit(1);
 }

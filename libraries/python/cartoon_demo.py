@@ -74,9 +74,9 @@ def main():
     with iris3d.Client(wait_timeout=iris3d.DEFAULT_CONNECT_TIMEOUT) as client:
         print("connected")
 
-        # Ask rather than assume. Which kinds exist depends on the backend the
-        # app was launched with, and a hardcoded list here would eventually name
-        # something that silently does nothing.
+        # Ask rather than assume. Which kinds exist is decided by the server,
+        # and a hardcoded list here would eventually name something that
+        # silently does nothing.
         available = client.actor_kinds()
         if "cartoon" not in available:
             raise SystemExit(

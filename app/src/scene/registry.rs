@@ -356,20 +356,6 @@ pub struct ActorKind {
     pub id: &'static str,
     pub label: &'static str,
 
-    /// Whether this id means the same thing under every backend.
-    ///
-    /// `true` promises that a script naming this kind gets the same physical
-    /// thing whichever pathway is running, drawn by whatever technique that
-    /// pathway uses — as a raytraced and a rasterised mesh are one mesh. The
-    /// parameters may still differ, which is why a client asks
-    /// `ListActorKinds` rather than assuming.
-    ///
-    /// `false` marks a kind only one backend can offer, so a script using it
-    /// stops working when the pathway changes. Said here, next to the id it
-    /// describes, rather than in a table somewhere that would drift against
-    /// what is actually registered.
-    pub shared: bool,
-
     pub params: &'static [ParamSpec],
     /// Writes the kind's own typed style component from the parameters.
     ///
@@ -582,7 +568,6 @@ mod tests {
         ActorKind {
             id: "test",
             label: "test",
-            shared: true,
             params: SPECS,
             apply: |_, _| {},
         }
@@ -613,7 +598,6 @@ mod tests {
         ActorKind {
             id: "bound",
             label: "bound",
-            shared: true,
             params: WITH_INPUTS,
             apply: |_, _| {},
         }
@@ -875,26 +859,6 @@ mod tests {
 
         app.update();
         assert!(app.world().get::<TestStyle>(entity).is_none());
-    }
-
-    /// Portability travels with the registration, so whatever asks — the UI,
-    /// `ListActorKinds` — gets the kind's own answer rather than a guess from a
-    /// table that could disagree with what was actually registered.
-    #[test]
-    fn a_kind_says_whether_it_is_shared_vocabulary() {
-        let mut registry = ActorRegistry::default();
-        registry.register(kind());
-        registry.register(ActorKind {
-            id: "only-here",
-            shared: false,
-            ..kind()
-        });
-
-        assert_eq!(registry.get("test").map(|kind| kind.shared), Some(true));
-        assert_eq!(
-            registry.get("only-here").map(|kind| kind.shared),
-            Some(false)
-        );
     }
 
     /// Which pathway registered these kinds, so a refusal can say so. Untouched

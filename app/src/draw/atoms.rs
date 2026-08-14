@@ -1,15 +1,14 @@
 //! Balls and sticks, merged into one vertex buffer.
 //!
-//! The tessellation only — which triangles a set of atoms and bonds becomes.
-//! Both the standard pipeline and the moment pathway want exactly the same ones
-//! here: an opaque ball-and-stick is an opaque ball-and-stick, and the only
-//! thing that differs is what each backend hangs off the resulting mesh.
+//! The tessellation only — which triangles a set of atoms and bonds becomes. An
+//! opaque ball-and-stick is an opaque ball-and-stick whatever draws it, and the
+//! only thing a pathway decides is what it hangs off the resulting mesh.
 //!
-//! That is a deliberate exception to the note in [`super::elements`]
-//! that tessellation belongs to a backend, and the same exception the cartoon
-//! makes. The note is right when the backends genuinely differ — `rt`
-//! *instances* one sphere rather than merging, and shares nothing with this —
-//! and here two of the three do not.
+//! That is a deliberate exception to the note in [`super::elements`] that
+//! tessellation belongs to a backend, and the same exception the cartoon makes.
+//! The note is right when two pathways genuinely differ — one that *instanced*
+//! a single sphere per atom rather than merging would share nothing with this —
+//! and it does not bind a pathway that wants these triangles.
 //!
 //! Cost is that the mesh scales with atom count: an icosphere is about 42
 //! vertices, so a protein still wants impostor spheres rather than real

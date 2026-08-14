@@ -108,8 +108,6 @@ pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "mesh",
         label: "mesh",
-        // A triangle mesh is one mesh, rasterised or raytraced.
-        shared: true,
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(MeshStyle {

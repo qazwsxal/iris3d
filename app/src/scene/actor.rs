@@ -47,9 +47,9 @@ impl Default for ColorBy {
     }
 }
 
-// `Hash` so a backend can key a cache by map: the solari pathway builds a
-// palette of materials and a ramp texture per map and must not rebuild them
-// every frame.
+// `Hash` so a backend can key a cache by map. A pathway that cannot read vertex
+// colours builds a palette of materials and a ramp texture per map instead, and
+// must not rebuild them every frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ColorMap {
     /// Perceptually uniform; a safe default for scalar fields.
