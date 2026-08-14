@@ -38,11 +38,11 @@ impl SubsetRequest {
 
     pub fn into_subset(self, arrays: &mut Assets<DataArray>) -> Subset {
         Subset::Selected {
-            array: arrays.add(DataArray {
-                dtype: self.dtype,
-                shape: vec![self.count()],
-                data: self.data,
-            }),
+            array: arrays.add(DataArray::numeric(
+                self.dtype,
+                vec![self.count()],
+                self.data,
+            )),
             encoding: self.encoding,
             association: self.association,
         }
@@ -204,11 +204,7 @@ mod tests {
     use crate::scene::data::Dtype;
 
     fn array(dtype: Dtype, data: Vec<u8>, len: usize) -> DataArray {
-        DataArray {
-            dtype,
-            shape: vec![len as u64],
-            data,
-        }
+        DataArray::numeric(dtype, vec![len as u64], data)
     }
 
     fn indices(assets: &mut Assets<DataArray>, values: &[u32]) -> Subset {

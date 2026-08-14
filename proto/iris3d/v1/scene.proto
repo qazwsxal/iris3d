@@ -37,6 +37,31 @@ package iris3d.v1;
 // inferred from what an array is called: a representation declares the element
 // types and shapes it accepts, and a client binds whatever it uploaded.
 //
+// **Structure above the element** — a molecule's residues and chains, and
+// anything shaped like them — is more arrays, not a message of its own. Two
+// pieces make it work. A dense integer array per element says which group each
+// belongs to, and further arrays keyed on that index carry the group's own
+// properties. So residues are a `residue_index` per atom, running 0..r, plus
+// arrays of length r holding each residue's name, its author numbering, and its
+// secondary structure.
+//
+// The dense index is the part worth insisting on, because author numbering is
+// not a key: residue ids repeat across chains, skip, go negative, and carry
+// insertion codes, so 100, 100A and 100B are three residues wearing two
+// numbers. Author numbering is a *label*, carried in the side arrays like any
+// other property.
+//
+// This shape is not molecular. It is the same shape a mesh's material groups or
+// a point cloud's clusters take, which is why it is described here rather than
+// in a message about proteins. It also keeps hierarchy free of time: coordinates
+// gain frames, and which residue an atom belongs to does not.
+//
+// The same two pieces carry **text**, one level further down. A name is not
+// sent once per element; an integer index is, and a string array holds the
+// distinct values it points at. So an atom's name is an `atom_name_index` per
+// atom beside an `atom_name` array of the names that occur. This keeps every
+// string array small, which DTYPE_STRING requires — see below for why.
+//
 // What can be drawn is not fixed by this schema. Actor kinds come from
 // whichever rendering backends the server was built with, so ask
 // ListActorKinds rather than carrying a table that will go stale.
@@ -56,7 +81,9 @@ service SceneService {
   // addressing an array by its index in the header. Nothing is committed until
   // every declared array has received exactly its `byte_length` bytes, so a
   // stream that ends early, overruns, or arrives out of order leaves the scene
-  // untouched.
+  // untouched. A DTYPE_STRING array declares 0 bytes and carries its values in
+  // the header, so it satisfies that rule as soon as it is declared — an upload
+  // of nothing but strings is a single message.
   rpc UploadData(stream UploadDataRequest) returns (UploadDataResponse);
 
   // Lists the arrays currently held, whether or not anything draws them.
@@ -148,6 +175,36 @@ enum Dtype {
   DTYPE_INT64 = 8;
   DTYPE_FLOAT32 = 9;
   DTYPE_FLOAT64 = 10;
+
+  // Text, one string per element. The only type that is not raw bytes: the
+  // strings travel in `BufferSpec.values` and no chunk is ever sent, so
+  // `byte_length` is 0.
+  //
+  // It exists because labelling data is not numeric and has nowhere else to
+  // go. A chain's id, a residue's name, an atom's name — see the discussion of
+  // hierarchy on SceneService. Nothing draws a string; a string array is read
+  // by the interface and by whoever is looking at the scene.
+  //
+  // Not chunked, which is the constraint worth understanding: the values
+  // travel in the upload header, and a header is a single message. So a string
+  // array is bounded by what the transport will decode, and **must not grow
+  // with the element count**. A per-atom name column measures about 3.8 bytes
+  // an atom, which reaches the server's decode limit somewhere near two million
+  // atoms and fails at the transport rather than anywhere useful.
+  //
+  // The rule that follows: **text is carried once per distinct value, never
+  // once per element.** Send an integer index per element and a string array of
+  // the values it indexes. This is not a workaround for the limit — it is the
+  // same dense-index-plus-side-array shape described on SceneService, applied
+  // one level further down, and it is what text columns want anyway. They are
+  // low-cardinality in practice: a structure with 2396 atoms has 85 distinct
+  // atom names, and that count barely moves as the structure grows.
+  //
+  // A string array carrying more text than the server will hold is rejected
+  // with a message saying so. If a genuinely high-cardinality column ever turns
+  // up — one distinct value per element, which nothing here has — chunking can
+  // be added without changing what a string array *is*.
+  DTYPE_STRING = 11;
 }
 
 // BufferSpec declares one array in an upload.
@@ -166,6 +223,18 @@ enum Dtype {
 //   4 quadruple      5 aromatic single   6 aromatic double    7 aromatic triple
 //   8 coordination   9 aromatic
 //
+// Secondary structure, where a representation reads it, is **DSSP's eight
+// states** — one integer per residue:
+//
+//   0 none/unassigned   1 H alpha helix   2 B beta bridge   3 E strand
+//   4 G 3-10 helix      5 I pi helix      6 T turn          7 S bend
+//
+// Eight rather than the helix/strand/coil three, because cartoon rendering that
+// wants to draw a 3-10 helix differently from an alpha helix cannot get there
+// from three letters, and the difference costs nothing: it is one integer
+// either way. A client whose assigner only produces three maps them up — helix
+// to 1, strand to 3, everything else to 0 — and loses nothing it had.
+//
 // A grid's geometry is not an array and never arrives as one: a volume takes its
 // dims, origin and spacing as VectorParam values, which is the whole reason the
 // grid type is worth having.
@@ -182,7 +251,27 @@ message BufferSpec {
   // Total size of the buffer in bytes. Must equal the product of `shape`
   // multiplied by the size of one `dtype` element; sending it explicitly lets
   // the server allocate up front and detect truncated streams.
+  //
+  // MUST be 0 for a DTYPE_STRING array, which carries no bytes and receives no
+  // chunks.
   uint64 byte_length = 4;
+
+  // The strings themselves, for a DTYPE_STRING array and for nothing else.
+  //
+  // Densely packed in the same C order the raw types use, so the count must
+  // equal the product of `shape` exactly. MUST be empty for every other dtype:
+  // an array is one thing or the other, and accepting both would leave two
+  // sources for the same element.
+  //
+  // Inline rather than chunked because the upload completes in the header — a
+  // string array is committed by the first message, with no chunk addressing
+  // it afterwards.
+  //
+  // Never echoed back. A BufferSpec returned by UploadData or ListData leaves
+  // this empty, for the reason SubsetInfo leaves a selection's values empty: a
+  // description of an array is not the array, the client is the side that sent
+  // the text, and `shape` already says how much of it there is.
+  repeated string values = 5;
 }
 
 
@@ -225,6 +314,10 @@ message UploadDataResponse {
   repeated DataInfo arrays = 1;
 
   // Total bytes accepted, summed across every array in this upload.
+  //
+  // Counts the chunked bytes, so a DTYPE_STRING array adds nothing and an
+  // upload of nothing but strings reports 0. It reports what the stream carried
+  // in chunks, which is what a caller checking its own transfer wants.
   uint64 total_bytes = 2;
 }
 

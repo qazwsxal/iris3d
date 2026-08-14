@@ -540,11 +540,7 @@ mod tests {
     use bevy::platform::collections::HashMap;
 
     fn array() -> DataArray {
-        DataArray {
-            dtype: Dtype::Float32,
-            shape: vec![1, 3],
-            data: vec![0; 12],
-        }
+        DataArray::numeric(Dtype::Float32, vec![1, 3], vec![0; 12])
     }
 
     fn app() -> App {

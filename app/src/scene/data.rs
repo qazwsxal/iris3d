@@ -27,12 +27,25 @@ pub enum Dtype {
     Int64,
     Float32,
     Float64,
+    /// Text, one string per element.
+    ///
+    /// The one type whose elements are not raw bytes: the strings live in
+    /// [`DataArray::strings`] and the byte buffer stays empty. It exists
+    /// because labelling data — a chain's id, a residue's name — is not
+    /// numeric and had nowhere to go.
+    Str,
 }
 
 impl Dtype {
     /// Size of a single element in bytes.
+    ///
+    /// Zero for [`Dtype::Str`], which is exactly right rather than a stand-in:
+    /// a string array's byte buffer really is empty, so every length it
+    /// computes — declared size, expected chunk total — comes out at 0 and the
+    /// upload path needs no special case to let it through.
     pub fn size(self) -> u64 {
         match self {
+            Dtype::Str => 0,
             Dtype::Uint8 | Dtype::Int8 => 1,
             Dtype::Uint16 | Dtype::Int16 => 2,
             Dtype::Uint32 | Dtype::Int32 | Dtype::Float32 => 4,
@@ -54,6 +67,7 @@ impl Display for Dtype {
             Dtype::Int64 => "int64",
             Dtype::Float32 => "float32",
             Dtype::Float64 => "float64",
+            Dtype::Str => "string",
         };
         f.write_str(name)
     }
@@ -98,6 +112,9 @@ impl BufferMeta {
 pub struct NamedBuffer {
     pub meta: BufferMeta,
     pub data: Vec<u8>,
+    /// Populated instead of `data` when the meta says [`Dtype::Str`]. Empty
+    /// otherwise.
+    pub strings: Vec<String>,
 }
 
 /// Every array uploaded on its own, by handle.
@@ -157,9 +174,33 @@ pub struct DataArray {
     pub dtype: Dtype,
     pub shape: Vec<u64>,
     pub data: Vec<u8>,
+    /// The elements of a [`Dtype::Str`] array, densely packed in the same C
+    /// order `data` uses. Empty for every other type.
+    ///
+    /// A second buffer rather than an enum over the two: `data` is read by
+    /// every backend and reshaping it into a variant would touch all of them
+    /// to express something no renderer asks about. Nothing draws a string.
+    // Held before anything displays it, which is the point: labelling data has
+    // to survive the trip before a residue label or a chain list can be built
+    // on it. The tests below read it; the interface does not yet.
+    #[allow(dead_code)]
+    pub strings: Vec<String>,
 }
 
 impl DataArray {
+    /// A numeric array, with no strings.
+    ///
+    /// Most callers build one of these, so the empty `strings` is worth not
+    /// repeating.
+    pub fn numeric(dtype: Dtype, shape: Vec<u64>, data: Vec<u8>) -> Self {
+        Self {
+            dtype,
+            shape,
+            data,
+            strings: Vec::new(),
+        }
+    }
+
     // As for `BufferMeta::count`: wanted by subset validation.
     #[allow(dead_code)]
     pub fn count(&self) -> u64 {
@@ -197,11 +238,16 @@ impl DataArray {
             Dtype::Int32 => decode!(i32, 4),
             Dtype::Uint64 => decode!(u64, 8),
             Dtype::Int64 => decode!(i64, 8),
+            // Text has no numeric reading. Empty rather than zeros: a caller
+            // colour-mapping this should see no values, not a flat field of
+            // them that looks like real data.
+            Dtype::Str => Vec::new(),
         }
     }
 
     /// Decodes the bytes as `u32` indices, widening narrower integer types.
-    /// Returns `None` for floating-point arrays.
+    /// Returns `None` for floating-point and text arrays, which have no index
+    /// reading.
     pub fn to_u32(&self) -> Option<Vec<u32>> {
         macro_rules! decode {
             ($ty:ty, $width:expr) => {
@@ -221,7 +267,7 @@ impl DataArray {
             Dtype::Int8 | Dtype::Int16 | Dtype::Int32 | Dtype::Int64 => {
                 Some(self.to_f32().into_iter().map(|v| v as u32).collect())
             }
-            Dtype::Float32 | Dtype::Float64 => None,
+            Dtype::Float32 | Dtype::Float64 | Dtype::Str => None,
         }
     }
 
@@ -288,13 +334,12 @@ mod tests {
                 Dtype::Int64 => data.extend((*value as i64).to_le_bytes()),
                 Dtype::Float32 => data.extend((*value as f32).to_le_bytes()),
                 Dtype::Float64 => data.extend((*value as f64).to_le_bytes()),
+                // Text is not built from numbers. The string array tests
+                // construct their own.
+                Dtype::Str => unreachable!("DTYPES holds no text"),
             }
         }
-        DataArray {
-            dtype,
-            shape: vec![values.len() as u64],
-            data,
-        }
+        DataArray::numeric(dtype, vec![values.len() as u64], data)
     }
 
     /// Every dtype decodes to the same numbers. `to_u32` on a `Uint64` array
@@ -357,32 +402,62 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        let array = DataArray {
-            dtype: Dtype::Int32,
-            shape: vec![4],
-            data: bytes,
-        };
+        let array = DataArray::numeric(Dtype::Int32, vec![4], bytes);
         assert_eq!(array.to_f32(), vec![-1.0, -128.0, 0.0, 127.0]);
     }
 
     #[test]
     fn to_vec3_needs_three_components() {
-        let three = DataArray {
-            dtype: Dtype::Float32,
-            shape: vec![2, 3],
-            data: (0..6).flat_map(|v| (v as f32).to_le_bytes()).collect(),
-        };
+        let three = DataArray::numeric(
+            Dtype::Float32,
+            vec![2, 3],
+            (0..6).flat_map(|v| (v as f32).to_le_bytes()).collect(),
+        );
         assert_eq!(
             three.to_vec3(),
             vec![Vec3::new(0.0, 1.0, 2.0), Vec3::new(3.0, 4.0, 5.0)]
         );
 
-        let two = DataArray {
-            dtype: Dtype::Float32,
-            shape: vec![3, 2],
-            data: (0..6).flat_map(|v| (v as f32).to_le_bytes()).collect(),
-        };
+        let two = DataArray::numeric(
+            Dtype::Float32,
+            vec![3, 2],
+            (0..6).flat_map(|v| (v as f32).to_le_bytes()).collect(),
+        );
         assert!(two.to_vec3().is_empty());
+    }
+
+    /// A string array occupies no bytes, so the length the upload path expects
+    /// it to receive is zero and it is complete the moment it is declared. This
+    /// falls out of `Dtype::Str::size()` being 0 rather than being special-cased
+    /// anywhere, which is the whole reason the size is 0.
+    #[test]
+    fn text_declares_no_bytes_at_any_length() {
+        for count in [1u64, 3, 100_000] {
+            let meta = BufferMeta {
+                name: "res_name".into(),
+                dtype: Dtype::Str,
+                shape: vec![count],
+            };
+            assert_eq!(meta.byte_length(), Some(0), "for {count} strings");
+            assert_eq!(meta.count(), count);
+        }
+    }
+
+    /// Text has no numeric reading, and asking for one gives nothing rather
+    /// than a plausible-looking field of zeros — a colour map handed zeros
+    /// would paint a flat surface that looks like real data.
+    #[test]
+    fn text_has_no_numeric_reading() {
+        let array = DataArray {
+            dtype: Dtype::Str,
+            shape: vec![3],
+            data: Vec::new(),
+            strings: vec!["ALA".into(), "GLY".into(), "HOH".into()],
+        };
+        assert!(array.to_f32().is_empty());
+        assert_eq!(array.to_u32(), None);
+        assert!(array.to_vec3().is_empty());
+        assert_eq!(array.strings.len(), 3);
     }
 
     #[test]

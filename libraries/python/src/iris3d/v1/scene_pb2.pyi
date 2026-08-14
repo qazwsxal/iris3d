@@ -20,6 +20,7 @@ class Dtype(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DTYPE_INT64: _ClassVar[Dtype]
     DTYPE_FLOAT32: _ClassVar[Dtype]
     DTYPE_FLOAT64: _ClassVar[Dtype]
+    DTYPE_STRING: _ClassVar[Dtype]
 DTYPE_UNSPECIFIED: Dtype
 DTYPE_UINT8: Dtype
 DTYPE_INT8: Dtype
@@ -31,18 +32,21 @@ DTYPE_UINT64: Dtype
 DTYPE_INT64: Dtype
 DTYPE_FLOAT32: Dtype
 DTYPE_FLOAT64: Dtype
+DTYPE_STRING: Dtype
 
 class BufferSpec(_message.Message):
-    __slots__ = ("name", "dtype", "shape", "byte_length")
+    __slots__ = ("name", "dtype", "shape", "byte_length", "values")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DTYPE_FIELD_NUMBER: _ClassVar[int]
     SHAPE_FIELD_NUMBER: _ClassVar[int]
     BYTE_LENGTH_FIELD_NUMBER: _ClassVar[int]
+    VALUES_FIELD_NUMBER: _ClassVar[int]
     name: str
     dtype: Dtype
     shape: _containers.RepeatedScalarFieldContainer[int]
     byte_length: int
-    def __init__(self, name: _Optional[str] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ..., byte_length: _Optional[int] = ...) -> None: ...
+    values: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, name: _Optional[str] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ..., byte_length: _Optional[int] = ..., values: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class Chunk(_message.Message):
     __slots__ = ("buffer_index", "offset", "data")

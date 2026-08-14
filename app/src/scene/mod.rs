@@ -445,6 +445,7 @@ pub fn apply_scene_commands(
                             dtype: meta.dtype,
                             shape: meta.shape.clone(),
                             data: buffer.data,
+                            strings: buffer.strings,
                         });
                         store.insert(id, meta.clone(), handle);
                         DataSummary { id, meta }
@@ -1309,6 +1310,7 @@ mod tests {
                 shape: vec![bytes as u64],
             },
             data: vec![0; bytes],
+            strings: Vec::new(),
         }
     }
 
