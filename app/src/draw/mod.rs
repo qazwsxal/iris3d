@@ -55,6 +55,8 @@ mod elements;
 mod glycan;
 mod probe;
 mod rt;
+#[cfg(test)]
+mod smoke;
 
 /// How long the raytracing pathway keeps drawing to let its image settle.
 ///
