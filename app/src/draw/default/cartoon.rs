@@ -8,7 +8,7 @@
 //!
 //! # Opaque is the point
 //!
-//! The `mode` here is not [`surface`](super::surface)'s. That one chooses
+//! The `mode` here is not [`solid`](super::solid)'s. That one chooses
 //! between two ways of *absorbing*, because a client uploads triangles and only
 //! the client knows whether they close; this one chooses whether the ribbon
 //! absorbs at all.
@@ -56,7 +56,7 @@ use crate::scene::registry::{
 };
 use crate::scene::{ColorBy, DataArray, DataStore, Dtype, Subset};
 
-use super::surface::{normal_reflectance, transmission};
+use super::solid::{normal_reflectance, transmission};
 use super::{Actor, Depiction, Dirty, MomentShell, MomentVolume, mark};
 
 /// How the ribbon takes part in the frame.
@@ -299,7 +299,7 @@ pub struct CartoonStyle {
     pub opaque: bool,
     pub sigma: f32,
     /// Index of refraction of the shell, or `None` for no shell at all. See
-    /// [`AbsorbingStyle::ior`](super::surface::AbsorbingStyle::ior) for why this
+    /// [`AbsorbingStyle::ior`](super::solid::AbsorbingStyle::ior) for why this
     /// is an option rather than a flag beside a number.
     pub ior: Option<f32>,
     pub roughness: f32,
@@ -307,7 +307,7 @@ pub struct CartoonStyle {
 
 /// Geometry changes rebuild; absorbance does not.
 ///
-/// Unlike [`surface`](super::surface), switching the shell on is **not** a
+/// Unlike [`solid`](super::solid), switching the shell on is **not** a
 /// rebuild here. The sweep produces normals whatever happens — they fall out of
 /// the profile — so unlike an uploaded mesh there is nothing to go back and
 /// compute. Changing `mode` *is* a rebuild, because the two depictions do not
@@ -482,7 +482,7 @@ pub fn place_cartoons(
 ///
 /// Normals are written for an opaque ribbon, which is lit and needs them, and
 /// for an absorbing one only when a shell is on — exactly as
-/// [`surface`](super::surface) does it. The accumulation itself cares where a
+/// [`solid`](super::solid) does it. The accumulation itself cares where a
 /// boundary is, not which way it faces, so a bare absorbing ribbon does not
 /// carry twelve bytes a vertex for a pass that never reads them. The sweep
 /// computes them either way; not writing them is the saving.
@@ -566,7 +566,7 @@ pub struct CartoonLayout {
 
 /// Replaces a mesh in place when the actor already has one.
 ///
-/// The same four lines as [`surface`](super::surface)'s, written again rather
+/// The same four lines as [`solid`](super::solid)'s, written again rather
 /// than shared. Backends duplicate their drawing code by design — see
 /// [`crate::draw`] — and the early return is load-bearing: it ends the mutable
 /// borrow of `meshes` before the second arm needs one.

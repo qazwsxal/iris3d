@@ -80,19 +80,24 @@
 //!
 //! # What it draws
 //!
-//! Six kinds, split by whether they transmit.
+//! Seven kinds, split by whether they transmit.
 //!
-//! **Opaque, through the ordinary passes:** `points`, `ball-and-stick`,
-//! `glycan`, and `cartoon` in its default mode. These write depth and are the
-//! thing the absorbance is measured *in front of*.
+//! **Opaque, through the ordinary passes:** `surface`, `points`,
+//! `ball-and-stick`, `glycan`, and `cartoon` in its default mode. These write
+//! depth and are the thing the absorbance is measured *in front of*.
 //!
-//! **Transmitting, into the moment buffer:** `surface`, `volume`, and `cartoon`
+//! **Transmitting, into the moment buffer:** `solid`, `volume`, and `cartoon`
 //! in `absorbing` mode.
 //!
-//! All are `shared: true`: a closed triangle mesh or a ribbon is the same
-//! physical thing whichever pathway draws it, so [`rt`](super::rt) may register
-//! the same ids. A kind a pathway cannot do is simply absent from the registry
-//! and refused by name rather than drawn wrongly.
+//! `surface` and `solid` are the same triangles making different claims. A
+//! surface is a surface — lit, opaque, meaning the same thing under any
+//! pathway, so `shared: true`. A solid says those triangles *bound a medium*,
+//! which is this pathway's premise and nothing a raytracer would register, so
+//! `shared: false`. They were one kind until it became clear that `surface`
+//! meaning "absorbing" surprises everybody.
+//!
+//! A kind a pathway cannot do is simply absent from the registry and refused by
+//! name rather than drawn wrongly.
 //!
 //! An opaque kind carries **no** [`MomentVolume`], which means
 //! [`place_volumes`] does not match it — each has its own placement system
@@ -124,6 +129,7 @@ mod pass;
 mod points;
 mod pipeline;
 mod prepare;
+mod solid;
 mod surface;
 mod volume;
 
@@ -407,6 +413,7 @@ impl Plugin for MomentBackendPlugin {
         {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             surface::register(&mut registry);
+            solid::register(&mut registry);
             cartoon::register(&mut registry);
             glycan::register(&mut registry);
             molecule::register(&mut registry);
@@ -419,6 +426,7 @@ impl Plugin for MomentBackendPlugin {
             (
                 (
                     surface::invalidate,
+                    solid::invalidate,
                     cartoon::invalidate,
                     glycan::invalidate,
                     molecule::invalidate,
@@ -428,6 +436,7 @@ impl Plugin for MomentBackendPlugin {
                     .in_set(Invalidate),
                 (
                     surface::draw_surfaces,
+                    solid::draw_solids,
                     cartoon::draw_cartoons,
                     glycan::draw_glycans,
                     molecule::draw_molecules,
@@ -437,6 +446,7 @@ impl Plugin for MomentBackendPlugin {
                     .in_set(Draw),
                 (
                     place_volumes,
+                    surface::place_surfaces,
                     cartoon::place_cartoons,
                     glycan::place_glycans,
                     molecule::place_molecules,
