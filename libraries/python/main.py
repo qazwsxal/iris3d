@@ -86,6 +86,12 @@ def hydrogen(client, root, cursor, gap=3.0):
     # tints it. Opacity is turned well up because most of the box is nearly
     # empty, and at 1.0 the lobes barely register.
     #
+    # There is no `mode` any more. The volume kind used to belong to a
+    # standard-pipeline backend that alpha-blended and offered a choice of how;
+    # this one deposits absorbance into the moment buffer, which is the only
+    # thing it does. An unknown parameter is dropped silently rather than
+    # refused, so passing the old one looked like it worked.
+    #
     # Density is the probability, the square of the amplitude, so it has no
     # sign to lose. Colour is the signed amplitude on a diverging map, which is
     # what shows the lobes and the ring as opposite phases rather than as one
@@ -103,8 +109,11 @@ def hydrogen(client, root, cursor, gap=3.0):
             "dims": grid.dims,
             "origin": grid.origin,
             "spacing": grid.spacing,
-            "mode": "blend",
             "opacity": 12.0,
+            # The orbital is the one sample that should glow rather than only
+            # absorb: it is a probability cloud, not a solid, and with emission
+            # at the default of 1 the lobes read as smoke instead of light.
+            "emission": 4.0,
             "steps": 256.0,
         },
         coloring=iris3d.Coloring(map="cool-warm"),
