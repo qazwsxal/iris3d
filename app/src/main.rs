@@ -5,6 +5,7 @@ mod capture;
 mod cli;
 mod counter;
 mod draw;
+mod filter;
 mod grpc;
 mod redraw;
 mod scene;
@@ -14,6 +15,7 @@ mod viewport;
 use cli::Cli;
 use counter::CounterPlugin;
 use draw::DrawPlugin;
+use filter::FilterPlugin;
 use grpc::GrpcPlugin;
 use redraw::RedrawPlugin;
 use scene::ScenePlugin;
@@ -33,6 +35,9 @@ fn main() {
         .add_plugins(GrpcPlugin { addr: cli.listen })
         .add_plugins(ScenePlugin)
         .add_plugins(ViewportPlugin)
+        // Above the backend: filters derive arrays, and know nothing about how
+        // anything is drawn.
+        .add_plugins(FilterPlugin)
         // Exactly one rendering pathway. See `draw`.
         .add_plugins(DrawPlugin)
         .add_plugins(UiPlugin);

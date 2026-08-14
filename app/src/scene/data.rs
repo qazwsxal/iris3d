@@ -169,7 +169,13 @@ impl DataStore {
 }
 
 /// Raw array bytes, shared by handle.
-#[derive(Asset, TypePath, Debug)]
+///
+/// `Clone` for one caller: a filter runs on a worker thread, which cannot borrow
+/// from the world, so its inputs are copied in. That copy is a real cost — a
+/// 256³ float grid is 64 MB — and is why cloning one of these deliberately looks
+/// like work rather than happening implicitly. Everything else shares the
+/// `Handle`.
+#[derive(Asset, TypePath, Debug, Clone)]
 pub struct DataArray {
     pub dtype: Dtype,
     pub shape: Vec<u64>,
