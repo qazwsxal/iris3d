@@ -708,6 +708,7 @@ pub fn apply_scene_commands(
                     &mut actors,
                     &ids,
                     &mut arrays,
+                    &store,
                     id,
                     params,
                     colour,
@@ -978,6 +979,7 @@ fn set_actor(
     actors: &mut ActorQuery,
     ids: &Query<&UniqueID>,
     arrays: &mut Assets<DataArray>,
+    store: &DataStore,
     id: u64,
     params: registry::ParamMap,
     colour: Option<ColorBy>,
@@ -1013,6 +1015,9 @@ fn set_actor(
 
     // Merge rather than replace: a client changing one setting should not have
     // to restate the others, and omitting them must not silently reset them.
+    // Merged into a copy, because the bindings are judged as a whole below and
+    // a refusal has to leave the actor exactly as it was.
+    let mut merged = item.3.0.clone();
     for (key, value) in params {
         let Some(value) = registered
             .spec(&key)
@@ -1021,8 +1026,18 @@ fn set_actor(
             warn!("scene: actor {id} has no parameter \"{key}\" of that type");
             continue;
         };
-        item.3.0.insert(key, value);
+        merged.insert(key, value);
     }
+
+    // The same gate `add_actor` passes through. `sanitise` only says that a
+    // handle is a handle; whether that particular array fits the input needs
+    // the store, so without this a rebind to the wrong dtype or shape would be
+    // refused when adding an actor and accepted when changing one.
+    check_bindings(registered, &merged, store)?;
+    // Written only when it differs, so a call that changes the colour and
+    // restates the parameters does not mark them `Changed` and throw the
+    // geometry away to rebuild it identically.
+    item.3.set_if_neq(ActorParams(merged));
 
     if let Some(colour) = colour {
         *item.4 = colour;
@@ -1453,6 +1468,21 @@ mod tests {
         }
     }
 
+    /// The same, of a shape the caller chooses, for tests about what an input
+    /// will accept.
+    fn shaped(name: &str, shape: &[u64]) -> NamedBuffer {
+        let elements: u64 = shape.iter().product();
+        NamedBuffer {
+            meta: BufferMeta {
+                name: name.into(),
+                dtype: Dtype::Uint8,
+                shape: shape.to_vec(),
+            },
+            data: vec![0; elements as usize],
+            strings: Vec::new(),
+        }
+    }
+
     /// Arrays arrive on their own: a handle each, no object, no actor. Data used
     /// to be reachable only by making an object out of it, which conflated
     /// "hold these numbers" with "put a node in the tree".
@@ -1639,6 +1669,130 @@ mod tests {
             listed.try_recv().expect("a reply").is_empty(),
             "a refusal must not leave an empty object behind"
         );
+    }
+
+    /// A rebind to an array the input cannot read is refused, and the actor
+    /// keeps the array it had.
+    ///
+    /// `SetActor` used to judge each value with `sanitise` alone, which for an
+    /// array input only confirms that a handle is a handle. An input's declared
+    /// element type and shape therefore held when the actor was added and
+    /// stopped holding the moment it was changed — which is the call a client
+    /// uses to rebind geometry.
+    #[test]
+    fn an_actor_keeps_its_binding_when_a_rebind_is_refused() {
+        const INPUTS: &[registry::ParamSpec] = &[registry::ParamSpec {
+            id: "field",
+            label: "Field",
+            kind: registry::ParamKind::Array {
+                dtypes: &[Dtype::Uint8],
+                shape: &[0],
+                required: true,
+                structural: true,
+            },
+        }];
+
+        let mut app = app();
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(registry::ActorKind {
+                id: "bound",
+                label: "Bound",
+                params: INPUTS,
+                apply: |_, _| {},
+            });
+
+        let mut uploaded = send(&app, |reply| SceneCommand::UploadData {
+            arrays: vec![
+                array("first", 4),
+                shaped("wrong", &[2, 3]),
+                array("second", 8),
+            ],
+            reply,
+        });
+        app.update();
+        let handles: Vec<u64> = uploaded
+            .try_recv()
+            .expect("a reply")
+            .iter()
+            .map(|array| array.id)
+            .collect();
+        let (first, wrong, second) = (handles[0], handles[1], handles[2]);
+
+        let bind = |handle: u64| {
+            let mut params = registry::ParamMap::default();
+            params.insert("field".into(), registry::ParamValue::Data(handle));
+            params
+        };
+
+        let mut added = send(&app, |reply| SceneCommand::AddActor {
+            parents: vec![],
+            kind: "bound".into(),
+            params: bind(first),
+            colour: None,
+            subset: None,
+            reply,
+        });
+        app.update();
+        let actor = added.try_recv().expect("a reply").expect("an actor").id;
+
+        let mut refused = send(&app, |reply| SceneCommand::SetActor {
+            id: actor,
+            params: bind(wrong),
+            colour: None,
+            visible: None,
+            subset: None,
+            parents: None,
+            reply,
+        });
+        app.update();
+        let refusal = refused
+            .try_recv()
+            .expect("a reply")
+            .expect_err("a [2, 3] array does not fit an [n] input");
+        let SceneError::BadBinding {
+            ref kind,
+            input,
+            ref reason,
+        } = refusal
+        else {
+            panic!("expected a refused binding, got {refusal:?}");
+        };
+        assert_eq!((kind.as_str(), input), ("bound", "field"));
+        // The reason reaches the client that got it wrong, as it does from
+        // `AddActor`.
+        assert!(reason.contains("[2, 3]"), "{reason}");
+        assert!(reason.contains("[n]"), "{reason}");
+
+        let bound = |app: &mut App| {
+            let mut listed = send(app, |reply| SceneCommand::ListActors {
+                parent: None,
+                reply,
+            });
+            app.update();
+            let listing = listed.try_recv().expect("a reply").expect("a listing");
+            registry::data(&listing[0].params, "field")
+        };
+        assert_eq!(
+            bound(&mut app),
+            Some(first),
+            "a refused rebind must leave the actor exactly as it was"
+        );
+
+        // And a binding that does fit still goes through: the check refuses
+        // what the input cannot read, not every change.
+        let mut accepted = send(&app, |reply| SceneCommand::SetActor {
+            id: actor,
+            params: bind(second),
+            colour: None,
+            visible: None,
+            subset: None,
+            parents: None,
+            reply,
+        });
+        app.update();
+        accepted.try_recv().expect("a reply").expect("an actor");
+        assert_eq!(bound(&mut app), Some(second));
     }
 
     /// Every kind the backend registered reaches a client, with the label and
