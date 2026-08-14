@@ -18,7 +18,7 @@ use super::{Actor, Dirty, RampPalette, bound, condition, mark, normalised, ramp_
 
 /// Cell surfaces, shaded.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct SurfaceStyle {
+pub struct MeshStyle {
     /// Light and draw back faces as well as front ones. On by default because
     /// scientific meshes are routinely open or inconsistently wound, and a
     /// one-sided material renders those as holes.
@@ -71,13 +71,13 @@ const PARAMS: &[ParamSpec] = &[
 
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
-        id: "surface",
-        label: "surface",
+        id: "mesh",
+        label: "mesh",
         // A triangle mesh is one mesh, rasterised or raytraced.
         shared: true,
         params: PARAMS,
         apply: |entity, params| {
-            entity.insert(SurfaceStyle {
+            entity.insert(MeshStyle {
                 double_sided: flag(params, "double_sided", true),
             });
         },
@@ -85,7 +85,7 @@ pub fn register(registry: &mut ActorRegistry) {
 }
 
 /// `double_sided` is a material property; nothing about the mesh depends on it.
-pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<SurfaceStyle>>) {
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<MeshStyle>>) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
     }
@@ -95,13 +95,13 @@ pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<Surface
 /// plus what it produced last time. Rebuilding into the assets the actor already
 /// holds is what keeps a slider drag from allocating.
 type Drawable<'a> = (
-    Actor<'a, SurfaceStyle>,
+    Actor<'a, MeshStyle>,
     Option<&'a Mesh3d>,
     Option<&'a MeshMaterial3d<StandardMaterial>>,
 );
 
 #[allow(clippy::too_many_arguments)]
-pub fn draw_surfaces(
+pub fn draw_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,

@@ -2,18 +2,26 @@
 //!
 //! An ordinary opaque mesh: it goes through Bevy's ordinary passes, writes
 //! depth, and is what the absorbance of anything in front of it is measured
-//! against. A surface is a surface, which is the least surprising thing this
-//! id can mean and what it means under every pathway.
+//! against. Triangles in, a lit shape out — the least surprising thing an id
+//! can mean, and the same thing under every pathway.
+//!
+//! # Not called `surface`
+//!
+//! Deliberately. In structural biology a surface is a *molecular* surface —
+//! solvent-accessible or solvent-excluded, what PyMOL and ChimeraX both mean by
+//! the word — and iris3d will want the name for exactly that. Spending it on
+//! "whatever triangles a client uploaded" would take it out of reach.
 //!
 //! For a closed mesh drawn as the *solid it bounds* — thickness you can see
-//! through, optionally with a glass skin — see [`solid`](super::solid). That
-//! used to be what `surface` did here, which surprised people reasonably.
+//! through, optionally with a glass skin — see [`solid`](super::solid).
 //!
-//! Triangles only: the `indices` input declares `[n, 3]`, so a tetrahedral or
-//! line connectivity array cannot be bound to it at all, and the caller is told
-//! why. Drawing a volumetric mesh as a surface means extracting its boundary
-//! faces first, which is a separate piece of work rather than something to bodge
-//! in here; lines want a line actor.
+//! # Triangles only
+//!
+//! The `indices` input declares `[n, 3]`, so a tetrahedral or line connectivity
+//! array cannot be bound to it at all, and the caller is told why. Drawing a
+//! volumetric mesh means extracting its boundary faces first, which is a
+//! separate piece of work rather than something to bodge in here; lines want a
+//! line actor.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -30,14 +38,14 @@ use super::{Actor, Dirty, mark};
 /// What this pathway needs to redraw a surface: an ordinary mesh and
 /// material, since an opaque surface takes no part in the moment passes.
 type Drawable<'a> = (
-    Actor<'a, SurfaceStyle>,
+    Actor<'a, MeshStyle>,
     Option<&'a Mesh3d>,
     Option<&'a MeshMaterial3d<StandardMaterial>>,
 );
 
 /// Cell surfaces, shaded.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct SurfaceStyle {
+pub struct MeshStyle {
     /// Light and draw back faces as well as front ones.
     ///
     /// On by default because scientific meshes are routinely open or have
@@ -98,13 +106,13 @@ const PARAMS: &[ParamSpec] = &[
 
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
-        id: "surface",
-        label: "surface",
+        id: "mesh",
+        label: "mesh",
         // A triangle mesh is one mesh, rasterised or raytraced.
         shared: true,
         params: PARAMS,
         apply: |entity, params| {
-            entity.insert(SurfaceStyle {
+            entity.insert(MeshStyle {
                 double_sided: flag(params, "double_sided", true),
             });
         },
@@ -112,13 +120,13 @@ pub fn register(registry: &mut ActorRegistry) {
 }
 
 /// `double_sided` is a material property; nothing about the mesh depends on it.
-pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<SurfaceStyle>>) {
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<MeshStyle>>) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
     }
 }
 
-pub fn draw_surfaces(
+pub fn draw_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -221,7 +229,7 @@ pub fn draw_surfaces(
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
             }
             ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
-            debug!("draw: surface rebuilt with {} vertices", positions.len());
+            debug!("draw: mesh rebuilt with {} vertices", positions.len());
         } else if dirty.colour
             && let Some(colours) = tint.clone()
         {
@@ -314,9 +322,9 @@ fn repaint(meshes: &mut Assets<Mesh>, existing: Option<&Mesh3d>, colours: Vec<[f
 
 /// Gives every placement the mesh and material the actor holds.
 #[allow(clippy::type_complexity)]
-pub fn place_surfaces(
+pub fn place_meshes(
     mut commands: Commands,
-    actors: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>), With<SurfaceStyle>>,
+    actors: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>), With<MeshStyle>>,
     placements: Query<(
         Entity,
         &Placement,

@@ -226,7 +226,7 @@ mod tests {
             &mut counter,
             parents,
             Subset::All,
-            ActorKindId("surface"),
+            ActorKindId("mesh"),
         );
         app.world_mut().flush();
         entity

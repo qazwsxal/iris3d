@@ -132,7 +132,7 @@ def kind_for(arrays):
     if "elements" in arrays:
         return "ball-and-stick"
     if "indices" in arrays:
-        return "surface"
+        return "mesh"
     return "points"
 
 
@@ -147,7 +147,7 @@ def bind(client, kind, arrays):
     # Input id -> the name this script's data happens to use for it.
     roles = {
         "points": {"positions": "positions"},
-        "surface": {"positions": "positions", "indices": "indices", "normals": "normals"},
+        "mesh": {"positions": "positions", "indices": "indices", "normals": "normals"},
         "ball-and-stick": {
             "positions": "positions",
             "elements": "elements",

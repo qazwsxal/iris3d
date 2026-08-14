@@ -853,7 +853,7 @@ class Client:
         subsets. Selections are computed here rather than described to the
         server, so anything numpy can express works::
 
-            client.add_actor("surface", parent=node,
+            client.add_actor("mesh", parent=node,
                              subset=positions[:, 2] > 0, ...)
 
         A mesh cell survives only when all of its corners do, and a bond only

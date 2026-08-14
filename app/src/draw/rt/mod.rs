@@ -43,7 +43,7 @@ pub(crate) use super::{
 
 mod molecule;
 mod points;
-mod surface;
+mod mesh;
 
 pub struct RtBackendPlugin;
 
@@ -54,7 +54,7 @@ impl Plugin for RtBackendPlugin {
         {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             points::register(&mut registry);
-            surface::register(&mut registry);
+            mesh::register(&mut registry);
             molecule::register(&mut registry);
             // No `volume`. Solari has no volumetrics, so the kind is absent
             // rather than broken, and asking for it is refused by name.
@@ -68,13 +68,13 @@ impl Plugin for RtBackendPlugin {
             (
                 (
                     points::invalidate,
-                    surface::invalidate,
+                    mesh::invalidate,
                     molecule::invalidate,
                 )
                     .in_set(Invalidate),
                 (
                     points::draw_points,
-                    surface::draw_surfaces,
+                    mesh::draw_meshes,
                     molecule::draw_molecules,
                 )
                     .in_set(Draw),

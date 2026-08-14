@@ -82,19 +82,21 @@
 //!
 //! Seven kinds, split by whether they transmit.
 //!
-//! **Opaque, through the ordinary passes:** `surface`, `points`,
+//! **Opaque, through the ordinary passes:** `mesh`, `points`,
 //! `ball-and-stick`, `glycan`, and `cartoon` in its default mode. These write
 //! depth and are the thing the absorbance is measured *in front of*.
 //!
 //! **Transmitting, into the moment buffer:** `solid`, `volume`, and `cartoon`
 //! in `absorbing` mode.
 //!
-//! `surface` and `solid` are the same triangles making different claims. A
-//! surface is a surface — lit, opaque, meaning the same thing under any
-//! pathway, so `shared: true`. A solid says those triangles *bound a medium*,
-//! which is this pathway's premise and nothing a raytracer would register, so
-//! `shared: false`. They were one kind until it became clear that `surface`
-//! meaning "absorbing" surprises everybody.
+//! `mesh` and `solid` are the same triangles making different claims. A mesh is
+//! lit and opaque and means the same thing under any pathway, so `shared: true`.
+//! A solid says those triangles *bound a medium*, which is this pathway's
+//! premise and nothing a raytracer would register, so `shared: false`.
+//!
+//! Neither is called `surface`, deliberately. In structural biology that word
+//! means a *molecular* surface — solvent-accessible or solvent-excluded — and
+//! iris3d will want the name for exactly that.
 //!
 //! A kind a pathway cannot do is simply absent from the registry and refused by
 //! name rather than drawn wrongly.
@@ -125,12 +127,12 @@ mod cartoon;
 mod extract;
 mod glycan;
 mod molecule;
+mod mesh;
 mod pass;
-mod points;
 mod pipeline;
+mod points;
 mod prepare;
 mod solid;
-mod surface;
 mod volume;
 
 // Re-exported rather than imported separately in each kind module, exactly as
@@ -412,7 +414,7 @@ impl Plugin for MomentBackendPlugin {
 
         {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
-            surface::register(&mut registry);
+            mesh::register(&mut registry);
             solid::register(&mut registry);
             cartoon::register(&mut registry);
             glycan::register(&mut registry);
@@ -425,7 +427,7 @@ impl Plugin for MomentBackendPlugin {
             Update,
             (
                 (
-                    surface::invalidate,
+                    mesh::invalidate,
                     solid::invalidate,
                     cartoon::invalidate,
                     glycan::invalidate,
@@ -435,7 +437,7 @@ impl Plugin for MomentBackendPlugin {
                 )
                     .in_set(Invalidate),
                 (
-                    surface::draw_surfaces,
+                    mesh::draw_meshes,
                     solid::draw_solids,
                     cartoon::draw_cartoons,
                     glycan::draw_glycans,
@@ -446,7 +448,7 @@ impl Plugin for MomentBackendPlugin {
                     .in_set(Draw),
                 (
                     place_volumes,
-                    surface::place_surfaces,
+                    mesh::place_meshes,
                     cartoon::place_cartoons,
                     glycan::place_glycans,
                     molecule::place_molecules,

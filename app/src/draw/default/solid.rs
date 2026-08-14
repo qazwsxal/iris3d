@@ -1,19 +1,19 @@
 //! Closed triangle meshes, drawn as the boundary of an absorbing solid.
 //!
-//! Not the same thing as [`surface`](super::surface), which is an ordinary lit
-//! mesh. This kind says the triangles *bound a medium*: what you see is the
-//! interior, so thick parts read dark and thin parts clear, and overlapping or
-//! nested solids compose without sorting.
+//! Not the same thing as [`mesh`](super::mesh), which is an ordinary lit mesh.
+//! This kind says the triangles *bound a medium*: what you see is the interior,
+//! so thick parts read dark and thin parts clear, and overlapping or nested
+//! solids compose without sorting.
 //!
-//! The two were one kind until it became clear that `surface` meaning "an
-//! absorbing solid" surprises everybody. A surface is a surface; a solid is a
-//! separate claim about the same triangles, and now has a separate name.
+//! The two were one kind, and splitting them is what stopped a client binding
+//! triangles and getting something it had not asked for. Same geometry, two
+//! different claims about what it is, so two names.
 //!
 //! `shared: false`. A lit mesh means the same thing under any pathway, which is
-//! why `surface` is shared vocabulary; an absorbing one is this pathway's whole
+//! why `mesh` is shared vocabulary; an absorbing one is this pathway's whole
 //! premise, and there is nothing for a raytracer to register under the name.
 //!
-//! There is no `double_sided` here, unlike `surface`: it is a lighting choice,
+//! There is no `double_sided` here, unlike `mesh`: it is a lighting choice,
 //! and both faces are always drawn — they *have* to be, since the two of them
 //! are the endpoints of the interval being integrated.
 //!
