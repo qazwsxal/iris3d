@@ -397,6 +397,13 @@ impl Plugin for MomentBackendPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MomentRenderPlugin);
 
+        // `points` draws through a custom material, which needs its own
+        // `MaterialPlugin` to create the `Assets<PointQuadMaterial>` its draw
+        // system asks for. Registering a kind is not enough: without this the
+        // system fails parameter validation on the first frame a point cloud
+        // exists, and takes the app with it.
+        app.add_plugins(MaterialPlugin::<points::PointQuadMaterial>::default());
+
         {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             surface::register(&mut registry);

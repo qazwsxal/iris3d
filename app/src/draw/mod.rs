@@ -443,15 +443,15 @@ pub(crate) const RAMP_STEPS: usize = 256;
 
 /// The colour map as a 1D image, for a pipeline that cannot read vertex colours.
 ///
-/// `Rgba8Unorm` rather than `Rgba8UnormSrgb`, which was chosen on the belief
-/// that [`sample`] returns linear values. It does not — see the note there —
-/// so this format is half of why a ramp renders too bright. Left alone
-/// deliberately: switching only this would fix the texture path and leave the
-/// vertex-colour path wrong, so the two would then disagree with each other
-/// instead of agreeing and both being off.
+/// `Rgba8Unorm` rather than `Rgba8UnormSrgb`: [`sample`] returns linear values,
+/// and the sRGB format would have the sampler convert them a second time and
+/// wash the ramp out.
 ///
-/// Eight bits is enough because [`RAMP_STEPS`] is the resolution the map is
-/// quoted at anyway.
+/// Storing linear in eight bits does cost precision in the darks, which is the
+/// thing sRGB encoding exists to avoid. It is not worth chasing here: a ramp is
+/// [`RAMP_STEPS`] entries of smoothly varying colour with nothing fine to lose,
+/// and the alternative — keeping the texture sRGB while vertex colours stay
+/// linear — would mean two conventions for one colour map.
 ///
 /// The caller must clamp to edge in both axes. Repeating wraps the top of the
 /// map onto the bottom, which shows up as a hard seam at the extremes.
@@ -486,10 +486,12 @@ pub(crate) fn ramp_texture(map: ColorMap) -> Image {
 /// Nine evenly spaced stops, linearly interpolated. Enough to be perceptually
 /// honest without carrying a 256-entry table.
 ///
-/// Quoted in **sRGB**, which is how viridis is published — and which [`sample`]
-/// then fails to convert. Interpolating between them linearly is a second, much
-/// smaller inaccuracy: a proper ramp blends in a linear or perceptual space, and
-/// nine stops is close enough that nobody has minded.
+/// Quoted in **sRGB**, which is how viridis is published and what [`sample`]
+/// converts from. Blending between them in that space rather than after the
+/// conversion is a small inaccuracy — a strict ramp interpolates in a linear or
+/// perceptual space — but with nine stops the two are within a rounding error of
+/// each other, and blending as published is the reading that matches the
+/// swatches everyone knows.
 const VIRIDIS: [[f32; 3]; 9] = [
     [0.267, 0.005, 0.329],
     [0.283, 0.141, 0.458],
@@ -502,36 +504,21 @@ const VIRIDIS: [[f32; 3]; 9] = [
     [0.993, 0.906, 0.144],
 ];
 
-/// Samples a colour map, returning the stops **unconverted**.
+/// Samples a colour map, returning **linear** RGBA.
 ///
-/// # This is a known inconsistency, not a design
+/// Every colour in this project is *authored* in sRGB, because that is the
+/// space colour maps are published in and the space anyone reading a hex value
+/// means. Every consumer wants linear: a vertex colour reaches the shader
+/// untouched and `pbr_fragment.wgsl` assigns it straight to `base_color`, and
+/// [`ramp_texture`] writes into a format the hardware does not convert on read.
+/// So the conversion happens here, once, at the boundary between the two — the
+/// same place and the same way [`elements::colour`] does it.
 ///
-/// The stops below are quoted in sRGB, as colour values are everywhere else,
-/// and this hands them straight back. Every consumer then treats them as
-/// linear: a vertex colour reaches the shader untouched and `pbr_fragment.wgsl`
-/// assigns it directly to `base_color`, and [`ramp_texture`] writes them into a
-/// non-sRGB format that the hardware does not convert on read either.
-///
-/// So a ramp renders **brighter and less saturated** than the map it names. An
-/// sRGB 0.267 read as linear displays at about 0.55, and because the channels
-/// compress by different amounts the hue washes towards grey. Viridis's dark
-/// purple low end comes out mid-magenta, and its yellow top comes out near
-/// white.
-///
-/// [`elements::colour`] does the conversion its own doc describes, so CPK atoms
-/// are right and ramps are not. The two disagree, and this one is the wrong
-/// half.
-///
-/// # Why it is still here
-///
-/// Fixing it changes how **every** ramp-coloured actor looks — points,
-/// surfaces, cartoons, volumes — so it is a deliberate appearance change rather
-/// than a tidy-up, and wants to be made on purpose.
-///
-/// When it is made, convert here rather than at the consumers. The texture path
-/// could be fixed instead by asking for `Rgba8UnormSrgb` in [`ramp_texture`] and
-/// letting the sampler convert, but the vertex-colour path has no such hardware
-/// option, and only converting here covers both.
+/// This used to hand the stops back unconverted while claiming otherwise, which
+/// rendered every ramp brighter and less saturated than the map it named:
+/// viridis came out mid-magenta at the low end and near-white at the top rather
+/// than dark purple and yellow. Correcting it made ramp-coloured actors visibly
+/// darker and more saturated, which is the point rather than a side effect.
 pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
     let rgb = match map {
@@ -549,7 +536,9 @@ pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
         // directly and never reach here.
         ColorMap::ByElement => [0.8, 0.8, 0.85],
     };
-    [rgb[0], rgb[1], rgb[2], 1.0]
+    Color::srgb(rgb[0], rgb[1], rgb[2])
+        .to_linear()
+        .to_f32_array()
 }
 
 /// Linearly interpolates between evenly spaced colour stops.
@@ -650,6 +639,51 @@ mod tests {
         app.world_mut().entity_mut(entity).insert(Dirty::default());
         app.update();
         assert!(!dirty(app, entity), "should not redraw without a change");
+    }
+
+    /// Colour maps are authored in sRGB and every consumer wants linear, so
+    /// [`sample`] has to convert. This went unnoticed for a long time because
+    /// the failure is quiet — ramps merely looked washed out — and because
+    /// [`elements::colour`] did convert, so half the renderer was right.
+    ///
+    /// Checked against the transfer function rather than a recorded number, so
+    /// the test says *why* the value is what it is.
+    #[test]
+    fn colour_maps_are_converted_out_of_srgb() {
+        /// The sRGB electro-optical transfer function, from the specification.
+        fn to_linear(channel: f32) -> f32 {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        // Viridis's darkest stop, which is where the error was most visible:
+        // read as linear it displays at roughly twice its intended lightness.
+        let low = sample(ColorMap::Viridis, 0.0);
+        for (channel, quoted) in VIRIDIS[0].iter().enumerate() {
+            let wanted = to_linear(*quoted);
+            assert!(
+                (low[channel] - wanted).abs() < 1e-4,
+                "channel {channel}: got {}, expected {wanted} from sRGB {quoted}",
+                low[channel]
+            );
+        }
+
+        // Converting darkens everything except the endpoints, which are fixed
+        // points of the transfer function.
+        let mid = sample(ColorMap::Grayscale, 0.5);
+        assert!(
+            mid[0] < 0.25,
+            "mid grey should darken to about 0.21, got {}",
+            mid[0]
+        );
+        assert_eq!(sample(ColorMap::Grayscale, 0.0)[0], 0.0);
+        assert!((sample(ColorMap::Grayscale, 1.0)[0] - 1.0).abs() < 1e-6);
+
+        // Alpha is not a colour and must not be run through the curve.
+        assert_eq!(low[3], 1.0);
     }
 
     #[test]
