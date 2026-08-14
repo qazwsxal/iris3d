@@ -550,13 +550,13 @@ message Color {
   float b = 3;
 }
 
-// ColorSpec says how an actor takes its colour.
+// ColorSpec said how an actor took its colour, when colouring was a setting
+// every actor carried.
 //
-// This is always a *complete* description, unlike the parameter maps: sending
-// one replaces the colouring outright, and anything left unset takes its
-// default rather than its current value. Parameters are per-key because a
-// client typically nudges one of them; colouring is four related settings that
-// are rarely meaningful apart.
+// Nothing uses it now. Bind an RGB array to the kind's `colour` input — see
+// AddFilter and the `colormap` kind — and set the flat colour through the
+// `tint` parameter. Kept declared rather than deleted so an old client's
+// generated code still resolves the type.
 message ColorSpec {
   // Field 1 was `field`, naming a field to map across the colour map. *What* is
   // coloured is now the array bound to the representation's colour input, so
@@ -649,7 +649,11 @@ message ActorInfo {
   // Complete and in range, whatever was sent to produce it.
   map<string, ParamValue> params = 5;
 
-  ColorSpec color = 6;
+  // Field 6 was `color`, a ramp plus a range plus a flat colour carried by
+  // every actor. Colouring is a filter now: bind an RGB array to the kind's
+  // `colour` input — see AddFilter and the `colormap` kind — and set the flat
+  // colour through the `tint` parameter like any other setting.
+  reserved 6;
 
   // False if this actor has been hidden individually.
   //
@@ -727,9 +731,8 @@ message AddActorRequest {
   // is a new actor, so there is no previous value to keep.
   map<string, ParamValue> params = 4;
 
-  // Absent takes the default ramp. What is coloured is the array bound to the
-  // kind's colour input, if it declares one.
-  optional ColorSpec color = 5;
+  // Field 5 was `color`. See ActorInfo.
+  reserved 5;
 
   // Absent draws the whole dataset.
   optional Subset subset = 6;
@@ -756,8 +759,8 @@ message SetActorRequest {
   // AddActor, where it takes the default.
   map<string, ParamValue> params = 2;
 
-  // Absent leaves colouring alone. Present replaces it entirely; see ColorSpec.
-  optional ColorSpec color = 3;
+  // Field 3 was `color`. See ActorInfo.
+  reserved 3;
 
   // Hide or show this actor alone, without touching its object.
   optional bool visible = 4;

@@ -10,7 +10,6 @@ use bevy::prelude::Color;
 use bevy_egui::egui;
 
 use crate::scene::Subset;
-use crate::scene::actor::ColorMap;
 use crate::scene::registry::{
     ParamKind, ParamValue, data as registry_data, flag, float, text, vector as registry_vector,
 };
@@ -143,7 +142,7 @@ fn add(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut Pendi
     });
 }
 
-/// One actor: what it is, its parameters, and its colouring.
+/// One actor: what it is and its parameters.
 ///
 /// The controls are generated from the backend's own `ParamSpec` declarations,
 /// so adding an actor kind — or a parameter to an existing one — needs no edit
@@ -319,94 +318,5 @@ fn controls(
         }
     }
 
-    colouring(ui, current, actions);
 }
 
-/// The whole of [`ColorBy`](crate::scene::ColorBy): which ramp, over what
-/// range, and what to use when nothing is bound.
-///
-/// Split out because it is the one block here that is *not* generated from the
-/// kind's declaration — colouring is a property every actor has, so it lives
-/// beside the parameters rather than among them.
-///
-/// [`ColorMap::ByElement`] is deliberately absent. Its own doc comment says it
-/// is never selected: molecules apply CPK colours directly and never consult
-/// the map, so offering it would be a control that silently does nothing. It
-/// belongs here once element colouring routes through `draw::sample` like every
-/// other map, and not before.
-fn colouring(ui: &mut egui::Ui, current: &ActorRow, actions: &mut PendingActions) {
-    // Which ramp, not which data — what is coloured is whatever array is bound
-    // to the kind's colour input, and that has its own picker above.
-    ui.horizontal(|ui| {
-        ui.label("map");
-        for map in [ColorMap::Viridis, ColorMap::CoolWarm, ColorMap::Grayscale] {
-            if ui
-                .selectable_label(current.colour.map == map, map.as_str())
-                .clicked()
-            {
-                actions.0.push(UiAction::SetColourMap(current.entity, map));
-            }
-        }
-    });
-
-    // Autoscaling is the default and is usually right, so the control is a way
-    // to *leave* it rather than something to set up first. Pinning is what makes
-    // two actors comparable: on separate autoscales the same colour means two
-    // different numbers.
-    ui.horizontal(|ui| {
-        let mut pinned = current.colour.range.is_some();
-        // Where the sliders start when pinning something that was autoscaling.
-        // The autoscaled extremes are not knowable here — they are computed per
-        // array where the colours are built — so this is a starting point to
-        // drag from rather than a reading of what was on screen.
-        let (mut low, mut high) = current.colour.range.unwrap_or((0.0, 1.0));
-
-        if ui.checkbox(&mut pinned, "pin range").changed() {
-            let range = pinned.then_some((low, high));
-            actions
-                .0
-                .push(UiAction::SetColourRange(current.entity, range));
-        }
-        if !pinned {
-            ui.weak("auto");
-            return;
-        }
-
-        let mut edited = false;
-        edited |= ui.add(egui::DragValue::new(&mut low).speed(0.01)).changed();
-        edited |= ui.add(egui::DragValue::new(&mut high).speed(0.01)).changed();
-        if edited {
-            // Dragging the low end past the high one would invert the map
-            // silently, which reads as the data having changed sign.
-            let range = (low.min(high), high.max(low));
-            actions
-                .0
-                .push(UiAction::SetColourRange(current.entity, Some(range)));
-        }
-    });
-
-    // Quoted in sRGB, as every colour a client sets is, and edited that way too
-    // — the 8-bit picker is exactly the precision a person picks a colour at.
-    // No alpha: nothing reads it, and a control that does nothing is worse than
-    // no control.
-    ui.horizontal(|ui| {
-        let srgba = current.colour.flat.to_srgba();
-        let mut picked = [
-            (srgba.red * 255.0).round().clamp(0.0, 255.0) as u8,
-            (srgba.green * 255.0).round().clamp(0.0, 255.0) as u8,
-            (srgba.blue * 255.0).round().clamp(0.0, 255.0) as u8,
-        ];
-        if ui.color_edit_button_srgb(&mut picked).changed() {
-            actions.0.push(UiAction::SetColourFlat(
-                current.entity,
-                Color::srgb_u8(picked[0], picked[1], picked[2]),
-            ));
-        }
-        ui.label("flat");
-        // Worth saying where the control is. On the moment backend this is the
-        // medium's transmission and is read whether or not a colour array is
-        // bound, so it changes how much light a volume absorbs rather than only
-        // how it looks.
-        ui.weak("· unbound colour, or a medium's transmission");
-    });
-}

@@ -26,10 +26,9 @@ use bevy::prelude::*;
 use bevy_egui::egui::{LayerId, Ui, UiBuilder};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui};
 
-use crate::scene::actor::ColorMap;
 use crate::scene::link::spawn_actor;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamValue};
-use crate::scene::{ColorBy, DataArray, Placement, SceneCommand, Subset};
+use crate::scene::{DataArray, Placement, SceneCommand, Subset};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
 use gather::{ActorData, ObjectData};
@@ -141,21 +140,6 @@ enum UiAction {
     RemoveActor(Entity),
     /// Change one parameter of an actor, leaving the rest alone.
     SetParam(Entity, &'static str, ParamValue),
-    SetColourMap(Entity, ColorMap),
-    /// The colour used when no array is bound to the kind's colour input.
-    ///
-    /// What that *means* is the kind's business, and it differs more than the
-    /// name suggests: for a mesh or a point cloud it is simply what the thing
-    /// is painted, but the moment backend reads it as the medium's
-    /// transmission — the fraction of each channel a volume lets through — and
-    /// reads it whether or not a colour array is bound. So this is not a
-    /// cosmetic control everywhere; on a volume it decides how much is
-    /// absorbed.
-    SetColourFlat(Entity, Color),
-    /// Where the colour map starts and ends. `None` autoscales to the bound
-    /// array's own extremes, which is the default and usually what is wanted;
-    /// pinning it is what makes two actors comparable to each other.
-    SetColourRange(Entity, Option<(f32, f32)>),
 }
 
 #[derive(Resource, Default)]
@@ -337,7 +321,6 @@ fn apply_actions(
     registry: Res<ActorRegistry>,
     mut visibility: Query<&mut Visibility>,
     mut params: Query<(&ActorKindId, &mut ActorParams)>,
-    mut colours: Query<&mut ColorBy>,
     actor_entities: Query<(), With<ActorKindId>>,
     scene_objects: Query<(), With<crate::scene::SceneObject>>,
     bridge: Res<crate::grpc::GrpcBridge>,
@@ -401,7 +384,6 @@ fn apply_actions(
                     (
                         ActorKindId(registered.id),
                         ActorParams(registered.defaults()),
-                        ColorBy::default(),
                     ),
                 );
                 // Show what was just added, so its controls appear without a
@@ -436,21 +418,6 @@ fn apply_actions(
                     continue;
                 };
                 current.0.insert(id.to_string(), value);
-            }
-            UiAction::SetColourMap(entity, map) => {
-                if let Ok(mut colour) = colours.get_mut(entity) {
-                    colour.map = map;
-                }
-            }
-            UiAction::SetColourFlat(entity, flat) => {
-                if let Ok(mut colour) = colours.get_mut(entity) {
-                    colour.flat = flat;
-                }
-            }
-            UiAction::SetColourRange(entity, range) => {
-                if let Ok(mut colour) = colours.get_mut(entity) {
-                    colour.range = range;
-                }
             }
         }
     }

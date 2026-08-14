@@ -29,8 +29,6 @@ from .v1.scene_pb2 import (
     AddFilterRequest,
     BufferSpec,
     Chunk,
-    Color,
-    ColorSpec,
     CreateObjectRequest,
     DataHandle,
     DataHeader,
@@ -51,7 +49,6 @@ from .v1.scene_pb2 import (
     ObjectInfo,
     ParamValue,
     Quaternion,
-    Range,
     ReleaseDataRequest,
     RemoveActorRequest,
     RemoveFilterRequest,
@@ -195,18 +192,6 @@ class Grid:
 
 
 @dataclass(frozen=True)
-class Coloring:
-    """How an actor takes its colour."""
-
-    #: "viridis", "cool-warm", "grayscale" or "element".
-    map: str = "viridis"
-    #: Value range the map spans. None autoscales to the bound array's own range.
-    range: tuple[float, float] | None = None
-    #: sRGB, used when no colour array is bound.
-    flat: tuple[float, float, float] | None = None
-
-
-@dataclass(frozen=True)
 class SubsetSummary:
     """An actor's selection, described without returning its values."""
 
@@ -233,7 +218,6 @@ class ActorSummary:
     parents: tuple[int, ...]
     #: Complete and in range, whatever was sent to produce it.
     params: dict[str, RawParamValue]
-    coloring: Coloring
     #: The setting, not whether anything reaches the screen. A hidden object
     #: above it does not show here, and neither does being detached — a
     #: detached actor is not drawn whatever this says.
@@ -401,23 +385,6 @@ def _params(params: Mapping[str, RawParamValue] | None) -> dict[str, ParamValue]
     return {key: _param_value(value) for key, value in (params or {}).items()}
 
 
-def _color_spec(coloring: Coloring) -> ColorSpec:
-    spec = ColorSpec(map=coloring.map)
-    if coloring.range is not None:
-        spec.range.CopyFrom(Range(low=coloring.range[0], high=coloring.range[1]))
-    if coloring.flat is not None:
-        spec.flat.CopyFrom(Color(r=coloring.flat[0], g=coloring.flat[1], b=coloring.flat[2]))
-    return spec
-
-
-def _coloring(spec: ColorSpec) -> Coloring:
-    return Coloring(
-        map=spec.map,
-        range=(spec.range.low, spec.range.high) if spec.HasField("range") else None,
-        flat=(spec.flat.r, spec.flat.g, spec.flat.b) if spec.HasField("flat") else None,
-    )
-
-
 _ENCODINGS = {
     Subset.ENCODING_INDICES: "indices",
     Subset.ENCODING_MASK: "mask",
@@ -467,7 +434,6 @@ def _actor(info: ActorInfo) -> ActorSummary:
         kind=info.kind,
         parents=tuple(handle.id for handle in info.parents),
         params={key: _read_param(value) for key, value in info.params.items()},
-        coloring=_coloring(info.color),
         visible=info.visible,
         subset=(
             SubsetSummary(
@@ -887,7 +853,6 @@ class Client:
         parent: int | None = None,
         parents: Sequence[int] | None = None,
         params: Mapping[str, float | bool | str] | None = None,
-        coloring: Coloring | None = None,
         subset: np.ndarray | None = None,
         per_cell: bool = False,
     ) -> ActorSummary:
@@ -947,8 +912,6 @@ class Client:
         # because drawing in one place is much the commoner case.
         for handle in (parents if parents is not None else _maybe(parent)):
             request.parents.append(ObjectHandle(id=handle))
-        if coloring is not None:
-            request.color.CopyFrom(_color_spec(coloring))
         if subset is not None:
             request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
         return _actor(self._scene.AddActor(request).actor)
@@ -958,7 +921,6 @@ class Client:
         handle: int,
         params: Mapping[str, float | bool | str] | None = None,
         *,
-        coloring: Coloring | None = None,
         visible: bool | None = None,
         subset: np.ndarray | None = None,
         per_cell: bool = False,
@@ -970,8 +932,7 @@ class Client:
 
         Parameters are merged, so passing one setting keeps the rest — the
         opposite of :meth:`add_actor`, where an absent parameter takes its
-        default. ``coloring`` is all-or-nothing: passing it replaces the
-        colouring outright.
+        default.
 
         Out-of-range values are clamped rather than rejected, so a slider driven
         past its limit does not raise.
@@ -996,8 +957,6 @@ class Client:
             params=_params(params),
             clear_subset=clear_subset,
         )
-        if coloring is not None:
-            request.color.CopyFrom(_color_spec(coloring))
         if visible is not None:
             request.visible = visible
         if subset is not None:

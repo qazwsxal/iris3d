@@ -141,7 +141,7 @@ pub fn draw_glycans(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, _colour, subset, bindings, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, subset, bindings, dirty), mesh3d, material3d) in &dirty {
         if !dirty.geometry {
             continue;
         }

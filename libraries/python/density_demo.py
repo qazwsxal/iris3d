@@ -118,11 +118,13 @@ def main():
         }
         if opaque:
             params["mode"] = "opaque"
+        # The flat colour is an ordinary parameter now. An opaque ribbon takes it
+        # as its base colour; an absorbing one reads it as a transmission.
+        params["tint"] = (0.95, 0.75, 0.35)
         client.add_actor(
             "cartoon",
             parent=ribbon,
             params=params,
-            coloring=iris3d.Coloring(flat=(0.95, 0.75, 0.35)),
         )
 
         # The glycans, as SNFG symbols. 5A63 carries 20 sugars, and a cartoon
@@ -171,8 +173,12 @@ def main():
                 # the step length divides out of the integral, so the picture
                 # holds still rather than getting brighter.
                 "steps": 512.0,
+                # A volume maps its own values, unlike every other kind: the
+                # ramp is read per sample along the ray rather than once per
+                # element, so materialising RGB per voxel would cost hundreds of
+                # megabytes to save a texture fetch.
+                "map": "cool-warm",
             },
-            coloring=iris3d.Coloring(map="cool-warm"),
         )
 
         print(

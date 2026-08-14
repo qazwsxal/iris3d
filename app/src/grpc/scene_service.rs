@@ -7,22 +7,21 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::scene::actor::ColorMap;
 use crate::scene::data::Association;
 
 use crate::scene::registry::{ParamKind, ParamMap, ParamSpec, ParamValue};
 use crate::scene::subset::SubsetRequest;
 use crate::filter::{FilterKindSummary, FilterSummary};
 use crate::scene::{
-    ActorSummary, BufferMeta, ColorBy, DataSummary, Dtype, KindSummary, NamedBuffer, ObjectSummary,
+    ActorSummary, BufferMeta, DataSummary, Dtype, KindSummary, NamedBuffer, ObjectSummary,
     SceneCommand, SceneError, SubsetEncoding,
 };
 
 use super::SceneSender;
 use super::proto::{
     ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, AddFilterRequest,
-    AddFilterResponse, ArrayParam, BoolParam, BufferSpec, ChoiceParam, Chunk, Color, ColorSpec,
-    CreateObjectRequest, CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest,
+    AddFilterResponse, ArrayParam, BoolParam, BufferSpec, ChoiceParam, Chunk,
+    ColorSpec, CreateObjectRequest, CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest,
     DeleteObjectResponse, Dtype as ProtoDtype, FilterHandle, FilterInfo, FilterKindInfo,
     FilterOutput, FloatParam, ListActorKindsRequest, ListActorKindsResponse, ListActorsRequest,
     ListActorsResponse, ListDataRequest, ListDataResponse, ListFilterKindsRequest,
@@ -36,7 +35,6 @@ use super::proto::{
     VectorValue, param_spec, param_value::Value, scene_service_server::SceneService,
     subset as subset_proto, upload_data_request::Payload as DataPayload,
 };
-use bevy::color::{Color as BevyColor, ColorToComponents, Srgba};
 use bevy::math::{Quat, Vec3};
 
 /// Ceiling on the total declared size of a single object. Generous enough for
@@ -314,7 +312,6 @@ impl SceneService for SceneBridgeService {
             .map(|handle| handle.id)
             .collect();
         let params = params_from_proto(request.params)?;
-        let colour = request.color.map(colour_from_proto).transpose()?;
         let subset = request.subset.map(subset_from_proto).transpose()?;
 
         let summary = self
@@ -322,7 +319,6 @@ impl SceneService for SceneBridgeService {
                 kind,
                 parents,
                 params,
-                colour,
                 subset,
                 reply,
             })
@@ -344,7 +340,6 @@ impl SceneService for SceneBridgeService {
             .ok_or_else(|| Status::invalid_argument("handle is required"))?
             .id;
         let params = params_from_proto(request.params)?;
-        let colour = request.color.map(colour_from_proto).transpose()?;
         let visible = request.visible;
         // Three states, not two: leave the selection alone, replace it, or
         // clear it back to drawing everything.
@@ -368,7 +363,6 @@ impl SceneService for SceneBridgeService {
             .submit(|reply| SceneCommand::SetActor {
                 id,
                 params,
-                colour,
                 visible,
                 subset,
                 parents,
@@ -593,52 +587,6 @@ fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, Proto
         .collect()
 }
 
-/// A `ColorSpec` describes colouring completely, so anything unset takes its
-/// default rather than the actor's current value.
-fn colour_from_proto(spec: ColorSpec) -> Result<ColorBy, Status> {
-    let map = if spec.map.is_empty() {
-        ColorMap::default()
-    } else {
-        ColorMap::from_str(&spec.map)
-            .ok_or_else(|| Status::invalid_argument(format!("no colour map \"{}\"", spec.map)))?
-    };
-
-    let range = spec
-        .range
-        .map(|range| {
-            if range.low > range.high {
-                Err(Status::invalid_argument(
-                    "colour range low is above its high",
-                ))
-            } else {
-                Ok((range.low, range.high))
-            }
-        })
-        .transpose()?;
-
-    Ok(ColorBy {
-        map,
-        range,
-        flat: spec
-            .flat
-            .map(|c| BevyColor::srgb(c.r, c.g, c.b))
-            .unwrap_or(ColorBy::default().flat),
-    })
-}
-
-fn colour_to_proto(colour: &ColorBy) -> ColorSpec {
-    let flat = Srgba::from(colour.flat).to_f32_array();
-    ColorSpec {
-        map: colour.map.as_str().to_string(),
-        range: colour.range.map(|(low, high)| Range { low, high }),
-        flat: Some(Color {
-            r: flat[0],
-            g: flat[1],
-            b: flat[2],
-        }),
-    }
-}
-
 fn actor_info(summary: &ActorSummary) -> ActorInfo {
     ActorInfo {
         handle: Some(ActorHandle { id: summary.id }),
@@ -650,7 +598,6 @@ fn actor_info(summary: &ActorSummary) -> ActorInfo {
             .map(|id| ObjectHandle { id: *id })
             .collect(),
         params: params_to_proto(&summary.params),
-        color: Some(colour_to_proto(&summary.colour)),
         visible: summary.visible,
         subset: summary.subset.map(|subset| SubsetInfo {
             encoding: match subset.encoding {

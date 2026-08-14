@@ -177,7 +177,6 @@ fn spawn(app: &mut App, kind: &'static str) -> Entity {
             ActorKindId(kind),
             ActorParams(params),
             Subset::All,
-            crate::scene::ColorBy::default(),
             Parents(vec![object]),
             Shown(true),
             Visibility::Hidden,

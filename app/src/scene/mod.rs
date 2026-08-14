@@ -32,7 +32,6 @@ use crate::filter::{self, FilterKindSummary, FilterSummary};
 use crate::grpc::GrpcBridge;
 use crate::redraw::KeepAwake;
 
-pub mod actor;
 pub mod data;
 pub mod link;
 pub mod registry;
@@ -40,7 +39,6 @@ pub mod subset;
 
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
-pub use actor::ColorBy;
 pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedBuffer};
 pub use link::{Parents, Placement, Shown};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
@@ -121,7 +119,6 @@ pub struct ActorSummary {
     /// object it was under leaves it.
     pub parents: Vec<u64>,
     pub params: registry::ParamMap,
-    pub colour: ColorBy,
     pub visible: bool,
     /// How much of the bound data is drawn, or `None` for all of it. The values
     /// are not carried back — the caller sent them, and they can be large.
@@ -329,8 +326,6 @@ pub enum SceneCommand {
         /// Partial. Anything unset takes the kind's **default**, there being no
         /// previous value.
         params: registry::ParamMap,
-        /// `None` colours by the first scalar field, as an upload does.
-        colour: Option<ColorBy>,
         /// `None` draws the whole dataset.
         subset: Option<subset::SubsetRequest>,
         reply: oneshot::Sender<Result<ActorSummary, SceneError>>,
@@ -340,8 +335,6 @@ pub enum SceneCommand {
         /// Partial. Anything unset keeps its **current** value — the opposite
         /// of [`AddActor`](Self::AddActor), because here there is one.
         params: registry::ParamMap,
-        /// `None` leaves colouring alone; `Some` replaces it outright.
-        colour: Option<ColorBy>,
         visible: Option<bool>,
         /// `None` leaves the selection alone; `Some(None)` clears it back to
         /// drawing everything. Absent and cleared have to be distinguishable,
@@ -427,7 +420,6 @@ type ActorQuery<'w, 's> = Query<
         &'static UniqueID,
         &'static ActorKindId,
         &'static mut ActorParams,
-        &'static mut ColorBy,
         &'static mut Shown,
         &'static mut Subset,
         &'static mut Parents,
@@ -441,7 +433,6 @@ type ActorItem<'a> = (
     &'a UniqueID,
     &'a ActorKindId,
     &'a ActorParams,
-    &'a ColorBy,
     &'a Shown,
     &'a Subset,
     &'a Parents,
@@ -671,7 +662,6 @@ pub fn apply_scene_commands(
                 kind,
                 parents,
                 params,
-                colour,
                 subset,
                 reply,
             } => {
@@ -684,7 +674,6 @@ pub fn apply_scene_commands(
                     parents,
                     kind,
                     params,
-                    colour,
                     subset,
                     &mut arrays,
                     &store,
@@ -695,7 +684,6 @@ pub fn apply_scene_commands(
             SceneCommand::SetActor {
                 id,
                 params,
-                colour,
                 visible,
                 subset,
                 parents,
@@ -711,7 +699,6 @@ pub fn apply_scene_commands(
                     &store,
                     id,
                     params,
-                    colour,
                     visible,
                     subset,
                     parents,
@@ -749,7 +736,7 @@ pub fn apply_scene_commands(
                     // Filtered on where an actor is drawn. It used to filter on
                     // whose data it read, which is no longer a thing an actor
                     // has — it reads arrays, and any number of them.
-                    .filter(|item| filter.is_none_or(|object| item.7.0.contains(&object)))
+                    .filter(|item| filter.is_none_or(|object| item.6.0.contains(&object)))
                     .filter_map(|item| summarise_actor(item, &ids, &arrays))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
@@ -875,7 +862,6 @@ fn add_actor(
     parents: Vec<u64>,
     kind: String,
     params: registry::ParamMap,
-    colour: Option<ColorBy>,
     subset: Option<subset::SubsetRequest>,
     arrays: &mut Assets<DataArray>,
     store: &DataStore,
@@ -913,7 +899,6 @@ fn add_actor(
     // is no previous value to preserve.
     let params = registered.normalise(&params);
     check_bindings(registered, &params, store)?;
-    let colour = colour.unwrap_or_default();
 
     let subset = subset.map_or(Subset::All, |request| request.into_subset(arrays));
     let summarised_subset = match &subset {
@@ -949,7 +934,6 @@ fn add_actor(
         (
             ActorKindId(registered.id),
             ActorParams(params.clone()),
-            colour.clone(),
         ),
     );
     drawn.insert(id, entity);
@@ -964,7 +948,6 @@ fn add_actor(
         kind: registered.id.to_string(),
         parents,
         params,
-        colour,
         visible: true,
         subset: summarised_subset,
     })
@@ -982,7 +965,6 @@ fn set_actor(
     store: &DataStore,
     id: u64,
     params: registry::ParamMap,
-    colour: Option<ColorBy>,
     visible: Option<bool>,
     subset: Option<Option<subset::SubsetRequest>>,
     parents: Option<Vec<u64>>,
@@ -1034,19 +1016,16 @@ fn set_actor(
     // the store, so without this a rebind to the wrong dtype or shape would be
     // refused when adding an actor and accepted when changing one.
     check_bindings(registered, &merged, store)?;
-    // Written only when it differs, so a call that changes the colour and
-    // restates the parameters does not mark them `Changed` and throw the
-    // geometry away to rebuild it identically.
+    // Written only when it differs, so a call that restates the parameters does
+    // not mark them `Changed` and throw the geometry away to rebuild it
+    // identically.
     item.3.set_if_neq(ActorParams(merged));
 
-    if let Some(colour) = colour {
-        *item.4 = colour;
-    }
     if let Some(visible) = visible {
-        *item.5 = Shown(visible);
+        *item.4 = Shown(visible);
     }
     if let Some(subset) = subset {
-        *item.6 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
+        *item.5 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
     }
 
     if let Some(wanted) = moving_to {
@@ -1056,7 +1035,7 @@ fn set_actor(
         // A plain write, not a queued command: `sync_placements` reads this
         // next and builds or drops placements to match, so adding a parent and
         // taking the last one away are the same operation.
-        *item.7 = Parents(wanted);
+        *item.6 = Parents(wanted);
     }
 
     summarise_actor(
@@ -1270,7 +1249,7 @@ fn delete_object(
 ///
 /// `Option` only so callers can filter with `?`; an actor always describes.
 fn summarise_actor(
-    (_, id, kind, params, colour, shown, subset, parents): ActorItem<'_>,
+    (_, id, kind, params, shown, subset, parents): ActorItem<'_>,
     ids: &Query<&UniqueID>,
     arrays: &Assets<DataArray>,
 ) -> Option<ActorSummary> {
@@ -1290,7 +1269,6 @@ fn summarise_actor(
         kind: kind.0.to_string(),
         parents,
         params: params.0.clone(),
-        colour: colour.clone(),
         // What this actor was told. An object hidden above one of its
         // placements still hides that copy, which is `InheritedVisibility`'s
         // business and not reported here.
@@ -1440,7 +1418,6 @@ mod tests {
             parents,
             kind: "marker".into(),
             params: registry::ParamMap::default(),
-            colour: None,
             subset: None,
             reply,
         });
@@ -1610,7 +1587,6 @@ mod tests {
             parents: vec![],
             kind: "marker".into(),
             params: registry::ParamMap::default(),
-            colour: None,
             subset: None,
             reply,
         });
@@ -1643,7 +1619,6 @@ mod tests {
             parents: vec![],
             kind: "no-such-kind".into(),
             params: registry::ParamMap::default(),
-            colour: None,
             subset: None,
             reply,
         });
@@ -1729,7 +1704,6 @@ mod tests {
             parents: vec![],
             kind: "bound".into(),
             params: bind(first),
-            colour: None,
             subset: None,
             reply,
         });
@@ -1739,7 +1713,6 @@ mod tests {
         let mut refused = send(&app, |reply| SceneCommand::SetActor {
             id: actor,
             params: bind(wrong),
-            colour: None,
             visible: None,
             subset: None,
             parents: None,
@@ -1784,7 +1757,6 @@ mod tests {
         let mut accepted = send(&app, |reply| SceneCommand::SetActor {
             id: actor,
             params: bind(second),
-            colour: None,
             visible: None,
             subset: None,
             parents: None,
@@ -1940,7 +1912,6 @@ mod tests {
             send(app, move |reply| SceneCommand::SetActor {
                 id: actor,
                 params: registry::ParamMap::default(),
-                colour: None,
                 visible: None,
                 subset: None,
                 parents: Some(parents),

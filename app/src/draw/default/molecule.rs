@@ -26,7 +26,7 @@ use crate::scene::registry::{
     ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float,
 };
 use crate::scene::subset::Remap;
-use crate::scene::{ColorBy, DataArray, DataStore, Dtype, Subset};
+use crate::scene::{DataArray, DataStore, Dtype, Subset};
 
 use super::{Actor, Dirty, bound, mark};
 
@@ -63,22 +63,27 @@ const PARAMS: &[ParamSpec] = &[
             structural: true,
         },
     },
+    // Linear RGB, one triple per atom, already mapped. Unbound falls back to CPK
+    // colours from the periodic table rather than to `tint`, because that is
+    // what a molecule with no field on it should look like.
+    //
     // `structural`, unlike the same input on `mesh` and `points`. Not because a
-    // colour is structural here, but because this kind has no repaint path: its
-    // draw system gives up unless `dirty.geometry`, so a colour-only mark would
-    // be dropped and the change would never appear. Making it repaint is worth
-    // doing — a merged protein is exactly the case that hurts — and until then
-    // this says truthfully what happens.
+    // colour is structural here, but because this kind has no repaint path from
+    // a *rebuild* decision: `read` runs first and `dirty.geometry` decides the
+    // rest. Making a bound-array change repaint is worth doing — a merged
+    // protein is exactly the case that hurts — and until then this says
+    // truthfully what happens.
     ParamSpec {
         id: "colour",
-        label: "colour by",
+        label: "colour",
         kind: ParamKind::Array {
-            dtypes: &[],
-            shape: &[0],
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
             required: false,
             structural: true,
         },
     },
+    crate::draw::TINT,
     ParamSpec {
         id: "atom_scale",
         label: "atom scale",
@@ -107,17 +112,27 @@ pub fn register(registry: &mut ActorRegistry) {
         label: "ball and stick",
         params: PARAMS,
         apply: |entity, params| {
-            entity.insert(BallAndStickStyle(Sizes {
-                atom_scale: float(params, "atom_scale", 0.25),
-                bond_radius: float(params, "bond_radius", 0.1),
-            }));
+            entity.insert(BallAndStickStyle {
+                sizes: Sizes {
+                    atom_scale: float(params, "atom_scale", 0.25),
+                    bond_radius: float(params, "bond_radius", 0.1),
+                },
+                tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
+            });
         },
     });
 }
 
-/// Radii and bond thickness, as this backend's style component.
+/// Radii, bond thickness and the stick colour, as this backend's style
+/// component.
 #[derive(Component)]
-pub struct BallAndStickStyle(pub Sizes);
+pub struct BallAndStickStyle {
+    pub sizes: Sizes,
+    /// Linear RGB for the bonds, and for every atom when nothing is bound to
+    /// `colour`. Bonds join two atoms of possibly different elements, so they
+    /// take one colour rather than a CPK one.
+    pub tint: Vec3,
+}
 
 /// Both parameters change where vertices go, so both are geometry.
 pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<BallAndStickStyle>>) {
@@ -141,11 +156,11 @@ pub fn draw_molecules(
     dirty: Query<Drawable>,
     layouts: Query<&Layout>,
 ) {
-    for ((entity, style, colour, subset, bindings, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, subset, bindings, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
-        let Some(atoms) = read(bindings, subset, &store, &arrays, colour) else {
+        let Some(atoms) = read(bindings, subset, &store, &arrays, style.tint) else {
             continue;
         };
 
@@ -168,7 +183,7 @@ pub fn draw_molecules(
             &atoms.colours,
             atoms.stick,
             atoms.tinted,
-            &style.0,
+            &style.sizes,
         ) else {
             warn!("draw: could not read the primitives for a molecule");
             continue;
@@ -224,7 +239,7 @@ fn read(
     subset: &Subset,
     store: &DataStore,
     arrays: &Assets<DataArray>,
-    colour: &ColorBy,
+    tint: Vec3,
 ) -> Option<Atoms> {
     let position_array = bound(bindings, "positions", store, arrays)?;
     let all = position_array.to_vec3();
@@ -269,19 +284,17 @@ fn read(
 
     // A bound colour array wins over CPK: an input that is bound has to
     // actually apply, or the tree claims a colouring the render does not show.
-    let tint = bound(bindings, "colour", store, arrays)
-        .and_then(|values| {
-            super::super::bound_colours(values, colour, position_array.count() as usize)
-        })
+    let bound_rgb = bound(bindings, "colour", store, arrays)
+        .and_then(|values| super::super::bound_colours(values, position_array.count() as usize))
         .map(|colours| match &kept {
             Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
             None => colours,
         });
-    let stick = colour.flat.to_linear().to_f32_array();
-    let tinted = tint.is_some();
+    let stick = tint.extend(1.0).to_array();
+    let tinted = bound_rgb.is_some();
     let colours: Vec<[f32; 4]> = (0..positions.len())
         .map(|index| {
-            tint.as_ref().map_or_else(
+            bound_rgb.as_ref().map_or_else(
                 || crate::draw::elements::colour(elements.get(index).copied().unwrap_or(6)),
                 |colours| colours[index],
             )

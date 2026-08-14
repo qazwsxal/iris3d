@@ -55,7 +55,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::scene::registry::Bindings;
-use crate::scene::{ColorBy, DataArray, DataStore, Subset};
+use crate::scene::{DataArray, DataStore, Subset};
 
 /// How wide, how thick and how finely a cartoon is drawn.
 ///
@@ -506,7 +506,7 @@ pub fn residue_colours(
     bindings: &Bindings,
     store: &DataStore,
     arrays: &Assets<DataArray>,
-    colour: &ColorBy,
+    flat: [f32; 4],
 ) -> Option<Vec<[f32; 4]>> {
     let values = super::bound(bindings, "colour", store, arrays)?;
     let residue_of_atom = super::bound(bindings, "residue_index", store, arrays)?.to_u32()?;
@@ -521,13 +521,12 @@ pub fn residue_colours(
     let count = values.count() as usize;
     if count >= residues && count < residue_of_atom.len() {
         // Already per residue.
-        return super::bound_colours(values, colour, residues);
+        return super::bound_colours(values, residues);
     }
 
-    // Per atom. Colour-map over the atoms first, so the range autoscales over
-    // the same values the client would see anywhere else, then pick one per
-    // residue.
-    let per_atom = super::bound_colours(values, colour, count.min(residue_of_atom.len()))?;
+    // Per atom. One colour per residue is what the ribbon needs, so take the
+    // first atom that reaches each.
+    let per_atom = super::bound_colours(values, count.min(residue_of_atom.len()))?;
     let mut per_residue = vec![None; residues];
     for (atom, residue) in residue_of_atom.iter().enumerate() {
         let slot = &mut per_residue[*residue as usize];
@@ -535,7 +534,6 @@ pub fn residue_colours(
             *slot = per_atom.get(atom).copied();
         }
     }
-    let flat = colour.flat.to_linear().to_f32_array();
     Some(
         per_residue
             .into_iter()

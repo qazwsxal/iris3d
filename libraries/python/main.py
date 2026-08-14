@@ -115,8 +115,9 @@ def hydrogen(client, root, cursor, gap=3.0):
             # at the default of 1 the lobes read as smoke instead of light.
             "emission": 4.0,
             "steps": 256.0,
+            # A volume maps its own values; see `GridStyle::map`.
+            "map": "cool-warm",
         },
-        coloring=iris3d.Coloring(map="cool-warm"),
     )
     return handle
 
@@ -172,7 +173,15 @@ def bind(client, kind, arrays):
         if name in held
     }
     if scalar is not None:
-        params["colour"] = iris3d.Bind(held[scalar])
+        # Through a filter, not a setting. The actor's `colour` input takes
+        # linear RGB, so what turns a scalar field into colours is a `colormap`
+        # of its own — which is what lets the same field be shown through a
+        # different ramp, or a different field entirely, without touching the
+        # actor.
+        colours = client.add_filter(
+            "colormap", params={"values": iris3d.Bind(held[scalar])}
+        )
+        params["colour"] = iris3d.Bind(colours["colour"])
     return params
 
 

@@ -40,6 +40,8 @@ type Drawable<'a> = (
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct PointsStyle {
     pub size: f32,
+    /// Linear RGB, used where nothing is bound to `colour`.
+    pub tint: Vec3,
 }
 
 const PARAMS: &[ParamSpec] = &[
@@ -56,19 +58,22 @@ const PARAMS: &[ParamSpec] = &[
             structural: true,
         },
     },
-    // What tints them, if anything. One value per point; the colour map and its
-    // range stay in `ColorBy`, because those are about presentation rather than
-    // about which numbers are being shown.
+    // Linear RGB, one triple per point, already mapped. Unbound takes `tint`.
+    //
+    // This takes colours rather than the numbers to make colours *from*. What
+    // ramp, over what range, is the `colormap` filter's business — so colouring
+    // by anything a client can compute costs no change here.
     ParamSpec {
         id: "colour",
-        label: "colour by",
+        label: "colour",
         kind: ParamKind::Array {
-            dtypes: &[],
-            shape: &[0],
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
             required: false,
             structural: false,
         },
     },
+    crate::draw::TINT,
     ParamSpec {
         id: "size",
         label: "size",
@@ -91,6 +96,7 @@ pub fn register(registry: &mut ActorRegistry) {
         apply: |entity, params| {
             entity.insert(PointsStyle {
                 size: float(params, "size", 0.05),
+                tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
             });
         },
     });
@@ -156,7 +162,7 @@ pub fn draw_points(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, colour, subset, bound, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, subset, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -186,19 +192,16 @@ pub fn draw_points(
         let count = centres.len();
 
         if dirty.geometry || dirty.colour {
-            let tint = bound
-                .get("colour")
-                .and_then(|id| store.get(id))
-                .and_then(|held| arrays.get(&held.handle))
-                .and_then(|values| crate::draw::bound_colours(values, colour, array.count() as usize))
-                // Colours are computed over the whole field, then narrowed to
-                // the drawn points, so a subset does not shift the mapping.
+            let bound_rgb = super::bound(bound, "colour", &store, &arrays)
+                .and_then(|values| crate::draw::bound_colours(values, array.count() as usize))
+                // Read over the whole field, then narrowed to the drawn points,
+                // so a subset does not shift which colour lands on which point.
                 .map(|colours| match &kept {
                     Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
                     None => colours,
                 });
-            let flat = colour.flat.to_linear().to_f32_array();
-            let colours = quad_colours(count, tint.as_ref(), flat);
+            let flat = style.tint.extend(1.0).to_array();
+            let colours = quad_colours(count, bound_rgb.as_ref(), flat);
 
             if dirty.geometry {
                 let mut positions = Vec::with_capacity(count * 4);
@@ -341,7 +344,7 @@ mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype};
     use crate::scene::registry::Bindings;
-    use crate::scene::{ActorKindId, ColorBy, SceneObject, Subset};
+    use crate::scene::{ActorKindId, SceneObject, Subset};
     use bevy::platform::collections::HashMap;
 
     /// Runs the invalidation chain and this kind, with no renderer behind it:
@@ -400,8 +403,10 @@ mod tests {
             .world_mut()
             .spawn((
                 ActorKindId("points"),
-                PointsStyle { size: 0.05 },
-                ColorBy::default(),
+                PointsStyle {
+                    size: 0.05,
+                    tint: Vec3::splat(0.8),
+                },
                 Subset::All,
                 Bindings(HashMap::from_iter([("positions", 0)])),
             ))
@@ -452,7 +457,14 @@ mod tests {
         let (mut app, _, actor) = app();
         let (mesh, material) = (mesh_of(&app, actor), material_of(&app, actor));
 
-        app.world_mut().get_mut::<ColorBy>(actor).unwrap().flat = Color::srgb(1.0, 0.0, 0.0);
+        // The flat colour is a parameter now, so this goes through the style
+        // component the way any other setting does.
+        app.world_mut().get_mut::<PointsStyle>(actor).unwrap().tint = Vec3::new(1.0, 0.0, 0.0);
+        crate::draw::mark(
+            &mut app.world_mut().commands(),
+            actor,
+            crate::draw::Dirty::COLOUR,
+        );
         app.update();
 
         assert_eq!(mesh_of(&app, actor), mesh, "mesh should be reused");

@@ -52,8 +52,8 @@
 //!
 //! No per-vertex `colour`. Absorbance is a property of a medium, so it is one
 //! value for the whole volume rather than something varying across a surface
-//! the interior does not have; colour arrives through [`ColorBy::flat`], read
-//! as a transmission. `normals` *are* read, but only when a shell is on — the
+//! the interior does not have; colour arrives through the `tint` parameter,
+//! read as a transmission. `normals` *are* read, but only when a shell is on — the
 //! accumulation cares where a boundary is, not which way it faces, so a volume
 //! with no skin never pays for them.
 
@@ -64,7 +64,7 @@ use bevy::prelude::*;
 use crate::scene::registry::Bindings;
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag, float, text};
 use crate::scene::subset::Remap;
-use crate::scene::{ColorBy, DataArray, DataStore, Dtype, Subset};
+use crate::scene::{DataArray, DataStore, Dtype, Subset};
 
 use super::{Actor, Depiction, Dirty, MomentShell, MomentVolume, bound, mark};
 
@@ -76,8 +76,8 @@ const MODES: &[&str] = &["solid", "film"];
 /// Separate from [`MomentVolume`] even though it holds the same numbers,
 /// because they answer to different owners: this is derived from the actor's
 /// parameters by `apply`, and [`MomentVolume`] is the drawable output the render
-/// world extracts. Keeping them apart is what lets the tint arrive from
-/// [`ColorBy`] rather than from a parameter.
+/// world extracts. Keeping them apart is what lets one be edited by a client
+/// while the other is rebuilt from it.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AbsorbingStyle {
     /// Already resolved from `mode` plus whichever of `sigma` and `alpha` that
@@ -92,6 +92,8 @@ pub struct AbsorbingStyle {
     /// the impossible state is gone.
     pub ior: Option<f32>,
     pub roughness: f32,
+    /// Linear RGB, read as a transmission. See [`transmission`].
+    pub tint: Vec3,
 }
 
 const PARAMS: &[ParamSpec] = &[
@@ -199,6 +201,7 @@ const PARAMS: &[ParamSpec] = &[
             logarithmic: false,
         },
     },
+    crate::draw::TINT,
 ];
 
 pub fn register(registry: &mut ActorRegistry) {
@@ -221,6 +224,7 @@ pub fn register(registry: &mut ActorRegistry) {
             };
             entity.insert(AbsorbingStyle {
                 depiction,
+                tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
                 ior: flag(params, "shell", false).then(|| float(params, "ior", 1.49)),
                 roughness: float(params, "roughness", 0.15),
             });
@@ -269,7 +273,7 @@ pub fn draw_solids(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, colour, subset, bindings, dirty), mesh3d, _volume) in &dirty {
+    for ((entity, style, subset, bindings, dirty), mesh3d, _volume) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -287,7 +291,7 @@ pub fn draw_solids(
         let mut actor = commands.entity(entity);
         actor.insert(MomentVolume {
             depiction: style.depiction,
-            tint: transmission(colour),
+            tint: transmission(style.tint),
         });
         match style.ior {
             Some(ior) => actor.insert(MomentShell {
@@ -347,22 +351,20 @@ fn ensure_mesh(
 /// The flat colour, read as the fraction of each channel the solid lets
 /// through.
 ///
-/// [`ColorBy::flat`] is what an actor is painted when no colour array is bound,
-/// and it is the only colour this kind has: absorbance is a property of the
+/// `tint` is the only colour this kind has: absorbance is a property of the
 /// medium, so it is one value for the whole volume rather than something that
 /// varies across a surface it does not have. Reading it as a transmission is
-/// what makes the reading intuitive — the volume shows in the colour it passes
-/// — and it is also the only reading that is physically a tint rather than a
-/// paint.
+/// what makes it intuitive — the volume shows in the colour it passes — and it
+/// is also the only reading that is physically a tint rather than a paint.
 ///
-/// `to_linear` because the accumulation works in linear light throughout, and
-/// `flat` is quoted in sRGB like every other colour a client sets.
+/// Already linear when it gets here: `crate::draw::tint` converts once, where
+/// the parameter is read, because the accumulation works in linear light
+/// throughout.
 ///
 /// Shared with [`cartoon`](super::cartoon); see [`normal_reflectance`] for why
 /// that is not a breach of the rule that backends duplicate.
-pub(super) fn transmission(colour: &ColorBy) -> Vec3 {
-    let rgba = colour.flat.to_linear();
-    Vec3::new(rgba.red, rgba.green, rgba.blue).clamp(Vec3::ZERO, Vec3::ONE)
+pub(super) fn transmission(tint: Vec3) -> Vec3 {
+    tint.clamp(Vec3::ZERO, Vec3::ONE)
 }
 
 /// Builds the boundary mesh from what the actor binds.

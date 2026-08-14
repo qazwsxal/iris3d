@@ -46,11 +46,11 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::settings::WgpuFeatures;
 
-use crate::filter::colormap::sample;
-use crate::scene::actor::ColorMap;
+use bevy::color::ColorToComponents;
 
-use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings, ParamKind};
-use crate::scene::{ColorBy, DataArray, DataStore, Subset};
+use crate::filter::colormap::{ColorMap, sample};
+use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings, ParamKind, ParamMap, ParamSpec};
+use crate::scene::{DataArray, DataStore, Subset};
 
 mod atoms;
 mod cartoon;
@@ -149,21 +149,18 @@ pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
         });
 }
 
-/// What every actor has, whichever backend is running: its own style, how it is
-/// coloured, how much of the data it draws, what it draws, and what is out of
-/// date.
+/// What every actor has, whichever backend is running: its own style, how much
+/// of the data it draws, what it draws, and what is out of date.
+///
+/// Colouring used to be here too, as a `ColorBy` every actor carried. It is a
+/// filter now, so a colour reaches an actor as an ordinary bound array and needs
+/// no place of its own — and a flat colour is a parameter like any other, which
+/// means it lives in the kind's own style component.
 ///
 /// A backend extends this with whatever *it* produced last time, which is what
 /// makes reuse rather than reallocation possible — and is precisely the part
 /// that depends on the pipeline. Each kind declares its own; see the `Drawable` alias in any of them.
-pub(crate) type Actor<'a, Style> = (
-    Entity,
-    &'a Style,
-    &'a ColorBy,
-    &'a Subset,
-    &'a Bindings,
-    &'a Dirty,
-);
+pub(crate) type Actor<'a, Style> = (Entity, &'a Style, &'a Subset, &'a Bindings, &'a Dirty);
 
 /// Resolves one of an actor's bound inputs to the array behind it.
 ///
@@ -253,7 +250,6 @@ fn mark_dirty(
     mut commands: Commands,
     registry: Res<ActorRegistry>,
     new_actors: Query<Entity, Added<ActorKindId>>,
-    recoloured: Query<Entity, (With<ActorKindId>, Changed<ColorBy>)>,
     resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
     rebound: Query<Entity, (With<ActorKindId>, Changed<Bindings>)>,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
@@ -262,14 +258,6 @@ fn mark_dirty(
 ) {
     for entity in &new_actors {
         mark(&mut commands, entity, Dirty::ALL);
-    }
-
-    // Colour only: the vertices stay exactly where they are, so the mesh is
-    // repainted rather than rebuilt. For a merged protein that is the
-    // difference between writing a colour per vertex and re-tessellating every
-    // atom and bond.
-    for entity in &recoloured {
-        mark(&mut commands, entity, Dirty::COLOUR);
     }
 
     // A different selection means different vertices, so this is a rebuild
@@ -373,79 +361,68 @@ fn clear_dirty(mut dirty: Query<&mut Dirty>) {
     }
 }
 
-/// Maps a bound array onto vertex colours.
+/// Reads a bound colour array as vertex colours.
 ///
-/// No `Field` and no name lookup: a bound array carries its own shape, so a
-/// multi-component one reduces to magnitude exactly as a vector field used to.
-/// What the numbers *mean* was decided by whoever bound them.
+/// The array is **already linear RGB**, one triple per element. Nothing here
+/// maps, scales or reduces: how numbers became colours was decided by whatever
+/// wrote the array, which for a scalar field is the `colormap` filter.
 ///
-/// Magnitude is a defensible reduction but not always the one you want — von
-/// Mises is the conventional scalar for a stress tensor — so derived quantities
-/// should eventually be computed by the client and bound like anything else,
-/// which is now the natural way to do it.
-pub(crate) fn bound_colours(
-    array: &DataArray,
-    colour: &ColorBy,
-    count: usize,
-) -> Option<Vec<[f32; 4]>> {
-    Some(
-        normalised(array, colour, count)?
-            .into_iter()
-            .map(|t| sample(colour.map, t))
-            .collect(),
-    )
-}
-
-/// Where each element falls along the colour map, as 0..1.
+/// This used to be the whole colour pipeline — a bound scalar, autoscaled over
+/// its own range, through a `ColorMap` carried by every actor. That put "which
+/// ramp" in the same place as "how to rasterise", and it meant an actor could be
+/// coloured exactly one way. See [`crate::filter::colormap`].
 ///
-/// The half of [`bound_colours`] that decides *how far along* rather than *what
-/// colour*. Still split out, because a pathway that cannot read vertex colours
-/// wants the position instead — to write into a texture coordinate and let a
-/// ramp texture supply the colour. Nothing needs that today, so it is private.
-///
-/// Autoscales over the drawn elements unless `ColorBy::range` pins it.
-fn normalised(array: &DataArray, colour: &ColorBy, count: usize) -> Option<Vec<f32>> {
-    let values = scalars(array);
-    if values.len() < count {
+/// `None` when the array is too short for the elements being drawn, which is the
+/// honest answer to a colour array that does not match its positions: better an
+/// untinted mesh than one whose colours are offset from its vertices.
+pub(crate) fn bound_colours(array: &DataArray, count: usize) -> Option<Vec<[f32; 4]>> {
+    if array.components() != 3 {
         return None;
     }
-
-    let (low, high) = colour.range.unwrap_or_else(|| {
-        let mut low = f32::INFINITY;
-        let mut high = f32::NEG_INFINITY;
-        for value in &values[..count] {
-            if value.is_finite() {
-                low = low.min(*value);
-                high = high.max(*value);
-            }
-        }
-        (low, high)
-    });
-    let span = if (high - low).abs() < f32::EPSILON {
-        1.0
-    } else {
-        high - low
-    };
-
+    let values = array.to_f32();
+    if values.len() < count * 3 {
+        return None;
+    }
     Some(
-        values[..count]
-            .iter()
-            .map(|value| ((value - low) / span).clamp(0.0, 1.0))
+        values[..count * 3]
+            .chunks_exact(3)
+            .map(|rgb| [rgb[0], rgb[1], rgb[2], 1.0])
             .collect(),
     )
 }
 
-/// One number per element, reducing a multi-component array to magnitude.
-fn scalars(array: &DataArray) -> Vec<f32> {
-    let raw = array.to_f32();
-    let components = array.components().max(1) as usize;
-    if components == 1 {
-        return raw;
-    }
-    raw.chunks_exact(components)
-        .map(|element| element.iter().map(|v| v * v).sum::<f32>().sqrt())
-        .collect()
+/// A colour parameter, as **linear** RGB.
+///
+/// Declared in sRGB, because that is the space a person picking a colour means
+/// and the space a hex value is written in. Converted once, here, so nothing
+/// downstream has to remember which it is holding — the same boundary
+/// [`crate::filter::colormap::sample`] converts at.
+pub(crate) fn tint(params: &ParamMap, id: &str, fallback: Vec3) -> Vec3 {
+    let srgb = crate::scene::registry::vec3(params, id, fallback);
+    Color::srgb(srgb.x, srgb.y, srgb.z).to_linear().to_vec3()
 }
+
+/// What an unbound colour falls back to: a pale neutral that reads as "not
+/// coloured by anything" rather than as a choice.
+pub(crate) const UNTINTED: &[f64] = &[0.8, 0.8, 0.85];
+
+/// The flat colour every kind offers, declared once.
+///
+/// Shared because it means the same thing everywhere, and because a kind
+/// spelling its own range or default differently would be a bug rather than a
+/// choice. What it *does* still differs by kind — a lit mesh takes it as a base
+/// colour and a medium as a transmission — and each says so where it reads it.
+pub(crate) const TINT: ParamSpec = ParamSpec {
+    id: "tint",
+    label: "colour",
+    kind: ParamKind::Vector {
+        components: 3,
+        default: UNTINTED,
+        min: 0.0,
+        max: 1.0,
+        integral: false,
+    },
+};
 
 /// How many steps a ramp texture carries. Also the number of buckets a backend
 /// quantises into when it has to colour per instance rather than per vertex, so
@@ -578,7 +555,6 @@ mod tests {
             .spawn((
                 ActorKindId("points"),
                 ActorParams(params),
-                ColorBy::default(),
                 Subset::All,
                 Bindings(HashMap::from_iter([("positions", 0u64)])),
                 ChildOf(parent),
@@ -613,6 +589,44 @@ mod tests {
         assert!(!dirty(app, entity), "should not redraw without a change");
     }
 
+    /// Binds a colour array and rewrites it, which is what a `colormap` filter
+    /// finishing looks like from here: the binding does not move, the bytes
+    /// behind it do.
+    fn recolour(app: &mut App, actor: Entity) {
+        let existing = app
+            .world()
+            .resource::<DataStore>()
+            .get(1)
+            .map(|held| held.handle.id());
+        let id = match existing {
+            Some(id) => id,
+            None => {
+                let handle = app
+                    .world_mut()
+                    .resource_mut::<Assets<DataArray>>()
+                    .add(array());
+                let id = handle.id();
+                let meta = BufferMeta {
+                    name: "colour".into(),
+                    dtype: Dtype::Float32,
+                    shape: vec![1, 3],
+                };
+                app.world_mut()
+                    .resource_mut::<DataStore>()
+                    .insert(1, meta, handle);
+                app.world_mut()
+                    .get_mut::<Bindings>(actor)
+                    .unwrap()
+                    .0
+                    .insert("colour", 1u64);
+                app.update();
+                settle(app, actor);
+                id
+            }
+        };
+        app.world_mut().write_message(AssetEvent::Modified { id });
+    }
+
     #[test]
     fn marks_new_actors() {
         let (app, _, actor) = scene();
@@ -631,9 +645,9 @@ mod tests {
         let (mut app, _, actor) = scene();
         settle(&mut app, actor);
 
-        // Any change to the colouring; the ramp stands in for what used to be a
-        // change of field.
-        app.world_mut().get_mut::<ColorBy>(actor).unwrap().map = ColorMap::CoolWarm;
+        // Rewriting the array bound to the non-structural `colour` input, which
+        // is what a `colormap` filter finishing looks like from here.
+        recolour(&mut app, actor);
         app.update();
         assert_eq!(flags(&app, actor), Dirty::COLOUR);
     }
@@ -660,9 +674,7 @@ mod tests {
         let (mut app, _object, actor) = scene();
         settle(&mut app, actor);
 
-        // Any change to the colouring; the ramp stands in for what used to be a
-        // change of field.
-        app.world_mut().get_mut::<ColorBy>(actor).unwrap().map = ColorMap::CoolWarm;
+        recolour(&mut app, actor);
         app.world_mut()
             .get_mut::<Bindings>(actor)
             .unwrap()

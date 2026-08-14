@@ -52,6 +52,8 @@ pub struct MeshStyle {
     /// inconsistent winding, and a one-sided material renders those as holes.
     /// Turning it off is how you see through to the inside of a closed mesh.
     pub double_sided: bool,
+    /// Linear RGB, used where nothing is bound to `colour`.
+    pub tint: Vec3,
 }
 
 const PARAMS: &[ParamSpec] = &[
@@ -91,16 +93,20 @@ const PARAMS: &[ParamSpec] = &[
             structural: true,
         },
     },
+    // Linear RGB, one triple per vertex, already mapped. Unbound takes `tint`.
+    // Which ramp and what range produced them is the `colormap` filter's
+    // business, not this kind's.
     ParamSpec {
         id: "colour",
-        label: "colour by",
+        label: "colour",
         kind: ParamKind::Array {
-            dtypes: &[],
-            shape: &[0],
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
             required: false,
             structural: false,
         },
     },
+    crate::draw::TINT,
     ParamSpec {
         id: "double_sided",
         label: "double sided",
@@ -116,6 +122,7 @@ pub fn register(registry: &mut ActorRegistry) {
         apply: |entity, params| {
             entity.insert(MeshStyle {
                 double_sided: flag(params, "double_sided", true),
+                tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
             });
         },
     });
@@ -136,7 +143,7 @@ pub fn draw_meshes(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, colour, subset, bound, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, subset, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -186,9 +193,9 @@ pub fn draw_meshes(
             None => (all, all_indices),
         };
 
-        let tint = super::bound(bound, "colour", &store, &arrays)
+        let vertex_colours = super::bound(bound, "colour", &store, &arrays)
             .and_then(|values| {
-                crate::draw::bound_colours(values, colour, position_array.count() as usize)
+                crate::draw::bound_colours(values, position_array.count() as usize)
             })
             .map(|colours| match &kept {
                 Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
@@ -227,13 +234,13 @@ pub fn draw_meshes(
                 None => mesh.compute_normals(),
             }
 
-            if let Some(colours) = tint.clone() {
+            if let Some(colours) = vertex_colours.clone() {
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
             }
             ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
             debug!("draw: mesh rebuilt with {} vertices", positions.len());
         } else if dirty.colour
-            && let Some(colours) = tint.clone()
+            && let Some(colours) = vertex_colours.clone()
         {
             repaint(&mut meshes, mesh3d, colours);
         }
@@ -250,10 +257,9 @@ pub fn draw_meshes(
                 StandardMaterial {
                     // Vertex colours multiply the base, so it has to be white for
                     // them to come through unaltered.
-                    base_color: if tint.is_some() {
-                        Color::WHITE
-                    } else {
-                        colour.flat
+                    base_color: match vertex_colours.is_some() {
+                        true => Color::WHITE,
+                        false => Color::linear_rgb(style.tint.x, style.tint.y, style.tint.z),
                     },
                     perceptual_roughness: 0.55,
                     double_sided: style.double_sided,

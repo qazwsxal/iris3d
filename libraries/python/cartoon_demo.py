@@ -121,16 +121,20 @@ def main():
                 for input_id, name in ROLES.items()
                 if name in held
             }
-            # The N-to-C rainbow. `residue_index` is per atom; the actor reduces
-            # it to one value per residue by taking each residue's first atom.
-            params["colour"] = iris3d.Bind(held["residue_index"])
-
-            client.add_actor(
-                "cartoon",
-                parent=handle,
-                params=params,
-                coloring=iris3d.Coloring(map="viridis"),
+            # The N-to-C rainbow, through a filter rather than a setting on the
+            # actor. `colormap` turns the residue index into linear RGB and the
+            # cartoon binds the result, so what ramp and what range are the
+            # filter's business and the actor only ever sees colours.
+            #
+            # `residue_index` is per atom; the actor reduces it to one value per
+            # residue by taking each residue's first atom.
+            rainbow = client.add_filter(
+                "colormap",
+                params={"values": iris3d.Bind(held["residue_index"]), "map": "viridis"},
             )
+            params["colour"] = iris3d.Bind(rainbow["colour"])
+
+            client.add_actor("cartoon", parent=handle, params=params)
             # Glycans, as a second actor under the same object. A cartoon draws
             # nothing for a sugar — it has no backbone — so the two are
             # complementary rather than overlapping, and they share the same

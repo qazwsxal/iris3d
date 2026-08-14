@@ -18,7 +18,7 @@ use bevy::prelude::*;
 use crate::counter::UniqueID;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
 use crate::scene::{BufferMeta, DataStore, Parents, Placement};
-use crate::scene::{ColorBy, DataArray, SceneObject, Subset};
+use crate::scene::{DataArray, SceneObject, Subset};
 
 /// A flattened view of one object.
 pub struct Row {
@@ -49,7 +49,6 @@ pub struct ActorRow {
     /// `&'static` so nothing here has to be cloned or borrowed from the world.
     pub specs: &'static [ParamSpec],
     pub params: ParamMap,
-    pub colour: ColorBy,
     pub subset: Subset,
     /// How many objects draw it. More than one means editing it here changes
     /// every copy, which is worth saying where the controls are.
@@ -89,7 +88,6 @@ pub type ActorData<'w, 's> = Query<
         &'static UniqueID,
         &'static ActorKindId,
         &'static ActorParams,
-        &'static ColorBy,
         &'static Subset,
         &'static Parents,
     ),
@@ -148,7 +146,7 @@ impl Gathered {
 /// A kind with no registration cannot be drawn or configured, so there is
 /// nothing useful to show for it either.
 fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Option<ActorRow> {
-    let (entity, id, kind, params, colour, subset, parents) = actors.get(entity).ok()?;
+    let (entity, id, kind, params, subset, parents) = actors.get(entity).ok()?;
     let registered = registry.get(kind.0)?;
     Some(ActorRow {
         entity,
@@ -156,7 +154,6 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
         label: registered.label,
         specs: registered.params,
         params: params.0.clone(),
-        colour: colour.clone(),
         subset: subset.clone(),
         places: parents.0.len(),
     })

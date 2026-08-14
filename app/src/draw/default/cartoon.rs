@@ -32,15 +32,16 @@
 //!
 //! # Colour depends on the mode
 //!
-//! An **opaque** ribbon takes vertex colours from a bound `colour` array, per
-//! residue — colour by chain, by B-factor,
-//! by anything. It is an ordinary lit mesh, and nothing about the moment passes
+//! An **opaque** ribbon takes vertex colours from a bound `colour` array of
+//! linear RGB, one triple per residue or per atom. What produced them — a ramp
+//! over B-factor, a colour per chain — is the `colormap` filter's business, not
+//! this kind's. It is an ordinary lit mesh, and nothing about the moment passes
 //! changes that.
 //!
 //! An **absorbing** one does not. Absorbance is a property of a medium, so it is
 //! one value for the whole ribbon rather than something varying across a surface
-//! the interior does not have; colour then comes from [`ColorBy::flat`] alone,
-//! read as a transmission.
+//! the interior does not have; colour then comes from the `tint` parameter
+//! alone, read as a transmission.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -51,7 +52,7 @@ use crate::scene::link::Placement;
 use crate::scene::registry::{
     ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, flag, float, text,
 };
-use crate::scene::{ColorBy, DataArray, DataStore, Dtype, Subset};
+use crate::scene::{DataArray, DataStore, Dtype, Subset};
 
 use super::solid::{normal_reflectance, transmission};
 use super::{Actor, Depiction, Dirty, MomentShell, MomentVolume, mark};
@@ -145,14 +146,15 @@ const PARAMS: &[ParamSpec] = &[
     // a fixed list — the mode decides whether it is *used*, and the doc says so.
     ParamSpec {
         id: "colour",
-        label: "colour by (opaque only)",
+        label: "colour (opaque only)",
         kind: ParamKind::Array {
-            dtypes: &[],
-            shape: &[0],
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
             required: false,
             structural: false,
         },
     },
+    crate::draw::TINT,
     ParamSpec {
         id: "size_factor",
         label: "half thickness (Å)",
@@ -274,6 +276,7 @@ pub fn register(registry: &mut ActorRegistry) {
         params: PARAMS,
         apply: |entity, params| {
             entity.insert(CartoonStyle {
+                tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
                 geometry: Style {
                     size_factor: float(params, "size_factor", 0.2),
                     aspect_ratio: float(params, "aspect_ratio", 5.0),
@@ -306,6 +309,9 @@ pub struct CartoonStyle {
     /// is an option rather than a flag beside a number.
     pub ior: Option<f32>,
     pub roughness: f32,
+    /// Linear RGB. A lit ribbon takes it as a base colour where no colour array
+    /// is bound; an absorbing one reads it as a transmission.
+    pub tint: Vec3,
 }
 
 /// Geometry changes rebuild; absorbance does not.
@@ -365,19 +371,19 @@ pub fn draw_cartoons(
     dirty: Query<Drawable>,
     layouts: Query<&CartoonLayout>,
 ) {
-    for ((entity, style, colour, subset, bindings, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, subset, bindings, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
 
-        let flat = colour.flat.to_linear().to_f32_array();
+        let flat = style.tint.extend(1.0).to_array();
         // Repaint in place when only the colouring moved. Worth the same as it
         // is for any lit mesh: rebuilding would re-solve every spline
         // to change four bytes a vertex.
         if !dirty.geometry
             && style.opaque
             && let Ok(layout) = layouts.get(entity)
-            && let Some(colours) = cartoon::residue_colours(bindings, &store, &arrays, colour)
+            && let Some(colours) = cartoon::residue_colours(bindings, &store, &arrays, flat)
         {
             repaint(
                 &mut meshes,
@@ -387,7 +393,7 @@ pub fn draw_cartoons(
         }
 
         if dirty.geometry
-            && let Some((mesh, residue)) = build(bindings, subset, &store, &arrays, style, colour)
+            && let Some((mesh, residue)) = build(bindings, subset, &store, &arrays, style)
         {
             ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
             commands.entity(entity).insert(CartoonLayout { residue });
@@ -402,10 +408,9 @@ pub fn draw_cartoons(
             let material = StandardMaterial {
                 // White when the mesh carries vertex colours, which multiply
                 // into it; the flat colour otherwise.
-                base_color: if bindings.get("colour").is_some() {
-                    Color::WHITE
-                } else {
-                    colour.flat
+                base_color: match bindings.get("colour").is_some() {
+                    true => Color::WHITE,
+                    false => Color::linear_rgb(style.tint.x, style.tint.y, style.tint.z),
                 },
                 perceptual_roughness: 0.85,
                 // Both, and both are needed — `cull_mode` decides whether a back
@@ -432,7 +437,7 @@ pub fn draw_cartoons(
             depiction: Depiction::Interior {
                 sigma: style.sigma.max(0.0),
             },
-            tint: transmission(colour),
+            tint: transmission(style.tint),
         });
         match style.ior {
             Some(ior) => actor.insert(MomentShell {
@@ -495,7 +500,6 @@ fn build(
     store: &DataStore,
     arrays: &Assets<DataArray>,
     style: &CartoonStyle,
-    colour: &ColorBy,
 ) -> Option<(Mesh, Vec<u32>)> {
     let input = cartoon::read(bindings, subset, store, arrays)?;
     let ribbon = cartoon::build(&input.backbone(), &style.geometry);
@@ -514,8 +518,8 @@ fn build(
     // Only an opaque ribbon has anything to do with a colour array; see the
     // module docs.
     let colours = style.opaque.then(|| {
-        let flat = colour.flat.to_linear().to_f32_array();
-        match cartoon::residue_colours(bindings, store, arrays, colour) {
+        let flat = style.tint.extend(1.0).to_array();
+        match cartoon::residue_colours(bindings, store, arrays, flat) {
             Some(values) => cartoon::expand(&ribbon.residue, &values, flat),
             None => vec![flat; ribbon.positions.len()],
         }

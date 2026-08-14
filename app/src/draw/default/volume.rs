@@ -45,10 +45,11 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::scene::link::Placement;
 use crate::scene::registry::{
-    ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float, uvec3 as param_uvec3,
-    vec3 as param_vec3,
+    ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float, text,
+    uvec3 as param_uvec3, vec3 as param_vec3, vector,
 };
-use crate::scene::{ColorBy, DataArray, DataStore};
+use crate::filter::colormap::ColorMap;
+use crate::scene::{DataArray, DataStore};
 
 use super::{Actor, Dirty, bound, mark};
 
@@ -61,6 +62,18 @@ use super::{Actor, Dirty, bound, mark};
 /// which is exactly what grading [`Dirty`] exists to avoid.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct GridStyle {
+    /// Which ramp the `colour` channel is read through, and over what range.
+    ///
+    /// A transfer function rather than a colour array, and the reason `volume`
+    /// still maps its own values while every other kind takes RGB from the
+    /// `colormap` filter: this is evaluated per *sample along the ray*, millions
+    /// of times a frame, not once per element. Materialising an RGB triple per
+    /// voxel would cost 200 MB at 256³ to save a texture fetch.
+    pub map: ColorMap,
+    /// The medium's extinction colour as linear RGB, read as a transmission.
+    pub tint: Vec3,
+    /// Value range the map spans, or `None` to autoscale over the field.
+    pub range: Option<(f32, f32)>,
     /// Absorbance per world unit at a density of 1.
     pub sigma: f32,
     /// Emitted radiance per world unit at a density of 1.
@@ -112,9 +125,19 @@ pub struct GridField {
     /// however many separate arrays were bound.
     pub field: Handle<Image>,
     pub ramp: Handle<Image>,
-    /// The medium's extinction colour, as a *transmission*. Taken from
-    /// [`ColorBy::flat`] so it means the same thing here as it does for a mesh.
+    /// The medium's extinction colour, as a *transmission*. The `tint`
+    /// parameter, so it means the same thing here as it does for a solid.
     pub tint: Vec3,
+}
+
+/// The pinned range, or `None` when the ends are equal and it autoscales.
+///
+/// Equal ends carry no information — every value would land at the same point —
+/// so they are the natural spelling of "work it out from the field". Spelled the
+/// same way as the `colormap` filter's range, so the two agree.
+fn pinned(params: &crate::scene::registry::ParamMap) -> Option<(f32, f32)> {
+    let range = vector(params, "range", 2);
+    (range[0] < range[1]).then(|| (range[0] as f32, range[1] as f32))
 }
 
 const PARAMS: &[ParamSpec] = &[
@@ -161,6 +184,31 @@ const PARAMS: &[ParamSpec] = &[
             structural: true,
         },
     },
+    // The transfer function. `volume` maps its own values, unlike every other
+    // kind, because the ramp is read per sample along the ray rather than once
+    // per element — see `GridStyle::map`.
+    ParamSpec {
+        id: "map",
+        label: "colour map",
+        kind: ParamKind::Choice {
+            options: crate::filter::colormap::MAPS,
+            default: "viridis",
+        },
+    },
+    // Equal ends autoscale over the bound field, exactly as the `colormap`
+    // filter's range does. Spelled the same way so the two agree.
+    ParamSpec {
+        id: "range",
+        label: "range (equal ends autoscale)",
+        kind: ParamKind::Vector {
+            components: 2,
+            default: &[0.0, 0.0],
+            min: -1.0e30,
+            max: 1.0e30,
+            integral: false,
+        },
+    },
+    crate::draw::TINT,
     ParamSpec {
         id: "dims",
         label: "samples",
@@ -239,6 +287,9 @@ pub fn register(registry: &mut ActorRegistry) {
         apply: |entity, params| {
             entity.insert((
                 GridStyle {
+                    tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
+                    map: ColorMap::from_str(text(params, "map", "viridis")).unwrap_or_default(),
+                    range: pinned(params),
                     sigma: float(params, "opacity", 1.0),
                     emission: float(params, "emission", 1.0),
                     steps: float(params, "steps", 128.0),
@@ -281,14 +332,14 @@ pub fn draw_volumes(
     store: Res<DataStore>,
     actors: Query<(Actor<GridStyle>, &GridBox, Option<&GridField>)>,
 ) {
-    for ((entity, _style, colour, _subset, bindings, dirty), grid, existing) in &actors {
+    for ((entity, style, _subset, bindings, dirty), grid, existing) in &actors {
         // Colour-only changes repaint the ramp and leave the field alone; a
         // material change touches neither, because both live in the uniform.
         if !dirty.geometry && !dirty.colour {
             continue;
         }
 
-        let ramp = images.add(super::super::ramp_texture(colour.map));
+        let ramp = images.add(super::super::ramp_texture(style.map));
 
         // A repaint keeps the field it already uploaded. This is the difference
         // between dragging the colour map on a 128³ volume costing a 256-texel
@@ -297,7 +348,7 @@ pub fn draw_volumes(
         let field = match reusable {
             Some(existing) => existing.field.clone(),
             None => {
-                let Some(image) = field_texture(grid, bindings, &store, &arrays, colour) else {
+                let Some(image) = field_texture(grid, bindings, &store, &arrays, style) else {
                     continue;
                 };
                 images.add(image)
@@ -307,10 +358,9 @@ pub fn draw_volumes(
         commands.entity(entity).insert(GridField {
             field,
             ramp,
-            // Read as a transmission, exactly as a mesh's tint is: this is what
-            // the medium lets through, not what it looks like. Converted from
-            // sRGB because that is how a client quotes every other colour.
-            tint: colour.flat.to_linear().to_vec3(),
+            // Read as a transmission, exactly as a solid's tint is: this is what
+            // the medium lets through, not what it looks like.
+            tint: style.tint,
         });
     }
 }
@@ -336,7 +386,7 @@ fn field_texture(
     bindings: &Bindings,
     store: &DataStore,
     arrays: &Assets<DataArray>,
-    colour: &ColorBy,
+    style: &GridStyle,
 ) -> Option<Image> {
     let expected = grid.point_count();
     if expected == 0 {
@@ -372,12 +422,12 @@ fn field_texture(
     let glow_values = optional("emissive");
 
     let density_range = range_of(&density[..expected]);
-    // Only the colour ramp honours an explicit `ColorBy::range` — that control
-    // says where the *map* starts and ends, and applying it to emission would
-    // silently rescale brightness when someone pinned a colour scale.
+    // Only the colour ramp honours an explicit `range` — that control says where
+    // the *map* starts and ends, and applying it to emission would silently
+    // rescale brightness when someone pinned a colour scale.
     let colour_range = tint_values
         .as_ref()
-        .map(|values| colour.range.unwrap_or_else(|| range_of(&values[..expected])));
+        .map(|values| style.range.unwrap_or_else(|| range_of(&values[..expected])));
     let glow_range = glow_values
         .as_ref()
         .map(|values| range_of(&values[..expected]));

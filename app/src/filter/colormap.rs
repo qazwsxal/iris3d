@@ -29,20 +29,60 @@
 
 use bevy::prelude::*;
 
-use crate::scene::actor::ColorMap;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, text, vector};
 use crate::scene::DataArray;
 
 use super::{FilterKind, FilterRegistry, OutputSpec, Products, Request};
 
-/// The maps offered, in [`ColorMap::as_str`] spelling.
+/// Which ramp to read a value through.
+///
+/// Lived on every actor once, as half of a `ColorBy`. It belongs here now: this
+/// is the only thing that turns a number into a colour, and a `volume` sampling
+/// a ramp texture per step is the one other consumer — which is why [`sample`]
+/// and this are shared rather than duplicated.
+///
+/// `Hash` so a backend can key a cache by map. A pathway that cannot read vertex
+/// colours builds a palette of materials and a ramp texture per map instead, and
+/// must not rebuild them every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ColorMap {
+    /// Perceptually uniform; a safe default for scalar fields.
+    #[default]
+    Viridis,
+    /// Diverging, for signed quantities about zero.
+    CoolWarm,
+    Grayscale,
+    /// Standard element colouring for molecular data.
+    ///
+    /// Never selected today: molecules apply CPK colours directly and never
+    /// consult the map, so this variant is what that behaviour *should* be
+    /// named once element colouring routes through [`sample`] like every other
+    /// map.
+    #[allow(dead_code)]
+    ByElement,
+}
+
+impl ColorMap {
+    /// Inverse of the names in [`MAPS`], for a value arriving from a client.
+    pub fn from_str(name: &str) -> Option<Self> {
+        Some(match name {
+            "viridis" => ColorMap::Viridis,
+            "cool-warm" => ColorMap::CoolWarm,
+            "grayscale" => ColorMap::Grayscale,
+            "element" => ColorMap::ByElement,
+            _ => return None,
+        })
+    }
+}
+
+/// The maps offered, in [`ColorMap::from_str`] spelling.
 ///
 /// `element` is deliberately absent. Element colouring is per-atom and comes
 /// from the periodic table rather than from a ramp over a range, so it is a
 /// different filter rather than an option here — offering it would mean a `map`
 /// whose `values` input means something else entirely.
-const MAPS: &[&str] = &["viridis", "cool-warm", "grayscale"];
+pub(crate) const MAPS: &[&str] = &["viridis", "cool-warm", "grayscale"];
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
