@@ -53,7 +53,6 @@ use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings, ParamKind, Pa
 use crate::scene::{DataArray, DataStore, Subset};
 
 mod atoms;
-mod cartoon;
 mod default;
 mod elements;
 mod glycan;
@@ -339,10 +338,12 @@ fn invalidated(
         else {
             continue;
         };
-        match structural {
-            true => what.geometry = true,
-            false => what.colour = true,
-        }
+        let reason = match structural {
+            true => Dirty::GEOMETRY,
+            false => Dirty::COLOUR,
+        };
+        what.geometry |= reason.geometry;
+        what.colour |= reason.colour;
     }
     what
 }

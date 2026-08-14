@@ -40,7 +40,8 @@ from iris3d import density, molecules
 DEFAULT_PDB = "5a63"
 DEFAULT_EMD = "3061"
 
-#: The six arrays a cartoon binds, as input id -> the name `molecules` gives it.
+#: The six arrays the cartoon filter binds, as input id -> the name `molecules`
+#: gives it.
 ROLES = {
     "positions": "positions",
     "residue_index": "residue_index",
@@ -85,15 +86,17 @@ def main():
 
     with iris3d.Client(wait_timeout=iris3d.DEFAULT_CONNECT_TIMEOUT) as client:
         kinds = client.actor_kinds()
-        missing = {"cartoon", "volume"} - set(kinds)
+        filters = client.filter_kinds()
+        missing = {"mesh", "volume"} - set(kinds)
         if missing:
             raise SystemExit(
                 f"this build registers no {', '.join(sorted(missing))}; "
                 f"it has {sorted(kinds)}."
             )
-        opaque = any(
-            spec.id == "mode" for spec in kinds["cartoon"].params
-        )
+        if "cartoon" not in filters:
+            raise SystemExit(
+                f"this build registers no 'cartoon' filter; it has {sorted(filters)}"
+            )
 
         root = client.create_object(f"{pdb_id} in EMD-{emd_id}")
 
@@ -111,20 +114,32 @@ def main():
             if extra in structure:
                 wanted.setdefault(extra, structure[extra])
         held = client.upload_data(wanted)
-        params = {
-            input_id: iris3d.Bind(held[name])
-            for input_id, name in ROLES.items()
-            if name in held
-        }
-        if opaque:
-            params["mode"] = "opaque"
-        # The flat colour is an ordinary parameter now. An opaque ribbon takes it
-        # as its base colour; an absorbing one reads it as a transmission.
-        params["tint"] = (0.95, 0.75, 0.35)
-        client.add_actor(
+
+        # The ribbon is a filter — atoms in, triangles out — and `mesh` is what
+        # makes those triangles opaque. There is no `mode` to set any more: an
+        # absorbing ribbon is the same filter bound to `solid` instead, which is
+        # the whole reason generating and displaying were split apart.
+        #
+        # Opaque is what this demo needs. The ribbon writes depth, so the
+        # accumulation truncates every interval there and the map in front of it
+        # dims it while the map behind does not.
+        curve = client.add_filter(
             "cartoon",
+            params={
+                input_id: iris3d.Bind(held[name])
+                for input_id, name in ROLES.items()
+                if name in held
+            },
+        )
+        client.add_actor(
+            "mesh",
             parent=ribbon,
-            params=params,
+            params={
+                "positions": iris3d.Bind(curve["positions"]),
+                "indices": iris3d.Bind(curve["indices"]),
+                "normals": iris3d.Bind(curve["normals"]),
+                "tint": (0.95, 0.75, 0.35),
+            },
         )
 
         # The glycans, as SNFG symbols. 5A63 carries 20 sugars, and a cartoon
@@ -182,8 +197,7 @@ def main():
         )
 
         print(
-            f"loaded: {len(positions)} atoms as an "
-            f"{'opaque' if opaque else 'absorbing'} cartoon, "
+            f"loaded: {len(positions)} atoms as an opaque cartoon, "
             f"inside a {np.prod(grid.dims):,}-sample map"
         )
 

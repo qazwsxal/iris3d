@@ -543,42 +543,11 @@ message ArrayParam {
   bool required = 3;
 }
 
-// Color is sRGB, each channel 0..1.
-message Color {
-  float r = 1;
-  float g = 2;
-  float b = 3;
-}
-
-// ColorSpec said how an actor took its colour, when colouring was a setting
-// every actor carried.
-//
-// Nothing uses it now. Bind an RGB array to the kind's `colour` input — see
-// AddFilter and the `colormap` kind — and set the flat colour through the
-// `tint` parameter. Kept declared rather than deleted so an old client's
-// generated code still resolves the type.
-message ColorSpec {
-  // Field 1 was `field`, naming a field to map across the colour map. *What* is
-  // coloured is now the array bound to the representation's colour input, so
-  // this message carries only the presentation: which ramp, over what range, and
-  // what to paint when nothing is bound.
-  reserved 1;
-
-  // "viridis", "cool-warm", "grayscale", or "element". Empty means viridis.
-  string map = 2;
-
-  // Value range the colour map spans. Absent autoscales to the field's own
-  // range, recomputed whenever the data changes.
-  optional Range range = 3;
-
-  // Used when `field` is absent.
-  optional Color flat = 4;
-}
-
-message Range {
-  float low = 1;
-  float high = 2;
-}
+// Colouring is a filter, not a message here. `Color`, `ColorSpec` and `Range`
+// were how an actor took its colour when every actor carried one; they are gone
+// with it. Bind an RGB array to the kind's `colour` input — see AddFilter and
+// the `colormap` kind — and set the flat colour through the `tint` parameter.
+// The field numbers that used them stay reserved where they were.
 
 // Subset restricts an actor to part of what it binds.
 //

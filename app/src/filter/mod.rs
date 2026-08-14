@@ -6,13 +6,13 @@
 //!
 //! # What went wrong without it
 //!
-//! [`draw::cartoon`](crate::draw::cartoon) builds the triangles of a ribbon and
-//! is careful to hand back a `Ribbon` rather than a `Mesh`, so that any pathway
-//! could map it onto GPU data its own way. But its only caller was one actor's
-//! draw system. The ribbon lived for one frame, inside one actor, and nothing
-//! else could see it — so drawing the same ribbon as an absorbing medium meant
-//! giving `cartoon` a `mode` parameter that duplicated the difference between
-//! the `mesh` and `solid` actor kinds.
+//! [`cartoon`] built the triangles of a ribbon and was careful to hand back a
+//! `Ribbon` rather than a `Mesh`, so that any pathway could map it onto GPU data
+//! its own way. But its only caller was one actor's draw system. The ribbon
+//! lived for one frame, inside one actor, and nothing else could see it — so
+//! drawing the same ribbon as an absorbing medium meant giving that kind a
+//! `mode` parameter that duplicated the difference between the `mesh` and
+//! `solid` actor kinds.
 //!
 //! That is the combinatorial shape: every kind that *generates* geometry grows a
 //! mode for every way of *displaying* it, and two ways of displaying one ribbon
@@ -64,6 +64,7 @@ use crate::scene::data::{BufferMeta, Dtype};
 use crate::scene::registry::{Bindings, ParamMap, ParamSpec, data as bound_handle};
 use crate::scene::{DataArray, DataStore};
 
+pub(crate) mod cartoon;
 pub(crate) mod colormap;
 mod wire;
 
@@ -267,7 +268,11 @@ pub struct FilterPlugin;
 impl Plugin for FilterPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FilterRegistry>();
-        colormap::register(&mut app.world_mut().resource_mut::<FilterRegistry>());
+        {
+            let mut registry = app.world_mut().resource_mut::<FilterRegistry>();
+            cartoon::register(&mut registry);
+            colormap::register(&mut registry);
+        }
 
         app.configure_sets(
             Update,

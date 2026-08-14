@@ -80,19 +80,24 @@
 //!
 //! # What it draws
 //!
-//! Seven kinds, split by whether they transmit.
+//! Six kinds, split by whether they transmit.
 //!
 //! **Opaque, through the ordinary passes:** `mesh`, `points`,
-//! `ball-and-stick`, `glycan`, and `cartoon` in its default mode. These write
-//! depth and are the thing the absorbance is measured *in front of*.
+//! `ball-and-stick` and `glycan`. These write depth and are the thing the
+//! absorbance is measured *in front of*.
 //!
-//! **Transmitting, into the moment buffer:** `solid`, `volume`, and `cartoon`
-//! in `absorbing` mode.
+//! **Transmitting, into the moment buffer:** `solid` and `volume`.
 //!
 //! `mesh` and `solid` are the same triangles making different claims. A mesh is
 //! lit and opaque; a solid says those triangles *bound a medium*. Two kinds
 //! rather than one with a mode, because they go through different passes and
 //! their parameters are disjoint — see [`solid`].
+//!
+//! There was a seventh, `cartoon`, and its absence is the point of the split
+//! this backend now sits under. It generated a ribbon *and* drew it, so showing
+//! one as a medium rather than a lit mesh meant a `mode` that duplicated `mesh`
+//! against `solid` inside a third place. It is [`filter::cartoon`](crate::filter::cartoon)
+//! now, and its triangles bind to either of those — or to both at once.
 //!
 //! Neither is called `surface`, deliberately. In structural biology that word
 //! means a *molecular* surface — solvent-accessible or solvent-excluded — and
@@ -123,7 +128,6 @@ use bevy::shader::load_shader_library;
 use crate::scene::link::Placement;
 use crate::scene::registry::ActorRegistry;
 
-mod cartoon;
 mod extract;
 mod glycan;
 mod molecule;
@@ -415,7 +419,6 @@ impl Plugin for MomentBackendPlugin {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             mesh::register(&mut registry);
             solid::register(&mut registry);
-            cartoon::register(&mut registry);
             glycan::register(&mut registry);
             molecule::register(&mut registry);
             points::register(&mut registry);
@@ -428,7 +431,6 @@ impl Plugin for MomentBackendPlugin {
                 (
                     mesh::invalidate,
                     solid::invalidate,
-                    cartoon::invalidate,
                     glycan::invalidate,
                     molecule::invalidate,
                     points::invalidate,
@@ -438,7 +440,6 @@ impl Plugin for MomentBackendPlugin {
                 (
                     mesh::draw_meshes,
                     solid::draw_solids,
-                    cartoon::draw_cartoons,
                     glycan::draw_glycans,
                     molecule::draw_molecules,
                     points::draw_points,
@@ -448,7 +449,6 @@ impl Plugin for MomentBackendPlugin {
                 (
                     place_volumes,
                     mesh::place_meshes,
-                    cartoon::place_cartoons,
                     glycan::place_glycans,
                     molecule::place_molecules,
                     points::place_points,

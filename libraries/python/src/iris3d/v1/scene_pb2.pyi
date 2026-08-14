@@ -228,34 +228,6 @@ class ArrayParam(_message.Message):
     required: bool
     def __init__(self, dtypes: _Optional[_Iterable[_Union[Dtype, str]]] = ..., shape: _Optional[_Iterable[int]] = ..., required: _Optional[bool] = ...) -> None: ...
 
-class Color(_message.Message):
-    __slots__ = ("r", "g", "b")
-    R_FIELD_NUMBER: _ClassVar[int]
-    G_FIELD_NUMBER: _ClassVar[int]
-    B_FIELD_NUMBER: _ClassVar[int]
-    r: float
-    g: float
-    b: float
-    def __init__(self, r: _Optional[float] = ..., g: _Optional[float] = ..., b: _Optional[float] = ...) -> None: ...
-
-class ColorSpec(_message.Message):
-    __slots__ = ("map", "range", "flat")
-    MAP_FIELD_NUMBER: _ClassVar[int]
-    RANGE_FIELD_NUMBER: _ClassVar[int]
-    FLAT_FIELD_NUMBER: _ClassVar[int]
-    map: str
-    range: Range
-    flat: Color
-    def __init__(self, map: _Optional[str] = ..., range: _Optional[_Union[Range, _Mapping]] = ..., flat: _Optional[_Union[Color, _Mapping]] = ...) -> None: ...
-
-class Range(_message.Message):
-    __slots__ = ("low", "high")
-    LOW_FIELD_NUMBER: _ClassVar[int]
-    HIGH_FIELD_NUMBER: _ClassVar[int]
-    low: float
-    high: float
-    def __init__(self, low: _Optional[float] = ..., high: _Optional[float] = ...) -> None: ...
-
 class Subset(_message.Message):
     __slots__ = ("data", "dtype", "encoding", "association")
     class Encoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):

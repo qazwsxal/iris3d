@@ -1,18 +1,23 @@
 //! Cartoon ribbons: the curve through a biopolymer backbone, swept into a solid.
 //!
-//! This is the geometry every backend agrees on, and it sits beside
-//! [`elements`](super::elements) for the same reason: where a ribbon *goes* is a
-//! fact about the backbone, as an element's radius is a fact about the periodic
-//! table. Two pathways disagree about how to get a triangle on screen and agree
-//! completely about which triangles there are.
+//! Atoms in, triangles out. Where a ribbon *goes* is a fact about the backbone,
+//! as an element's radius is a fact about the periodic table, so this decides
+//! nothing about how the triangles reach the screen.
 //!
-//! The sweep is here too, which is a deliberate exception to the note in
-//! [`elements`](super::elements) that tessellation belongs to a backend. That
-//! note is right when two pathways genuinely differ over which triangles to
-//! make; a ribbon is the same ribbon whoever draws it. What a backend still owns
-//! is the mapping onto GPU data, which is what [`Ribbon`] hands over rather than
-//! a `Mesh` — an opaque ribbon wants vertex colours, an absorbing one wants
-//! normals only when a shell is on.
+//! # This was an actor kind, and that was the mistake
+//!
+//! The curve and the sweep always lived apart from the drawing — the code below
+//! is nearly unchanged — but its only caller was one actor's draw system. The
+//! ribbon existed for one frame, inside one actor, and nothing else could see
+//! it. So showing a ribbon as an *absorbing medium* rather than a lit mesh meant
+//! giving that kind a `mode` parameter, which duplicated the whole difference
+//! between the [`mesh`](crate::draw) and `solid` actor kinds inside a third
+//! place that had no business knowing about either.
+//!
+//! As a filter there is no `mode`. The triangles are arrays; bind them to `mesh`
+//! and the ribbon is lit, bind them to `solid` and it is a medium you see
+//! through, bind them to both and it is both — built once. Adding a third way of
+//! displaying triangles will not touch this file.
 //!
 //! # The construction
 //!
@@ -54,8 +59,267 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use crate::scene::registry::Bindings;
-use crate::scene::{DataArray, DataStore, Subset};
+use crate::scene::DataArray;
+use crate::scene::data::Dtype;
+use crate::scene::registry::{ParamKind, ParamSpec, flag, float};
+
+use super::{FilterKind, FilterRegistry, OutputSpec, Products, Request};
+
+const PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        id: "positions",
+        label: "atom centres",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Float32],
+            shape: &[0, 3],
+            required: true,
+            structural: true,
+        },
+    },
+    ParamSpec {
+        id: "residue_index",
+        label: "residue per atom",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint16, Dtype::Uint32, Dtype::Uint64],
+            shape: &[0],
+            required: true,
+            structural: true,
+        },
+    },
+    // The two halves of a dictionary-encoded name column, which is how text
+    // travels: once per distinct value, never once per atom.
+    ParamSpec {
+        id: "atom_name_index",
+        label: "atom name per atom",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint16, Dtype::Uint32],
+            shape: &[0],
+            required: true,
+            structural: true,
+        },
+    },
+    ParamSpec {
+        id: "atom_name",
+        label: "distinct atom names",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Str],
+            shape: &[0],
+            required: true,
+            structural: true,
+        },
+    },
+    ParamSpec {
+        id: "residue_sse",
+        label: "secondary structure per residue",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint8],
+            shape: &[0],
+            required: false,
+            structural: true,
+        },
+    },
+    ParamSpec {
+        id: "residue_chain_index",
+        label: "chain per residue",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint16, Dtype::Uint32, Dtype::Uint64],
+            shape: &[0],
+            required: false,
+            structural: true,
+        },
+    },
+    // Which atoms to build from, by index. Unbound uses all of them.
+    //
+    // This is what an actor's `Subset` used to do for the cartoon, and it has to
+    // be here rather than on the consumer: narrowing the *vertices* of a
+    // finished ribbon would cut triangles apart, and "draw chain A" means
+    // rebuilding the curve from fewer atoms rather than hiding some of it.
+    ParamSpec {
+        id: "atoms",
+        label: "atoms to build from",
+        kind: ParamKind::Array {
+            dtypes: &[Dtype::Uint32],
+            shape: &[0],
+            required: false,
+            structural: true,
+        },
+    },
+    ParamSpec {
+        id: "size_factor",
+        label: "half thickness (Å)",
+        kind: ParamKind::Float {
+            default: 0.2,
+            min: 0.02,
+            max: 1.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "aspect_ratio",
+        label: "width / thickness",
+        kind: ParamKind::Float {
+            default: 5.0,
+            min: 1.0,
+            max: 15.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "nucleic_aspect_ratio",
+        label: "nucleic width / thickness",
+        kind: ParamKind::Float {
+            default: 8.0,
+            min: 1.0,
+            max: 20.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "arrow_factor",
+        label: "arrowhead width",
+        kind: ParamKind::Float {
+            default: 1.5,
+            min: 1.0,
+            max: 3.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "linear_segments",
+        label: "samples per residue",
+        kind: ParamKind::Float {
+            default: 8.0,
+            min: 2.0,
+            max: 24.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "radial_segments",
+        label: "sides of a round profile",
+        kind: ParamKind::Float {
+            default: 16.0,
+            min: 3.0,
+            max: 32.0,
+            logarithmic: false,
+        },
+    },
+    ParamSpec {
+        id: "tubular_helices",
+        label: "helices as tubes",
+        kind: ParamKind::Bool { default: false },
+    },
+    ParamSpec {
+        id: "base_rings",
+        label: "nucleic base rings",
+        kind: ParamKind::Bool { default: true },
+    },
+];
+
+const OUTPUTS: &[OutputSpec] = &[
+    OutputSpec {
+        id: "positions",
+        label: "positions",
+        dtype: Dtype::Float32,
+        shape: &[0, 3],
+    },
+    OutputSpec {
+        id: "indices",
+        label: "triangles",
+        dtype: Dtype::Uint32,
+        shape: &[0, 3],
+    },
+    OutputSpec {
+        id: "normals",
+        label: "normals",
+        dtype: Dtype::Float32,
+        shape: &[0, 3],
+    },
+    // Per *vertex*, not per residue. This is what makes the ribbon colourable
+    // without a cartoon-specific colour path: send it through `colormap` for the
+    // N-to-C rainbow, or through a gather for anything else keyed on residue.
+    //
+    // The old actor kind carried the same mapping as a private `CartoonLayout`
+    // component and expanded per-residue colours onto vertices itself. Emitting
+    // it is what lets that code go.
+    OutputSpec {
+        id: "residue_index",
+        label: "residue per vertex",
+        dtype: Dtype::Uint32,
+        shape: &[0],
+    },
+];
+
+pub fn register(registry: &mut FilterRegistry) {
+    registry.register(FilterKind {
+        id: "cartoon",
+        label: "cartoon ribbon",
+        params: PARAMS,
+        outputs: OUTPUTS,
+        run,
+    });
+}
+
+fn run(request: &Request) -> Products {
+    let mut products = Products::new();
+    let Some(input) = read(request) else {
+        return products;
+    };
+
+    let style = Style {
+        size_factor: float(&request.params, "size_factor", 0.2),
+        aspect_ratio: float(&request.params, "aspect_ratio", 5.0),
+        nucleic_aspect_ratio: float(&request.params, "nucleic_aspect_ratio", 8.0),
+        arrow_factor: float(&request.params, "arrow_factor", 1.5),
+        linear_segments: float(&request.params, "linear_segments", 8.0).round() as usize,
+        radial_segments: float(&request.params, "radial_segments", 16.0).round() as usize,
+        tubular_helices: flag(&request.params, "tubular_helices", false),
+        base_rings: flag(&request.params, "base_rings", true),
+    };
+
+    let ribbon = build(&input.backbone(), &style);
+    if ribbon.is_empty() {
+        // No backbone to follow. Producing nothing leaves whatever was there
+        // before, which is right: an input that says nothing teaches nothing.
+        debug!("filter: a cartoon had no backbone to follow");
+        return products;
+    }
+
+    let vertices = ribbon.positions.len() as u64;
+    products.insert(
+        "positions",
+        DataArray::numeric(Dtype::Float32, vec![vertices, 3], floats(&ribbon.positions)),
+    );
+    products.insert(
+        "normals",
+        DataArray::numeric(Dtype::Float32, vec![vertices, 3], floats(&ribbon.normals)),
+    );
+    products.insert(
+        "indices",
+        DataArray::numeric(
+            Dtype::Uint32,
+            vec![ribbon.indices.len() as u64 / 3, 3],
+            ribbon.indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
+        ),
+    );
+    products.insert(
+        "residue_index",
+        DataArray::numeric(
+            Dtype::Uint32,
+            vec![vertices],
+            ribbon.residue.iter().flat_map(|r| r.to_le_bytes()).collect(),
+        ),
+    );
+    products
+}
+
+/// Triples of `f32` as little-endian bytes, which is what the wire format is.
+fn floats(values: &[[f32; 3]]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|triple| triple.iter().flat_map(|v| v.to_le_bytes()))
+        .collect()
+}
 
 /// How wide, how thick and how finely a cartoon is drawn.
 ///
@@ -430,27 +694,22 @@ impl Input {
     }
 }
 
-/// Reads what an actor bound, narrowed to its subset.
+/// Reads the bound arrays, narrowed to the selected atoms.
 ///
-/// A subset cuts atoms, and an atom it removes is simply not there to be a trace
+/// `atoms` cuts atoms, and an atom it removes is simply not there to be a trace
 /// atom — so a deselected residue breaks the curve exactly as an unresolved one
 /// does. That is the honest result: splining across the hole would draw a ribbon
-/// through a region the client asked to hide.
+/// through a region the caller asked to hide.
 ///
 /// The per-residue arrays are deliberately **not** narrowed. They are keyed on
-/// the residue index, which a subset does not renumber, so cutting them would
+/// the residue index, which a selection does not renumber, so cutting them would
 /// misalign every residue after the first gap.
-pub fn read(
-    bindings: &Bindings,
-    subset: &Subset,
-    store: &DataStore,
-    arrays: &Assets<DataArray>,
-) -> Option<Input> {
-    let positions = super::bound(bindings, "positions", store, arrays)?;
-    let names = super::bound(bindings, "atom_name", store, arrays)?;
+fn read(request: &Request) -> Option<Input> {
+    let positions = request.input("positions")?;
+    let names = request.input("atom_name")?;
     let all_positions = positions.to_vec3();
-    let all_residues = super::bound(bindings, "residue_index", store, arrays)?.to_u32()?;
-    let all_names = super::bound(bindings, "atom_name_index", store, arrays)?.to_u32()?;
+    let all_residues = request.input("residue_index")?.to_u32()?;
+    let all_names = request.input("atom_name_index")?.to_u32()?;
     if all_positions.is_empty()
         || all_residues.len() < all_positions.len()
         || all_names.len() < all_positions.len()
@@ -458,7 +717,7 @@ pub fn read(
         return None;
     }
 
-    let kept = subset.selected(all_positions.len(), arrays);
+    let kept = request.input("atoms").and_then(|array| array.to_u32());
     let narrow = |values: &[u32]| -> Vec<u32> {
         match &kept {
             Some(kept) => kept
@@ -481,103 +740,15 @@ pub fn read(
         name_of_atom: narrow(&all_names),
         names: names.strings.clone(),
         // A `uint8` array's bytes are its values, so the codes need no decode.
-        sse: super::bound(bindings, "residue_sse", store, arrays)
+        sse: request
+            .input("residue_sse")
             .map(|array| array.data.clone())
             .unwrap_or_default(),
-        chain_of_residue: super::bound(bindings, "residue_chain_index", store, arrays)
+        chain_of_residue: request
+            .input("residue_chain_index")
             .and_then(|array| array.to_u32())
             .unwrap_or_default(),
     })
-}
-
-/// One colour per residue from an actor's bound colour array, or `None` if
-/// nothing is bound.
-///
-/// Here rather than in a backend for the same reason [`read`] is: what a colour
-/// array *means* to a cartoon is a fact about cartoons. A ribbon has no atoms on
-/// it, so colouring is per residue whichever pipeline draws it, and both
-/// pathways would otherwise reach that conclusion separately.
-///
-/// The array may be per atom or per residue and both are accepted. An
-/// atom-length one is reduced by taking each residue's first atom, because a
-/// ribbon shows no atom in particular and averaging twenty side-chain values
-/// would be a different quantity from the one the client asked to see.
-pub fn residue_colours(
-    bindings: &Bindings,
-    store: &DataStore,
-    arrays: &Assets<DataArray>,
-    flat: [f32; 4],
-) -> Option<Vec<[f32; 4]>> {
-    let values = super::bound(bindings, "colour", store, arrays)?;
-    let residue_of_atom = super::bound(bindings, "residue_index", store, arrays)?.to_u32()?;
-    let residues = residue_of_atom
-        .iter()
-        .max()
-        .map_or(0, |last| *last as usize + 1);
-    if residues == 0 {
-        return None;
-    }
-
-    let count = values.count() as usize;
-    if count >= residues && count < residue_of_atom.len() {
-        // Already per residue.
-        return super::bound_colours(values, residues);
-    }
-
-    // Per atom. One colour per residue is what the ribbon needs, so take the
-    // first atom that reaches each.
-    let per_atom = super::bound_colours(values, count.min(residue_of_atom.len()))?;
-    let mut per_residue = vec![None; residues];
-    for (atom, residue) in residue_of_atom.iter().enumerate() {
-        let slot = &mut per_residue[*residue as usize];
-        if slot.is_none() {
-            *slot = per_atom.get(atom).copied();
-        }
-    }
-    Some(
-        per_residue
-            .into_iter()
-            .map(|found| found.unwrap_or(flat))
-            .collect(),
-    )
-}
-
-/// Expands per-residue colours onto the ribbon's vertices.
-///
-/// `residue_of_vertex` is [`Ribbon::residue`], kept by a backend from the build
-/// so a colour change repaints instead of re-solving every spline.
-///
-/// A residue the colour array did not reach takes `flat` rather than black, so a
-/// structure whose field covers only part of it still reads.
-pub fn expand(
-    residue_of_vertex: &[u32],
-    residue_colours: &[[f32; 4]],
-    flat: [f32; 4],
-) -> Vec<[f32; 4]> {
-    let mut missed = 0usize;
-    let colours: Vec<[f32; 4]> = residue_of_vertex
-        .iter()
-        .map(|residue| match residue_colours.get(*residue as usize) {
-            Some(colour) => *colour,
-            None => {
-                missed += 1;
-                flat
-            }
-        })
-        .collect();
-    if missed > 0 {
-        // Loud, because the failure is quiet otherwise: those vertices take the
-        // flat colour and read as a washed-out band across an otherwise
-        // correctly coloured ribbon, which looks like a lighting artefact rather
-        // than like missing data.
-        warn!(
-            "draw: {missed} of {} cartoon vertices had no colour — residues run to {} but only {} were coloured",
-            colours.len(),
-            residue_of_vertex.iter().max().copied().unwrap_or(0),
-            residue_colours.len(),
-        );
-    }
-    colours
 }
 
 /// Builds the cartoon for one structure.
@@ -928,7 +1099,7 @@ fn smooth_strands(segment: &mut Segment) {
 
 /// One point along the curve, with the frame and the size the sweep needs.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Sample {
+pub(crate) struct Sample {
     position: Vec3,
     tangent: Vec3,
     /// Across the ribbon: the wide axis.
@@ -949,7 +1120,7 @@ impl Sample {
     /// a run at a change of secondary structure, which such a sweep never does,
     /// so it takes a fixed value that nothing looks at.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn frame(
+    pub(crate) fn frame(
         position: Vec3,
         tangent: Vec3,
         across: Vec3,
@@ -1267,14 +1438,14 @@ pub(super) struct Rim {
 /// carries the duplicates; `outline` is what a cap is fanned over and does not.
 /// Both are wound the same way — counter-clockwise in the across-up plane, which
 /// with the sweep advancing along the tangent puts the front faces outward.
-pub(super) struct Profile {
+pub(crate) struct Profile {
     rim: Vec<Rim>,
     outline: Vec<Vec2>,
 }
 
 impl Profile {
     /// An ellipse, for a coil or a helix.
-    pub(super) fn rounded(sides: usize) -> Self {
+    pub(crate) fn rounded(sides: usize) -> Self {
         let sides = sides.clamp(3, 64);
         let point = |index: usize| {
             let angle = std::f32::consts::TAU * index as f32 / sides as f32;
@@ -1296,7 +1467,7 @@ impl Profile {
     }
 
     /// A rectangle, for a strand or a nucleic ribbon.
-    pub(super) fn rectangular() -> Self {
+    pub(crate) fn rectangular() -> Self {
         Self::polygon(vec![
             Vec2::new(1.0, -1.0),
             Vec2::new(1.0, 1.0),
@@ -1401,7 +1572,7 @@ fn sweep_arrow(run: &[Sample], profile: &Profile, ribbon: &mut Ribbon) {
 }
 
 /// Sweeps one profile along one run, and caps both ends.
-pub(super) fn sweep_run(run: &[Sample], profile: &Profile, ribbon: &mut Ribbon) {
+pub(crate) fn sweep_run(run: &[Sample], profile: &Profile, ribbon: &mut Ribbon) {
     let sides = profile.rim.len();
     let base = ribbon.positions.len() as u32;
 

@@ -36,7 +36,7 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use super::cartoon::{self, Profile, Ribbon, Sample};
+use crate::filter::cartoon::{self, Profile, Ribbon, Sample};
 use crate::scene::registry::Bindings;
 use crate::scene::{DataArray, DataStore, Subset};
 

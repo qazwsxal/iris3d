@@ -35,7 +35,8 @@ from iris3d import molecules
 #:     uv run python cartoon_demo.py 1kx5
 DEFAULT_ENTRIES = ["1ubq", "1bna"]
 
-#: The six arrays a cartoon binds, as input id -> the name `molecules` gives it.
+#: The six arrays the cartoon filter binds, as input id -> the name `molecules`
+#: gives it.
 #:
 #: They match one for one here, which is not luck: `molecules.arrays_from_atoms`
 #: names them after biotite's annotation categories, and the actor's inputs were
@@ -74,14 +75,19 @@ def main():
     with iris3d.Client(wait_timeout=iris3d.DEFAULT_CONNECT_TIMEOUT) as client:
         print("connected")
 
-        # Ask rather than assume. Which kinds exist is decided by the server,
-        # and a hardcoded list here would eventually name something that
-        # silently does nothing.
+        # Ask rather than assume, on both sides: the ribbon is a filter kind and
+        # what draws it is an actor kind, and a hardcoded list of either would
+        # eventually name something that silently does nothing.
         available = client.actor_kinds()
-        if "cartoon" not in available:
+        filters = client.filter_kinds()
+        if "cartoon" not in filters:
             raise SystemExit(
-                f"this build registers no 'cartoon' kind; it has "
-                f"{sorted(available)}"
+                f"this build registers no 'cartoon' filter; it has "
+                f"{sorted(filters)}"
+            )
+        if "mesh" not in available:
+            raise SystemExit(
+                f"this build registers no 'mesh' kind; it has {sorted(available)}"
             )
 
         root = client.create_object("cartoons")
@@ -116,25 +122,41 @@ def main():
                     wanted.setdefault(extra, arrays[extra])
 
             held = client.upload_data(wanted)
-            params = {
-                input_id: iris3d.Bind(held[name])
-                for input_id, name in ROLES.items()
-                if name in held
-            }
-            # The N-to-C rainbow, through a filter rather than a setting on the
-            # actor. `colormap` turns the residue index into linear RGB and the
-            # cartoon binds the result, so what ramp and what range are the
-            # filter's business and the actor only ever sees colours.
-            #
-            # `residue_index` is per atom; the actor reduces it to one value per
-            # residue by taking each residue's first atom.
+
+            # The ribbon is a *filter*: atoms in, triangles out, drawing nothing.
+            # What draws it is a separate choice, which is the whole point —
+            # `mesh` for a lit ribbon, `solid` for one you see through, and the
+            # curve is solved once either way.
+            ribbon = client.add_filter(
+                "cartoon",
+                params={
+                    input_id: iris3d.Bind(held[name])
+                    for input_id, name in ROLES.items()
+                    if name in held
+                },
+            )
+
+            # The N-to-C rainbow. The cartoon emits a residue index per *vertex*,
+            # so colouring it is an ordinary colour map over an ordinary array —
+            # no cartoon-specific colour path anywhere.
             rainbow = client.add_filter(
                 "colormap",
-                params={"values": iris3d.Bind(held["residue_index"]), "map": "viridis"},
+                params={
+                    "values": iris3d.Bind(ribbon["residue_index"]),
+                    "map": "viridis",
+                },
             )
-            params["colour"] = iris3d.Bind(rainbow["colour"])
 
-            client.add_actor("cartoon", parent=handle, params=params)
+            client.add_actor(
+                "mesh",
+                parent=handle,
+                params={
+                    "positions": iris3d.Bind(ribbon["positions"]),
+                    "indices": iris3d.Bind(ribbon["indices"]),
+                    "normals": iris3d.Bind(ribbon["normals"]),
+                    "colour": iris3d.Bind(rainbow["colour"]),
+                },
+            )
             # Glycans, as a second actor under the same object. A cartoon draws
             # nothing for a sugar — it has no backbone — so the two are
             # complementary rather than overlapping, and they share the same

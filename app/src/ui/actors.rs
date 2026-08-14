@@ -6,7 +6,6 @@
 //! the rest behind a selection would make that impossible to see. The selected
 //! object's group is tinted instead.
 
-use bevy::prelude::Color;
 use bevy_egui::egui;
 
 use crate::scene::Subset;
