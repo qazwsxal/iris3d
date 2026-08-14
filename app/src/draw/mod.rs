@@ -443,10 +443,15 @@ pub(crate) const RAMP_STEPS: usize = 256;
 
 /// The colour map as a 1D image, for a pipeline that cannot read vertex colours.
 ///
-/// `Rgba8Unorm` rather than `Rgba8UnormSrgb`: [`sample`] already returns linear
-/// values, and the sRGB format would convert them a second time and wash the
-/// ramp out. Eight bits is enough because [`RAMP_STEPS`] is the resolution the
-/// map is quoted at anyway.
+/// `Rgba8Unorm` rather than `Rgba8UnormSrgb`, which was chosen on the belief
+/// that [`sample`] returns linear values. It does not — see the note there —
+/// so this format is half of why a ramp renders too bright. Left alone
+/// deliberately: switching only this would fix the texture path and leave the
+/// vertex-colour path wrong, so the two would then disagree with each other
+/// instead of agreeing and both being off.
+///
+/// Eight bits is enough because [`RAMP_STEPS`] is the resolution the map is
+/// quoted at anyway.
 ///
 /// The caller must clamp to edge in both axes. Repeating wraps the top of the
 /// map onto the bottom, which shows up as a hard seam at the extremes.
@@ -480,6 +485,11 @@ pub(crate) fn ramp_texture(map: ColorMap) -> Image {
 
 /// Nine evenly spaced stops, linearly interpolated. Enough to be perceptually
 /// honest without carrying a 256-entry table.
+///
+/// Quoted in **sRGB**, which is how viridis is published — and which [`sample`]
+/// then fails to convert. Interpolating between them linearly is a second, much
+/// smaller inaccuracy: a proper ramp blends in a linear or perceptual space, and
+/// nine stops is close enough that nobody has minded.
 const VIRIDIS: [[f32; 3]; 9] = [
     [0.267, 0.005, 0.329],
     [0.283, 0.141, 0.458],
@@ -492,12 +502,36 @@ const VIRIDIS: [[f32; 3]; 9] = [
     [0.993, 0.906, 0.144],
 ];
 
-/// Samples a colour map, returning **linear** RGBA.
+/// Samples a colour map, returning the stops **unconverted**.
 ///
-/// Colour-map stops are quoted in sRGB, as they are everywhere else, but vertex
-/// colours reach the shader unconverted — `pbr_fragment.wgsl` assigns them
-/// directly to `base_color`. Handing over sRGB values renders everything washed
-/// out, so convert here, once.
+/// # This is a known inconsistency, not a design
+///
+/// The stops below are quoted in sRGB, as colour values are everywhere else,
+/// and this hands them straight back. Every consumer then treats them as
+/// linear: a vertex colour reaches the shader untouched and `pbr_fragment.wgsl`
+/// assigns it directly to `base_color`, and [`ramp_texture`] writes them into a
+/// non-sRGB format that the hardware does not convert on read either.
+///
+/// So a ramp renders **brighter and less saturated** than the map it names. An
+/// sRGB 0.267 read as linear displays at about 0.55, and because the channels
+/// compress by different amounts the hue washes towards grey. Viridis's dark
+/// purple low end comes out mid-magenta, and its yellow top comes out near
+/// white.
+///
+/// [`elements::colour`] does the conversion its own doc describes, so CPK atoms
+/// are right and ramps are not. The two disagree, and this one is the wrong
+/// half.
+///
+/// # Why it is still here
+///
+/// Fixing it changes how **every** ramp-coloured actor looks — points,
+/// surfaces, cartoons, volumes — so it is a deliberate appearance change rather
+/// than a tidy-up, and wants to be made on purpose.
+///
+/// When it is made, convert here rather than at the consumers. The texture path
+/// could be fixed instead by asking for `Rgba8UnormSrgb` in [`ramp_texture`] and
+/// letting the sampler convert, but the vertex-colour path has no such hardware
+/// option, and only converting here covers both.
 pub(crate) fn sample(map: ColorMap, t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
     let rgb = match map {
