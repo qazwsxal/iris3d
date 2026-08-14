@@ -23,12 +23,18 @@
 //! are one mesh. A kind only one backend can provide says so, and
 //! [`ActorKind::shared`](crate::scene::registry::ActorKind::shared) is how.
 //!
-//! Three pathways today. [`default`] is a straightforward `Mesh3d`-per-actor
-//! baseline on Bevy's standard pipeline, and is deliberately the simple option
-//! — it gets every sample dataset on screen and gives a reference image to
-//! check the more ambitious ones against. [`solari`] raytraces the lighting.
-//! [`experimental`] accumulates moments, so a closed mesh is drawn as the
-//! absorbing solid it bounds and overlapping ones need no sorting.
+//! Two pathways. [`default`] accumulates moments: opaque geometry goes through
+//! Bevy's ordinary passes, and anything transmitting deposits absorbance into a
+//! shared buffer instead of blending, so a structure inside the density map it
+//! was built from composes correctly with nothing sorted. [`rt`] raytraces the
+//! lighting, and is on the back burner.
+//!
+//! There used to be a third — a plain `Mesh3d`-per-actor baseline on the
+//! standard pipeline, which held the name `default` while the moment pathway
+//! was still called `experimental`. It has been removed rather than kept as a
+//! fallback: it could not compose a mesh with a volume correctly, which is the
+//! thing this project is actually for, and maintaining two opaque paths to keep
+//! a reference image was paying for a picture nobody used.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -42,18 +48,20 @@ use crate::scene::actor::ColorMap;
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
 use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
+mod atoms;
+mod cartoon;
 mod default;
 mod elements;
-mod experimental;
+mod glycan;
 mod probe;
-mod solari;
+mod rt;
 
 /// How long the raytracing pathway keeps drawing to let its image settle.
 ///
 /// Re-exported because the UI offers it as a control, and a control belongs
 /// where the settings are rather than behind a module path. Present as a
 /// resource only when that backend is running.
-pub use solari::Accumulation;
+pub use rt::Accumulation;
 
 /// Which rendering pathway to run.
 ///
@@ -64,14 +72,13 @@ pub use solari::Accumulation;
 pub enum Backend {
     // Plain prose, no rustdoc link: clap prints these doc comments verbatim in
     // `--help`, where a `[`default`]` would render as literal brackets.
-    /// Bevy's standard pipeline, drawing one mesh and material per actor.
+    /// Moment-based order-independent transparency. Opaque geometry is lit
+    /// normally; anything transmitting deposits absorbance instead of blending,
+    /// so meshes and volumes compose correctly with nothing sorted.
     #[default]
     Default,
     /// Raytraced lighting on bevy_solari. No transparency and no volumes.
-    Solari,
-    /// Moment-based order-independent transparency: a closed mesh is drawn as
-    /// the absorbing solid it bounds, and overlapping ones need no sorting.
-    Experimental,
+    Rt,
 }
 
 impl Backend {
@@ -80,8 +87,7 @@ impl Backend {
     pub fn name(self) -> &'static str {
         match self {
             Backend::Default => "default",
-            Backend::Solari => "solari",
-            Backend::Experimental => "experimental",
+            Backend::Rt => "rt",
         }
     }
 
@@ -93,15 +99,14 @@ impl Backend {
     /// for it.
     pub fn requires(self) -> WgpuFeatures {
         match self {
-            Backend::Default => WgpuFeatures::empty(),
-            Backend::Solari => SolariPlugins::required_wgpu_features(),
+            Backend::Rt => SolariPlugins::required_wgpu_features(),
             // Additive blending into a 32-bit float target is what the whole
             // method rests on, and it is not in the WebGPU baseline. fp32 is
             // not negotiable here: a moment is a difference of two O(1) values,
             // so a thin shell cancels catastrophically in fp16 — see
             // `ref/mboit-bevy-reference.md` §8. Without the feature there is no
             // degraded version to fall back to, only a wrong one.
-            Backend::Experimental => WgpuFeatures::FLOAT32_BLENDABLE,
+            Backend::Default => WgpuFeatures::FLOAT32_BLENDABLE,
         }
     }
 }
@@ -180,7 +185,7 @@ pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
 ///
 /// A backend extends this with whatever *it* produced last time, which is what
 /// makes reuse rather than reallocation possible — and is precisely the part
-/// that depends on the pipeline. See [`default::Drawable`].
+/// that depends on the pipeline. Each kind declares its own; see the `Drawable` alias in any of them.
 pub(crate) type Actor<'a, Style> = (
     Entity,
     &'a Style,
@@ -264,9 +269,8 @@ impl Plugin for DrawPlugin {
         // Exactly one. Backends are pathways, not layers, so this is a choice
         // rather than a list.
         match self.backend {
-            Backend::Default => app.add_plugins(default::DefaultBackendPlugin),
-            Backend::Solari => app.add_plugins(solari::SolariBackendPlugin),
-            Backend::Experimental => app.add_plugins(experimental::ExperimentalBackendPlugin),
+            Backend::Default => app.add_plugins(default::MomentBackendPlugin),
+            Backend::Rt => app.add_plugins(rt::RtBackendPlugin),
         };
     }
 

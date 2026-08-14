@@ -180,10 +180,11 @@ pub struct DataArray {
     /// A second buffer rather than an enum over the two: `data` is read by
     /// every backend and reshaping it into a variant would touch all of them
     /// to express something no renderer asks about. Nothing draws a string.
-    // Held before anything displays it, which is the point: labelling data has
-    // to survive the trip before a residue label or a chain list can be built
-    // on it. The tests below read it; the interface does not yet.
-    #[allow(dead_code)]
+    ///
+    /// Read by the cartoon builder, which needs the distinct atom
+    /// names to tell a `CA` from an `O`. That is the shape this was built for:
+    /// the geometry is decided by a text column, and the text arrives once per
+    /// distinct value rather than once per atom.
     pub strings: Vec<String>,
 }
 

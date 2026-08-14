@@ -6,7 +6,7 @@
 //! what colour it should be, so this sits in the shared layer.
 //!
 //! Tessellation deliberately does **not** live here. The default backend merges
-//! spheres and cylinders into one mesh; the solari backend instances a single
+//! spheres and cylinders into one mesh; the `rt` backend instances a single
 //! sphere. They share no geometry code because they are not doing the same
 //! thing — which is the usual outcome, and the reason actors belong to a
 //! backend.

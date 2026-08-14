@@ -1,199 +1,287 @@
-// Ray-marched volume rendering.
+// Accumulation pass for sampled grids: one fragment marches the whole ray and
+// deposits the finished moments.
 //
-// Follows what `bevy_pbr`'s volumetric fog does, having got there the hard way.
-// Two things matter and both were wrong before:
+// # Why this is not the signed-prefix path
 //
-// The transform into the volume comes from the CPU as `uvw_from_world`. An
-// earlier version inverted the model matrix here in the fragment shader, which
-// meant depending on the mesh instance index surviving into the fragment stage
-// to look the matrix up at all. Bevy's own volume shader never does this.
+// `moment.wgsl` splits an interval across two fragments because a *mesh*
+// fragment knows one depth and cannot find its partner. Front faces add
+// `-F_k(w)`, back faces add `+F_k(w)`, and the additive blend performs the
+// pairing.
 //
-// Marching happens in texture space, where the volume is the unit cube. That
-// makes the ray-box test a slab test against 0..1 and makes the sample position
-// its own texture coordinate, so there is no second mapping to get wrong.
+// A grid has no such limitation. The box is closed, the field is a texture, and
+// one fragment can walk the entire interval — so it integrates directly and the
+// pairing never arises. That removes the closed-mesh requirement, and it removes
+// the catastrophic cancellation a per-cell signed prefix would suffer: nothing
+// here differences two antiderivatives extrapolated back to `w = 0`.
+//
+// The economy matters too. Rasterising every cell as a cube would be six faces
+// of 16.7M cells for a 256^3 grid, at a depth complexity of ~512 blended
+// fragments per pixel into two `Rgba32Float` targets. This is one fragment.
+//
+// # Why fullscreen rather than a box
+//
+// The obvious geometry is the grid's own bounding box, and it is a trap. With
+// `cull_mode: None` a ray produces two fragments — front face and back face —
+// and each would march the whole ray, so everything counts twice. Culling one
+// facing fixes that but breaks the moment the camera enters the box: front faces
+// are clipped away by the near plane, and back faces put the ray's origin behind
+// its start.
+//
+// A fullscreen triangle has none of those cases. Exactly one fragment per pixel,
+// inside the volume and out, and the slab test below rejects the pixels the box
+// does not cover. What it costs is a slab test on pixels that miss, which is a
+// handful of instructions against an entire class of geometry bugs.
+//
+// # What each step deposits
+//
+// The segment is treated as a thin slab of constant density — the density at
+// its midpoint — and integrated with the *same* antiderivative the mesh path
+// uses:
+//
+//   F_k(w) = sigma * span * w^(k+1) / (k+1)
+//
+// So a step contributes `sigma_mid * span * (w1^(k+1) - w0^(k+1)) / (k+1)`.
+// That is the midpoint rule, second order in the step size, and it costs one
+// texture tap plus the four powers already written for meshes.
+//
+// # Nearest neighbour versus linear is a sampler setting
+//
+// Because the density comes from one filtered tap, the reconstruction filter is
+// not in this shader at all. `ImageFilterMode::Nearest` makes the field
+// piecewise constant, which is exactly slab rendering per cell.
+// `ImageFilterMode::Linear` makes it trilinear. Neither changes a line here.
+//
+// Exact per-cell integration of the trilinear form is a further step: on a ray
+// a trilinear field is a *cubic*, so the segment integral has a closed form of
+// degree `4 + k`. It is worth taking only if the midpoint rule proves visibly
+// coarse, and it slots into the same loop.
 
-#import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_world}
-#import bevy_pbr::mesh_view_bindings::view
+#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import bevy_render::view::View
 
-struct VolumeUniform {
-    // World space into the unit cube the field is stored in.
-    uvw_from_world: mat4x4<f32>,
-    // x: steps. y: opacity. z: mode, 0 maximum, 1 mean, 2 blend. w: colour map.
-    options: vec4<f32>,
-};
-
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> volume: VolumeUniform;
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var field_texture: texture_3d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(2) var field_sampler: sampler;
-
-struct Vertex {
-    @builtin(instance_index) instance_index: u32,
-    @location(0) position: vec3<f32>,
-};
-
-struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) world_position: vec3<f32>,
-};
-
-@vertex
-fn vertex(vertex: Vertex) -> VertexOutput {
-    let world_position = mesh_position_local_to_world(
-        get_world_from_local(vertex.instance_index),
-        vec4<f32>(vertex.position, 1.0),
-    );
-
-    var out: VertexOutput;
-    out.clip_position = view.clip_from_world * world_position;
-    out.world_position = world_position.xyz;
-    return out;
+struct Grid {
+    // Maps the unit cube [0,1]^3 onto the grid's box in world space.
+    world_from_local: mat4x4<f32>,
+    // Its inverse, so the ray can be slab-tested in the space where the box is
+    // axis-aligned and the local position doubles as the texture coordinate.
+    local_from_world: mat4x4<f32>,
+    // Linear RGB, and a *transmission* rather than a colour — the same meaning
+    // `MomentVolume::tint` carries for a mesh. This is the medium's extinction
+    // colour and is flat across the volume.
+    //
+    // Deliberately not the colour ramp. The ramp is what the volume *emits*, and
+    // emission is `emit.wgsl`'s business; tinting the extinction with it as well
+    // would count the same colour twice.
+    tint: vec3<f32>,
+    // Absorbance per world unit at a density of 1. The `opacity` control.
+    sigma: f32,
+    // Samples along the ray. A quality control: the step length divides out, so
+    // the picture holds still as this moves.
+    steps: f32,
+    // How much light the volume gives off per unit of path length at a strength
+    // of 1. Unused here; `emit.wgsl` reads it from the same uniform so the two
+    // passes cannot disagree about the volume they are drawing.
+    emission: f32,
+    _pad: vec2<u32>,
 }
 
-// Where a ray enters and leaves the unit cube. `near` above `far` means it
-// misses.
-fn slab(origin: vec3<f32>, direction: vec3<f32>) -> vec2<f32> {
-    // A zero component gives an infinity, which is the answer we want: the ray
-    // runs parallel to that pair of planes and never crosses them.
-    let inverse_direction = 1.0 / direction;
-    let first = -origin * inverse_direction;
-    let second = (vec3<f32>(1.0) - origin) * inverse_direction;
-    let smaller = min(first, second);
-    let larger = max(first, second);
-    return vec2<f32>(
-        max(max(smaller.x, smaller.y), smaller.z),
-        min(min(larger.x, larger.y), larger.z),
-    );
+// Group 0 is the accumulation pass's own layout, shared with `moment.wgsl`.
+// Binding 1 there is the mesh instance buffer, which this shader has no use for
+// — a bind group entry a shader does not declare is legal and costs nothing, so
+// the layout is reused rather than duplicated.
+@group(0) @binding(0) var<uniform> view: View;
+#ifdef MULTISAMPLED
+@group(0) @binding(2) var opaque_depth: texture_depth_multisampled_2d;
+#else
+@group(0) @binding(2) var opaque_depth: texture_depth_2d;
+#endif
+@group(0) @binding(3) var<uniform> bounds: Bounds;
+
+struct Bounds {
+    near: f32,
+    far: f32,
 }
 
-const VIRIDIS = array<vec3<f32>, 9>(
-    vec3<f32>(0.267, 0.005, 0.329),
-    vec3<f32>(0.283, 0.141, 0.458),
-    vec3<f32>(0.254, 0.265, 0.530),
-    vec3<f32>(0.207, 0.372, 0.553),
-    vec3<f32>(0.164, 0.471, 0.558),
-    vec3<f32>(0.128, 0.567, 0.551),
-    vec3<f32>(0.135, 0.659, 0.518),
-    vec3<f32>(0.267, 0.749, 0.441),
-    vec3<f32>(0.993, 0.906, 0.144),
-);
+// The grid's own data. A separate group because a texture cannot live in the
+// shared instance buffer, so each grid is its own draw with its own binding.
+@group(1) @binding(0) var<uniform> grid: Grid;
+// What absorbs in `r`, what the ramp is read by in `g`, what emits in `b`.
+// Separate choices but not separate fetches. Only `r` is read here — this pass
+// deposits absorbance and nothing else; `g` and `b` are `emit.wgsl`'s.
+@group(1) @binding(1) var field: texture_3d<f32>;
+@group(1) @binding(2) var field_sampler: sampler;
 
-// Matches `draw::sample` on the CPU, including the conversion out of sRGB: the
-// stops are quoted in sRGB as they are everywhere else, and the target is a
-// linear render.
-fn srgb_to_linear(colour: vec3<f32>) -> vec3<f32> {
-    let cutoff = step(colour, vec3<f32>(0.04045));
-    let low = colour / 12.92;
-    let high = pow((colour + 0.055) / 1.055, vec3<f32>(2.4));
-    return mix(high, low, cutoff);
+struct MomentOutput {
+    @location(0) moments: vec4<f32>,
+    @location(1) totals: vec4<f32>,
 }
 
-fn colour_map(map: u32, t: f32) -> vec3<f32> {
-    let clamped = clamp(t, 0.0, 1.0);
-    var rgb: vec3<f32>;
-    if map == 0u {
-        let scaled = clamped * 8.0;
-        let index = min(u32(floor(scaled)), 7u);
-        rgb = mix(VIRIDIS[index], VIRIDIS[index + 1u], scaled - f32(index));
-    } else if map == 1u {
-        let cool = vec3<f32>(0.230, 0.299, 0.754);
-        let mid = vec3<f32>(0.865, 0.865, 0.865);
-        let warm = vec3<f32>(0.706, 0.016, 0.150);
-        if clamped < 0.5 {
-            rgb = mix(cool, mid, clamped * 2.0);
-        } else {
-            rgb = mix(mid, warm, clamped * 2.0 - 1.0);
-        }
+// The ray through a pixel, in world space, with `t = 0` at the camera.
+//
+// Both projections are handled in view space, where the difference between them
+// is one branch rather than two code paths: a perspective ray leaves the origin,
+// an orthographic one leaves the near plane travelling down -Z. `world_from_view`
+// is rigid, so `t` means the same distance in both spaces and the slab test
+// below can be trusted with it.
+struct Ray {
+    origin: vec3<f32>,
+    direction: vec3<f32>,
+    // View-space depth at `t = 0`, and how it grows per unit of `t`. Affine, so
+    // two numbers describe the whole ray and the moment domain never needs a
+    // matrix again.
+    z_at_origin: f32,
+    z_per_t: f32,
+}
+
+fn ray_through(uv: vec2<f32>) -> Ray {
+    let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    // Reverse-Z, so 1.0 is the near plane — the one depth that is finite under
+    // an infinite far plane.
+    var near = view.view_from_clip * vec4(ndc, 1.0, 1.0);
+    near = near / near.w;
+
+    // 1 for an orthographic projection, 0 for a perspective one.
+    let orthographic = view.clip_from_view[3][3] > 0.5;
+    var origin_view: vec3<f32>;
+    var direction_view: vec3<f32>;
+    if orthographic {
+        origin_view = vec3(near.xy, 0.0);
+        direction_view = vec3(0.0, 0.0, -1.0);
     } else {
-        rgb = vec3<f32>(clamped);
+        origin_view = vec3(0.0);
+        direction_view = normalize(near.xyz);
     }
-    return srgb_to_linear(rgb);
+
+    var ray: Ray;
+    ray.origin = (view.world_from_view * vec4(origin_view, 1.0)).xyz;
+    ray.direction = (view.world_from_view * vec4(direction_view, 0.0)).xyz;
+    // View-space depth is -z, and both are affine in t.
+    ray.z_at_origin = -origin_view.z;
+    ray.z_per_t = -direction_view.z;
+    return ray;
+}
+
+// Turns a sampled depth value back into a view-space distance. The same
+// arithmetic `moment.wgsl` uses, and unprojected rather than closed form for the
+// same reason: an orthographic camera has to work too.
+fn opaque_view_z(depth: f32, fragment_xy: vec2<f32>) -> f32 {
+    // Reverse-Z clears to zero, so zero means nothing was drawn here — the
+    // occluder is infinitely far away and clamps nothing.
+    if depth <= 0.0 {
+        return 3.4e38;
+    }
+    let uv = (fragment_xy - view.viewport.xy) / view.viewport.zw;
+    let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let unprojected = view.view_from_clip * vec4(ndc, depth, 1.0);
+    return -unprojected.z / unprojected.w;
+}
+
+// Where the ray enters and leaves the unit cube, as a range of `t`.
+//
+// The slab test runs in local space, where the box is axis-aligned, but `t` is
+// shared with world space: an affine transform carries the ray parameter
+// unchanged, so a distance found here is a distance there.
+fn box_span(origin: vec3<f32>, direction: vec3<f32>) -> vec2<f32> {
+    // A component of exactly zero would divide to an infinity of the wrong sign
+    // on one side of the slab. Nudging it keeps both bounds finite and the
+    // min/max below sorts them out.
+    let safe = select(direction, vec3(1e-20), abs(direction) < vec3(1e-20));
+    let first = (vec3(0.0) - origin) / safe;
+    let second = (vec3(1.0) - origin) / safe;
+    let low = min(first, second);
+    let high = max(first, second);
+    return vec2(max(max(low.x, low.y), low.z), min(min(high.x, high.y), high.z));
+}
+
+// The four moments of one step, with `F_k(w) = scale * w^(k+1) / (k+1)`.
+//
+// `emit.wgsl` repeats this arithmetic to subtract its own contribution from the
+// buffer, and that subtraction is only exact while the two agree to the last
+// bit. Change one and change the other.
+fn step_moments(scale: f32, w0: f32, w1: f32) -> vec4<f32> {
+    let a0 = w0 * w0;
+    let a1 = w1 * w1;
+    return scale * vec4(
+        (a1 - a0) / 2.0,
+        (a1 * w1 - a0 * w0) / 3.0,
+        (a1 * a1 - a0 * a0) / 4.0,
+        (a1 * a1 * w1 - a0 * a0 * w0) / 5.0,
+    );
 }
 
 @fragment
-fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let uvw_from_world = volume.uvw_from_world;
-    let origin = (uvw_from_world * vec4<f32>(view.world_position, 1.0)).xyz;
-    // Only the rotation and scale act on a direction, so the translation column
-    // is dropped rather than applied.
-    let towards = mat3x3<f32>(
-        uvw_from_world[0].xyz,
-        uvw_from_world[1].xyz,
-        uvw_from_world[2].xyz,
-    ) * (in.world_position - view.world_position);
-    let direction = normalize(towards);
+fn fragment(in: FullscreenVertexOutput) -> MomentOutput {
+    var out: MomentOutput;
+    out.moments = vec4(0.0);
+    out.totals = vec4(0.0);
 
-    let span = slab(origin, direction);
-    // Start at the camera when it sits inside the cube, not behind it.
-    let start = max(span.x, 0.0);
-    let stop = span.y;
-    if stop <= start {
-        discard;
+    let ray = ray_through(in.uv);
+    let local_origin = (grid.local_from_world * vec4(ray.origin, 1.0)).xyz;
+    // A direction transforms with w = 0, and is deliberately *not* renormalised:
+    // that would break the shared parameterisation the slab test relies on.
+    let local_direction = (grid.local_from_world * vec4(ray.direction, 0.0)).xyz;
+
+    let span_t = box_span(local_origin, local_direction);
+    // Behind the camera is clipped here rather than by geometry, which is what
+    // lets the camera sit inside the volume with no special case.
+    var start = max(span_t.x, 0.0);
+    var end = span_t.y;
+    if end <= start {
+        return out;
     }
 
-    let steps = max(i32(volume.options.x), 1);
-    let step_length = (stop - start) / f32(steps);
-    let opacity = volume.options.y;
-    let mode = u32(volume.options.z);
-    let map = u32(volume.options.w);
-
-    // Red is the density, which decides opacity. Green is what the colour map
-    // reads. They hold the same field unless the actor is coloured by
-    // a different one.
-    var peak = vec2<f32>(0.0);
-    var total = vec2<f32>(0.0);
-    var accumulated = vec3<f32>(0.0);
-    var alpha = 0.0;
-
-    // One loop per mode rather than one loop with a branch inside it. The
-    // branch is the same for every fragment, so hoisting it costs nothing, and
-    // it keeps the blend rule's early exit out of the other two paths.
-    if mode == 2u {
-        for (var i = 0; i < steps; i = i + 1) {
-            let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
-            let sample = textureSampleLevel(field_texture, field_sampler, texel, 0.0).rg;
-            // Front-to-back compositing. Scaling by the step length keeps the
-            // result the same when the step count changes, which it must: the
-            // step count is a quality control, not a brightness control.
-            let sample_alpha = clamp(sample.r * opacity * step_length, 0.0, 1.0);
-            accumulated = accumulated + (1.0 - alpha) * colour_map(map, sample.g) * sample_alpha;
-            alpha = alpha + (1.0 - alpha) * sample_alpha;
-            // Nothing behind an opaque pixel can change it.
-            if alpha > 0.995 {
-                break;
-            }
-        }
-        if alpha <= 0.0 {
-            discard;
-        }
-        return vec4<f32>(accumulated, alpha);
+    // Clamp to the occluder rather than depth-testing, for the same reason the
+    // mesh path does: what lies behind an opaque surface must contribute
+    // nothing, and truncating the interval is what makes the resolve's total
+    // exactly the absorbance in front of that surface.
+    //
+    // Sample 0 under MSAA. Reading `@builtin(sample_index)` would run this whole
+    // march once per sample to refine the one place they differ.
+    let coord = vec2<i32>(floor(in.position.xy));
+    let occluder_z = opaque_view_z(textureLoad(opaque_depth, coord, 0), in.position.xy);
+    if ray.z_per_t > 1e-6 {
+        end = min(end, (occluder_z - ray.z_at_origin) / ray.z_per_t);
+    }
+    if end <= start {
+        return out;
     }
 
-    if mode == 1u {
-        for (var i = 0; i < steps; i = i + 1) {
-            let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
-            total = total + textureSampleLevel(field_texture, field_sampler, texel, 0.0).rg;
+    let steps = max(i32(grid.steps), 1);
+    let step_t = (end - start) / f32(steps);
+    let domain = max(bounds.far - bounds.near, 1e-6);
+
+    var moments = vec4(0.0);
+    var scalar = 0.0;
+
+    for (var step = 0; step < steps; step = step + 1) {
+        let t0 = start + f32(step) * step_t;
+        let t1 = t0 + step_t;
+
+        // The midpoint, which is where the slab's constant density is read.
+        let mid = local_origin + (t0 + t1) * 0.5 * local_direction;
+        let density = textureSampleLevel(field, field_sampler, mid, 0.0).r;
+        // Empty space contributes to no moment, so skipping it is exact rather
+        // than an approximation. It is also the only empty-space skipping here.
+        if density <= 0.0 {
+            continue;
         }
-        peak = total / f32(steps);
-    } else {
-        for (var i = 0; i < steps; i = i + 1) {
-            // Sample at the middle of each step rather than its edge, so the
-            // first and last samples sit inside the volume.
-            let texel = origin + direction * (start + (f32(i) + 0.5) * step_length);
-            let sample = textureSampleLevel(field_texture, field_sampler, texel, 0.0).rg;
-            // The colour is taken from wherever the density peaked, not from
-            // its own maximum: the two must describe the same place, or a lobe
-            // reports the colour of somewhere it does not overlap. Written
-            // without a branch so nothing is conditional around a texture read.
-            let took = step(peak.r, sample.r);
-            peak = vec2<f32>(max(peak.r, sample.r), mix(peak.g, sample.g, took));
-        }
+
+        // Into the warped domain, which is linear — so the antiderivative is the
+        // one the mesh path uses, unchanged.
+        let w0 = clamp((ray.z_at_origin + t0 * ray.z_per_t - bounds.near) / domain, 0.0, 1.0);
+        let w1 = clamp((ray.z_at_origin + t1 * ray.z_per_t - bounds.near) / domain, 0.0, 1.0);
+
+        // The `domain` factor is the change of variable dz = span * dw. Dropping
+        // it would make the absorbance depend on how wide the depth bound
+        // happened to be this frame.
+        let scale = density * grid.sigma * domain;
+        moments = moments + step_moments(scale, w0, w1);
+        scalar = scalar + scale * (w1 - w0);
     }
 
-    // Opacity follows the density, so empty space stays out of the way and what
-    // is behind the volume still shows through.
-    let shown = clamp(peak.r * opacity, 0.0, 1.0);
-    if shown <= 0.0 {
-        discard;
-    }
-    return vec4<f32>(colour_map(map, peak.g), shown);
+    out.moments = moments;
+    // k = 0 of the same family: per channel for the colour, and once more
+    // untinted for b0, which is what the moments are normalised by.
+    out.totals = vec4(scalar * (1.0 - grid.tint), scalar);
+    return out;
 }

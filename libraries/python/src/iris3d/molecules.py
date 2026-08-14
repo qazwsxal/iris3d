@@ -31,6 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from biotite.structure import AtomArray
 
 __all__ = [
+    "SNFG_CODES",
     "BOND_TYPES",
     "SSE_CODES",
     "arrays_from_atoms",
@@ -198,6 +199,74 @@ SSE_CODES = {
     7: "bend",
 }
 
+#: Monosaccharide codes, one per residue, for SNFG rendering. 0 means the
+#: residue is not a sugar, which is what nearly every residue is.
+#:
+#: The wire carries **which sugar**, not what to draw for it — exactly as
+#: :data:`SSE_CODES` carries a secondary-structure state rather than "draw a
+#: ribbon here". SNFG is a rendering convention, so the shape and colour belong
+#: to the renderer; a client picking its own symbols would be disagreeing with
+#: the standard, which the format should not make easy.
+SNFG_CODES = {
+    0: "not a sugar",
+    1: "unknown",
+    2: "glucose",
+    3: "N-acetylglucosamine",
+    4: "mannose",
+    5: "galactose",
+    6: "N-acetylgalactosamine",
+    7: "fucose",
+    8: "N-acetylneuraminic acid",
+    9: "N-glycolylneuraminic acid",
+    10: "xylose",
+    11: "glucuronic acid",
+    12: "iduronic acid",
+    13: "rhamnose",
+    14: "N-acetylmannosamine",
+}
+
+#: Chemical Component Dictionary ids to :data:`SNFG_CODES`, covering what
+#: actually appears in deposited glycans.
+#:
+#: Anomers and ring forms map to the same sugar on purpose: alpha- and
+#: beta-D-mannose are `MAN` and `BMA`, and SNFG draws one green circle for both
+#: — the notation names the monosaccharide, not its configuration.
+#:
+#: Anything glycan-like but unlisted becomes 1, "unknown", which SNFG draws as a
+#: white circle. That is the standard's own answer for an unassigned
+#: monosaccharide rather than a placeholder invented here, so a rare sugar
+#: renders as an honest "some sugar" instead of vanishing.
+_CCD_TO_SNFG = {
+    "GLC": 2, "BGC": 2,
+    "NAG": 3, "NDG": 3,
+    "MAN": 4, "BMA": 4,
+    "GAL": 5, "GLA": 5, "GXL": 5,
+    "NGA": 6, "A2G": 6,
+    "FUC": 7, "FUL": 7, "FCA": 7, "FCB": 7,
+    "SIA": 8, "NAN": 8,
+    "NGC": 9, "NGE": 9,
+    "XYS": 10, "XYP": 10, "XYL": 10,
+    "BDP": 11, "GCU": 11,
+    "IDS": 12, "IDR": 12,
+    "RAM": 13, "RM4": 13,
+    "BM3": 14,
+}
+
+
+def _glycans(res_names: np.ndarray) -> np.ndarray | None:
+    """One SNFG code per residue, or ``None`` if the structure has no sugars.
+
+    ``None`` rather than an array of zeros: a structure with no glycan should
+    leave the array off the wire entirely, so a client binding it to a glycan
+    actor gets nothing drawn rather than an empty upload to reason about.
+    """
+    codes = np.array(
+        [_CCD_TO_SNFG.get(str(name).strip().upper(), 0) for name in res_names],
+        dtype=np.uint8,
+    )
+    return codes if codes.any() else None
+
+
 #: biotite's ``annotate_sse`` implements P-SEA, which returns three states.
 #: They map up into the wider space and lose nothing they had; the states P-SEA
 #: cannot tell apart simply never appear.
@@ -346,9 +415,16 @@ def _hierarchy(atoms: AtomArray) -> dict[str, np.ndarray]:
     # So `chain_index` indexes distinct identifiers. It is no longer monotonic
     # along the atoms, which is the honest consequence: a chain is a thing the
     # file names, not a stretch of the file.
-    chain_ids, chain_index = np.unique(
-        np.asarray(atoms.chain_id), return_inverse=True
-    )
+    # In a biological assembly the same `chain_id` appears once per symmetry
+    # copy — a 60-fold viral capsid has sixty chains all called A — so identity
+    # is the pair. biotite tags the copies with `sym_id`, and combining the two
+    # is the difference between 120 chains and 2.
+    names = np.asarray(atoms.chain_id).astype(str)
+    if "sym_id" in atoms.get_annotation_categories():
+        names = np.char.add(
+            np.char.add(names, "-"), np.asarray(atoms.sym_id).astype(str)
+        )
+    chain_ids, chain_index = np.unique(names, return_inverse=True)
     chain_index = chain_index.astype(np.uint32)
 
     arrays: dict[str, np.ndarray] = {
@@ -376,6 +452,10 @@ def _hierarchy(atoms: AtomArray) -> dict[str, np.ndarray]:
     sse = _secondary_structure(atoms, len(residue_starts))
     if sse is not None:
         arrays["residue_sse"] = sse
+
+    glycans = _glycans(np.asarray(atoms.res_name)[residue_starts])
+    if glycans is not None:
+        arrays["residue_snfg"] = glycans
 
     return arrays
 
@@ -466,16 +546,74 @@ def arrays_from_atoms(
 _EXTRA_FIELDS = ["b_factor", "occupancy", "charge"]
 
 
+def _assembly(path: str, assembly_id: str | int | None, model: int) -> Any:
+    """Builds a biological assembly by applying the file's symmetry operations.
+
+    The deposited coordinates are the **asymmetric unit** — the part that had to
+    be solved. What the molecule *is* is the assembly: an icosahedral capsid is
+    sixty copies of that unit, and the asymmetric unit alone is a shard of a
+    shell rather than a virus. Anything about the whole particle — its size, its
+    surface, how it sits in a map — can only be asked of the assembly.
+
+    Needs mmCIF or BinaryCIF: the operations live in `pdbx_struct_assembly_gen`,
+    which the legacy PDB format records differently and not always at all.
+
+    ``assembly_id`` of ``None`` takes the first one declared, which is the one
+    depositors put the biological unit in.
+    """
+    import biotite.structure.io.pdbx as pdbx
+
+    try:
+        source = pdbx.BinaryCIFFile.read(path) if path.endswith(".bcif") else (
+            pdbx.CIFFile.read(path)
+        )
+    except Exception as err:
+        raise ValueError(
+            f"cannot read {path!r} as mmCIF, which a biological assembly needs. "
+            "Fetch with file_format='cif'."
+        ) from err
+
+    available = pdbx.list_assemblies(source)
+    if assembly_id is not None and str(assembly_id) not in {
+        str(key) for key in available
+    }:
+        raise KeyError(
+            f"no assembly {assembly_id!r} in this entry; it declares "
+            f"{sorted(str(key) for key in available)}"
+        )
+    return pdbx.get_assembly(
+        source,
+        assembly_id=None if assembly_id is None else str(assembly_id),
+        model=model,
+    )
+
+
 def load_structure(
-    path: str, *, model: int = 1, connect: bool = True, hierarchy: bool = True
+    path: str,
+    *,
+    model: int = 1,
+    connect: bool = True,
+    hierarchy: bool = True,
+    assembly: str | int | None = None,
 ) -> dict[str, np.ndarray]:
     """Reads a structure file (PDB, mmCIF, BinaryCIF, MOL/SDF...) for upload.
 
     ``model`` selects one frame from a multi-model file such as an NMR
     ensemble; biotite numbers models from 1.
+
+    ``assembly`` builds a biological assembly instead of the asymmetric unit —
+    pass ``1`` for the first one declared. See :func:`_assembly` for why that is
+    usually what you want, and note it needs mmCIF. An assembly can be very much
+    larger than the deposited coordinates: 9RCH is 16k atoms as deposited and
+    958k as its capsid.
     """
     _biotite()
     import biotite.structure.io as strucio
+
+    if assembly is not None:
+        return arrays_from_atoms(
+            _assembly(path, assembly, model), connect=connect, hierarchy=hierarchy
+        )
 
     try:
         atoms = strucio.load_structure(path, model=model, extra_fields=_EXTRA_FIELDS)
@@ -494,6 +632,7 @@ def fetch(
     model: int = 1,
     connect: bool = True,
     hierarchy: bool = True,
+    assembly: str | int | None = None,
 ) -> dict[str, np.ndarray]:
     """Downloads a structure from RCSB and returns arrays ready to upload.
 
@@ -513,7 +652,11 @@ def fetch(
     directory = directory or tempfile.gettempdir()
     path = rcsb.fetch(pdb_id, file_format, directory)
     return load_structure(
-        str(path), model=model, connect=connect, hierarchy=hierarchy
+        str(path),
+        model=model,
+        connect=connect,
+        hierarchy=hierarchy,
+        assembly=assembly,
     )
 
 

@@ -45,9 +45,9 @@ mod molecule;
 mod points;
 mod surface;
 
-pub struct SolariBackendPlugin;
+pub struct RtBackendPlugin;
 
-impl Plugin for SolariBackendPlugin {
+impl Plugin for RtBackendPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(SolariPlugins);
 

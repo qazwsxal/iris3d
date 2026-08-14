@@ -19,7 +19,20 @@ use bevy::shader::ShaderRef;
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, float};
 use crate::scene::{DataArray, DataStore, Dtype};
 
-use super::{Dirty, Drawable, mark};
+use crate::scene::link::Placement;
+
+use super::{Actor, Dirty, mark};
+
+/// What this pathway needs to redraw a point cloud.
+///
+/// Points are opaque, so they go through Bevy's ordinary passes and carry a
+/// mesh and a material like any lit geometry — nothing here touches the moment
+/// buffer.
+type Drawable<'a> = (
+    Actor<'a, PointsStyle>,
+    Option<&'a Mesh3d>,
+    Option<&'a MeshMaterial3d<PointQuadMaterial>>,
+);
 
 /// Points drawn as camera-facing discs. `size` is a diameter in world units, so
 /// a sensible value depends on the data's own scale — there is no universally
@@ -142,7 +155,7 @@ pub fn draw_points(
     mut materials: ResMut<Assets<PointQuadMaterial>>,
     arrays: Res<Assets<DataArray>>,
     store: Res<DataStore>,
-    dirty: Query<Drawable<PointsStyle, PointQuadMaterial>>,
+    dirty: Query<Drawable>,
 ) {
     for ((entity, style, colour, subset, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
@@ -178,7 +191,7 @@ pub fn draw_points(
                 .get("colour")
                 .and_then(|id| store.get(id))
                 .and_then(|held| arrays.get(&held.handle))
-                .and_then(|values| super::bound_colours(values, colour, array.count() as usize))
+                .and_then(|values| crate::draw::bound_colours(values, colour, array.count() as usize))
                 // Colours are computed over the whole field, then narrowed to
                 // the drawn points, so a subset does not shift the mapping.
                 .map(|colours| match &kept {
@@ -217,10 +230,10 @@ pub fn draw_points(
                 mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
                 mesh.insert_indices(Indices::U32(indices));
-                super::ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
+                ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
                 debug!("draw: {count} point quads rebuilt");
             } else {
-                super::repaint(&mut meshes, mesh3d, colours);
+                repaint(&mut meshes, mesh3d, colours);
                 debug!("draw: {count} point quads repainted");
             }
         }
@@ -228,7 +241,7 @@ pub fn draw_points(
         // After the geometry branch, which may have created the material this
         // then writes through.
         if dirty.material || dirty.geometry {
-            super::ensure_material(
+            ensure_material(
                 &mut commands,
                 entity,
                 &mut materials,
@@ -237,6 +250,89 @@ pub fn draw_points(
                     params: Vec4::new(style.size, 0.0, 0.0, 0.0),
                 },
             );
+        }
+    }
+}
+
+/// Replaces a mesh in place when the actor already has one, so a rebuild does
+/// not leak a fresh  into  on every change.
+fn ensure_mesh(
+    commands: &mut Commands,
+    entity: Entity,
+    meshes: &mut Assets<Mesh>,
+    existing: Option<&Mesh3d>,
+    mesh: Mesh,
+) {
+    if let Some(Mesh3d(handle)) = existing
+        && let Some(mut slot) = meshes.get_mut(handle)
+    {
+        *slot = mesh;
+        return;
+    }
+    commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
+}
+
+/// As [`ensure_mesh`], for the material.
+fn ensure_material(
+    commands: &mut Commands,
+    entity: Entity,
+    materials: &mut Assets<PointQuadMaterial>,
+    existing: Option<&MeshMaterial3d<PointQuadMaterial>>,
+    material: PointQuadMaterial,
+) {
+    if let Some(MeshMaterial3d(handle)) = existing
+        && let Some(mut slot) = materials.get_mut(handle)
+    {
+        *slot = material;
+        return;
+    }
+    commands
+        .entity(entity)
+        .insert(MeshMaterial3d(materials.add(material)));
+}
+
+/// Overwrites vertex colours without touching anything else. Only legal when
+/// the vertex count is unchanged, which is exactly when the geometry is not
+/// also dirty.
+fn repaint(meshes: &mut Assets<Mesh>, existing: Option<&Mesh3d>, colours: Vec<[f32; 4]>) {
+    let Some(Mesh3d(handle)) = existing else {
+        return;
+    };
+    let Some(mut mesh) = meshes.get_mut(handle) else {
+        return;
+    };
+    if mesh.count_vertices() != colours.len() {
+        warn!(
+            "draw: {} vertex colours for a mesh of {} vertices; skipping the repaint",
+            colours.len(),
+            mesh.count_vertices()
+        );
+        return;
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+}
+
+/// Gives every placement the mesh and material the actor holds.
+#[allow(clippy::type_complexity)]
+pub fn place_points(
+    mut commands: Commands,
+    actors: Query<(&Mesh3d, &MeshMaterial3d<PointQuadMaterial>), With<PointsStyle>>,
+    placements: Query<(
+        Entity,
+        &Placement,
+        Option<&Mesh3d>,
+        Option<&MeshMaterial3d<PointQuadMaterial>>,
+    )>,
+) {
+    for (entity, placement, mesh3d, material3d) in &placements {
+        let Ok((mesh, material)) = actors.get(placement.0) else {
+            continue;
+        };
+        if mesh3d.map(|Mesh3d(handle)| handle.id()) != Some(mesh.0.id()) {
+            commands.entity(entity).insert(mesh.clone());
+        }
+        if material3d.map(|MeshMaterial3d(handle)| handle.id()) != Some(material.0.id()) {
+            commands.entity(entity).insert(material.clone());
         }
     }
 }
