@@ -83,6 +83,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     ParamSpec {
@@ -92,6 +93,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint16, Dtype::Uint32, Dtype::Uint64],
             shape: &[0],
             required: true,
+            structural: true,
         },
     },
     // The two halves of a dictionary-encoded name column, which is how text
@@ -103,6 +105,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint16, Dtype::Uint32],
             shape: &[0],
             required: true,
+            structural: true,
         },
     },
     ParamSpec {
@@ -112,6 +115,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Str],
             shape: &[0],
             required: true,
+            structural: true,
         },
     },
     ParamSpec {
@@ -121,6 +125,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint8],
             shape: &[0],
             required: false,
+            structural: true,
         },
     },
     ParamSpec {
@@ -130,6 +135,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint16, Dtype::Uint32, Dtype::Uint64],
             shape: &[0],
             required: false,
+            structural: true,
         },
     },
     // Read in `opaque` only. An absorbing ribbon is a medium, and a medium has
@@ -144,6 +150,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: false,
+            structural: false,
         },
     },
     ParamSpec {

@@ -24,6 +24,7 @@ const DOUBLE: &[ParamSpec] = &[ParamSpec {
         dtypes: &[Dtype::Float32],
         shape: &[0],
         required: true,
+        structural: true,
     },
 }];
 

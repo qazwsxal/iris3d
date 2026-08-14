@@ -102,6 +102,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     ParamSpec {
@@ -111,6 +112,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     // Unbound means "work them out from the triangles". Only the shell reads
@@ -123,6 +125,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: false,
+            structural: true,
         },
     },
     // Which of the two ways of depositing absorbance the mesh uses. `solid`

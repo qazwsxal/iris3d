@@ -54,6 +54,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[],
             required: true,
+            structural: true,
         },
     },
     ParamSpec {

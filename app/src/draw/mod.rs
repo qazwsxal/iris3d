@@ -49,7 +49,7 @@ use bevy::render::settings::WgpuFeatures;
 use crate::filter::colormap::sample;
 use crate::scene::actor::ColorMap;
 
-use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings};
+use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings, ParamKind};
 use crate::scene::{ColorBy, DataArray, DataStore, Subset};
 
 mod atoms;
@@ -251,13 +251,14 @@ impl Plugin for DrawPlugin {
 #[allow(clippy::too_many_arguments)]
 fn mark_dirty(
     mut commands: Commands,
+    registry: Res<ActorRegistry>,
     new_actors: Query<Entity, Added<ActorKindId>>,
     recoloured: Query<Entity, (With<ActorKindId>, Changed<ColorBy>)>,
     resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
     rebound: Query<Entity, (With<ActorKindId>, Changed<Bindings>)>,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
     store: Res<DataStore>,
-    bindings: Query<(Entity, &Bindings)>,
+    bindings: Query<(Entity, &ActorKindId, &Bindings)>,
 ) {
     for entity in &new_actors {
         mark(&mut commands, entity, Dirty::ALL);
@@ -279,12 +280,19 @@ fn mark_dirty(
 
     // Binding a different array is new data, not a new setting: the vertex count
     // itself changes, so there is nothing to write in place.
+    //
+    // Not graded by `structural`, unlike the asset path below. `Changed` is per
+    // component and `Bindings` is one component, so this says *something* was
+    // rebound without saying which input — and an actor whose colour moved has
+    // its positions bound too. Grading it would mean keeping the previous map to
+    // diff against, to save a rebuild on an operation that happens once when a
+    // scene is built rather than every frame a slider moves.
     for entity in &rebound {
         mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 
     // Array contents can be rewritten without any binding changing, so watch the
-    // assets directly.
+    // assets directly. This is the path a filter finishing takes.
     let modified: Vec<_> = array_events
         .read()
         .filter_map(|event| match event {
@@ -298,16 +306,57 @@ fn mark_dirty(
     // Asking each actor what it binds, rather than each object what it holds.
     // That is what keeps this right for shared data: one array feeding three
     // actors redraws all three, wherever in the tree they sit.
-    for (actor, bound) in &bindings {
-        let touched = bound.0.values().any(|id| {
+    for (actor, kind, bound) in &bindings {
+        let changed = |handle: u64| {
             store
-                .get(*id)
+                .get(handle)
                 .is_some_and(|held| modified.contains(&held.handle.id()))
-        });
-        if touched {
-            mark(&mut commands, actor, Dirty::GEOMETRY);
+        };
+        let what = invalidated(&registry, kind, bound, changed);
+        if what.any() {
+            mark(&mut commands, actor, what);
         }
     }
+}
+
+/// What a change to some of an actor's bound arrays makes out of date.
+///
+/// `Dirty::GEOMETRY` if any changed array feeds a `structural` input, and
+/// `Dirty::COLOUR` if the changed ones are all non-structural. Nothing at all if
+/// none of them changed.
+///
+/// This is what keeps a colour-map drag cheap now that colouring is a filter.
+/// The filter rewrites its output array, which reaches an actor as an ordinary
+/// asset change — indistinguishable, without the declaration, from someone
+/// re-uploading its positions.
+fn invalidated(
+    registry: &ActorRegistry,
+    kind: &ActorKindId,
+    bound: &Bindings,
+    changed: impl Fn(u64) -> bool,
+) -> Dirty {
+    // A kind nothing registered has no draw system either, so there is nothing
+    // for a flag to reach. `apply_actor_params` is where that gets reported.
+    let Some(registered) = registry.get(kind.0) else {
+        return Dirty::default();
+    };
+    let mut what = Dirty::default();
+    for (input, handle) in &bound.0 {
+        if !changed(*handle) {
+            continue;
+        }
+        // An input the kind does not declare cannot be read, so it cannot have
+        // invalidated anything.
+        let Some(ParamKind::Array { structural, .. }) = registered.spec(input).map(|s| s.kind)
+        else {
+            continue;
+        };
+        match structural {
+            true => what.geometry = true,
+            false => what.colour = true,
+        }
+    }
+    what
 }
 
 /// Clears the flags once the backend has had a chance at them.
@@ -457,11 +506,47 @@ mod tests {
         DataArray::numeric(Dtype::Float32, vec![1, 3], vec![0; 12])
     }
 
+    /// One structural input and one that only repaints, which is the whole
+    /// distinction `mark_dirty` now reads.
+    const SPECS: &[crate::scene::registry::ParamSpec] = &[
+        crate::scene::registry::ParamSpec {
+            id: "positions",
+            label: "positions",
+            kind: ParamKind::Array {
+                dtypes: &[Dtype::Float32],
+                shape: &[0, 3],
+                required: true,
+                structural: true,
+            },
+        },
+        crate::scene::registry::ParamSpec {
+            id: "colour",
+            label: "colour",
+            kind: ParamKind::Array {
+                dtypes: &[],
+                shape: &[0],
+                required: false,
+                structural: false,
+            },
+        },
+    ];
+
     fn app() -> App {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
         app.init_resource::<DataStore>();
+        app.init_resource::<ActorRegistry>();
+        // `mark_dirty` asks the registry what a changed array invalidates, so a
+        // kind that is not registered would be marked for nothing at all.
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(crate::scene::registry::ActorKind {
+                id: "points",
+                label: "points",
+                params: SPECS,
+                apply: |_, _| {},
+            });
         app.add_systems(Update, mark_dirty);
         app
     }
@@ -605,7 +690,68 @@ mod tests {
             .id();
         app.world_mut().write_message(AssetEvent::Modified { id });
         app.update();
-        assert!(dirty(&app, actor));
+        assert_eq!(
+            flags(&app, actor),
+            Dirty::GEOMETRY,
+            "positions are structural, so nothing survives"
+        );
+    }
+
+    /// The reason `structural` is declared at all.
+    ///
+    /// Colouring is a filter now, so a colour-map drag reaches an actor as an
+    /// ordinary asset change — the same event a re-upload of its positions
+    /// produces. Without the input's own declaration the two are
+    /// indistinguishable, and every drag would re-tessellate the mesh to change
+    /// three floats a vertex.
+    #[test]
+    fn rewriting_a_colour_array_repaints_rather_than_rebuilds() {
+        let (mut app, _, actor) = scene();
+
+        // A second array, bound to the non-structural input.
+        let colours = app
+            .world_mut()
+            .resource_mut::<Assets<DataArray>>()
+            .add(array());
+        let id = colours.id();
+        let meta = BufferMeta {
+            name: "colour".into(),
+            dtype: Dtype::Float32,
+            shape: vec![1, 3],
+        };
+        app.world_mut()
+            .resource_mut::<DataStore>()
+            .insert(1, meta, colours);
+        app.world_mut()
+            .get_mut::<Bindings>(actor)
+            .unwrap()
+            .0
+            .insert("colour", 1u64);
+        // The rebind itself dirties the actor, so let that land before asking
+        // what the *contents* changing does.
+        app.update();
+        settle(&mut app, actor);
+
+        app.world_mut().write_message(AssetEvent::Modified { id });
+        app.update();
+        assert_eq!(flags(&app, actor), Dirty::COLOUR);
+    }
+
+    /// Rebinding is *not* graded, deliberately. `Bindings` is one component, so
+    /// a change to it says nothing about which input moved, and an actor whose
+    /// colour was rebound has its positions bound too.
+    #[test]
+    fn rebinding_anything_asks_for_a_rebuild() {
+        let (mut app, _, actor) = scene();
+        settle(&mut app, actor);
+
+        app.world_mut()
+            .get_mut::<Bindings>(actor)
+            .unwrap()
+            .0
+            .insert("colour", 0u64);
+        app.update();
+        assert_eq!(flags(&app, actor), Dirty::GEOMETRY);
     }
 
     #[test]

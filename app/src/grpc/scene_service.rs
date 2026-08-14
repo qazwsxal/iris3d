@@ -749,10 +749,14 @@ fn spec_to_proto(spec: &ParamSpec) -> ProtoSpec {
                 max,
                 integral,
             }),
+            // `structural` is not on the wire. It says whether new data here
+            // forces a rebuild or only a repaint, which is the server scheduling
+            // its own work — there is nothing a caller would do differently.
             ParamKind::Array {
                 dtypes,
                 shape,
                 required,
+                ..
             } => param_spec::Kind::Array(ArrayParam {
                 dtypes: dtypes
                     .iter()

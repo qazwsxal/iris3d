@@ -38,6 +38,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     ParamSpec {
@@ -47,6 +48,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint8],
             shape: &[0],
             required: false,
+            structural: true,
         },
     },
     // No bonds means balls and no sticks, which is the honest way to draw a
@@ -58,8 +60,15 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint32],
             shape: &[0, 2],
             required: false,
+            structural: true,
         },
     },
+    // `structural`, unlike the same input on `mesh` and `points`. Not because a
+    // colour is structural here, but because this kind has no repaint path: its
+    // draw system gives up unless `dirty.geometry`, so a colour-only mark would
+    // be dropped and the change would never appear. Making it repaint is worth
+    // doing — a merged protein is exactly the case that hurts — and until then
+    // this says truthfully what happens.
     ParamSpec {
         id: "colour",
         label: "colour by",
@@ -67,6 +76,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: false,
+            structural: true,
         },
     },
     ParamSpec {

@@ -62,6 +62,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     // Triangles only, and the shape says so. Tetrahedra used to arrive and be
@@ -75,6 +76,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Uint32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     // Unbound means "work them out from the triangles", which is what happened
@@ -86,6 +88,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: false,
+            structural: true,
         },
     },
     ParamSpec {
@@ -95,6 +98,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: false,
+            structural: false,
         },
     },
     ParamSpec {

@@ -217,6 +217,20 @@ pub enum ParamKind {
         /// Whether the kind can draw without it. Colour fields are optional;
         /// positions are not.
         required: bool,
+        /// Whether new data here changes the *shape* of what is drawn.
+        ///
+        /// `true` for positions and connectivity: different numbers mean a
+        /// different vertex count, so there is nothing to write in place and
+        /// the whole thing is rebuilt. `false` for a per-element colour, which
+        /// lands in the buffer that is already there.
+        ///
+        /// Declared rather than guessed from the input's name, for the same
+        /// reason the shape is: a kind says what it needs, and nothing infers a
+        /// role from what something is called. It is what lets dragging a
+        /// colour-map slider repaint a protein instead of re-tessellating every
+        /// atom and bond — see [`Dirty`](crate::draw::Dirty), which grades the
+        /// two apart precisely because they differ by orders of magnitude.
+        structural: bool,
     },
 }
 
@@ -581,6 +595,7 @@ mod tests {
                 dtypes: &[Dtype::Float32],
                 shape: &[0, 3],
                 required: true,
+                structural: true,
             },
         },
         ParamSpec {
@@ -590,6 +605,7 @@ mod tests {
                 dtypes: &[],
                 shape: &[0],
                 required: false,
+                structural: true,
             },
         },
     ];

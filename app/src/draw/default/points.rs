@@ -53,6 +53,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[Dtype::Float32],
             shape: &[0, 3],
             required: true,
+            structural: true,
         },
     },
     // What tints them, if anything. One value per point; the colour map and its
@@ -65,6 +66,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: false,
+            structural: false,
         },
     },
     ParamSpec {
@@ -357,6 +359,12 @@ mod tests {
         app.init_resource::<DataStore>();
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<PointQuadMaterial>>();
+        // `mark_dirty` asks the registry what a changed array invalidates, so
+        // this kind has to be registered even though nothing here reads its
+        // parameters — the real `register` is used, not a stand-in, so the
+        // declarations under test are the ones that ship.
+        app.init_resource::<crate::scene::ActorRegistry>();
+        register(&mut app.world_mut().resource_mut::<crate::scene::ActorRegistry>());
         app.add_systems(
             Update,
             (

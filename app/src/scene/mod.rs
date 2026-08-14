@@ -1830,6 +1830,7 @@ mod tests {
                 dtypes: &[],
                 shape: &[],
                 required: true,
+                structural: true,
             },
         }];
         const OUTPUTS: &[filter::OutputSpec] = &[

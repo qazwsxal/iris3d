@@ -125,6 +125,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: true,
+            structural: true,
         },
     },
     // What glows, which need not be what blocks. Density from one quantity and
@@ -140,9 +141,16 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: false,
+            structural: true,
         },
     },
     // Unbound means colour by the density itself.
+    //
+    // `structural`, unlike the same input on `mesh` and `points`, because there
+    // are no vertices to repaint. These values are packed into the green channel
+    // of the 3D field texture, so new ones mean a new texture — the whole
+    // upload, not four bytes a vertex. The cheap path here is a *ramp* change,
+    // which `Dirty::COLOUR` already covers and which touches 256 texels.
     ParamSpec {
         id: "colour",
         label: "colour by",
@@ -150,6 +158,7 @@ const PARAMS: &[ParamSpec] = &[
             dtypes: &[],
             shape: &[0],
             required: false,
+            structural: true,
         },
     },
     ParamSpec {
