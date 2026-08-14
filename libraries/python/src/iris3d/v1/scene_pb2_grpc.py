@@ -41,6 +41,31 @@ class SceneServiceStub(object):
     inferred from what an array is called: a representation declares the element
     types and shapes it accepts, and a client binds whatever it uploaded.
 
+    **Structure above the element** — a molecule's residues and chains, and
+    anything shaped like them — is more arrays, not a message of its own. Two
+    pieces make it work. A dense integer array per element says which group each
+    belongs to, and further arrays keyed on that index carry the group's own
+    properties. So residues are a `residue_index` per atom, running 0..r, plus
+    arrays of length r holding each residue's name, its author numbering, and its
+    secondary structure.
+
+    The dense index is the part worth insisting on, because author numbering is
+    not a key: residue ids repeat across chains, skip, go negative, and carry
+    insertion codes, so 100, 100A and 100B are three residues wearing two
+    numbers. Author numbering is a *label*, carried in the side arrays like any
+    other property.
+
+    This shape is not molecular. It is the same shape a mesh's material groups or
+    a point cloud's clusters take, which is why it is described here rather than
+    in a message about proteins. It also keeps hierarchy free of time: coordinates
+    gain frames, and which residue an atom belongs to does not.
+
+    The same two pieces carry **text**, one level further down. A name is not
+    sent once per element; an integer index is, and a string array holds the
+    distinct values it points at. So an atom's name is an `atom_name_index` per
+    atom beside an `atom_name` array of the names that occur. This keeps every
+    string array small, which DTYPE_STRING requires — see below for why.
+
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
     ListActorKinds rather than carrying a table that will go stale.
@@ -155,6 +180,31 @@ class SceneServiceServicer(object):
     inferred from what an array is called: a representation declares the element
     types and shapes it accepts, and a client binds whatever it uploaded.
 
+    **Structure above the element** — a molecule's residues and chains, and
+    anything shaped like them — is more arrays, not a message of its own. Two
+    pieces make it work. A dense integer array per element says which group each
+    belongs to, and further arrays keyed on that index carry the group's own
+    properties. So residues are a `residue_index` per atom, running 0..r, plus
+    arrays of length r holding each residue's name, its author numbering, and its
+    secondary structure.
+
+    The dense index is the part worth insisting on, because author numbering is
+    not a key: residue ids repeat across chains, skip, go negative, and carry
+    insertion codes, so 100, 100A and 100B are three residues wearing two
+    numbers. Author numbering is a *label*, carried in the side arrays like any
+    other property.
+
+    This shape is not molecular. It is the same shape a mesh's material groups or
+    a point cloud's clusters take, which is why it is described here rather than
+    in a message about proteins. It also keeps hierarchy free of time: coordinates
+    gain frames, and which residue an atom belongs to does not.
+
+    The same two pieces carry **text**, one level further down. A name is not
+    sent once per element; an integer index is, and a string array holds the
+    distinct values it points at. So an atom's name is an `atom_name_index` per
+    atom beside an `atom_name` array of the names that occur. This keeps every
+    string array small, which DTYPE_STRING requires — see below for why.
+
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask
     ListActorKinds rather than carrying a table that will go stale.
@@ -176,7 +226,9 @@ class SceneServiceServicer(object):
         addressing an array by its index in the header. Nothing is committed until
         every declared array has received exactly its `byte_length` bytes, so a
         stream that ends early, overruns, or arrives out of order leaves the scene
-        untouched.
+        untouched. A DTYPE_STRING array declares 0 bytes and carries its values in
+        the header, so it satisfies that rule as soon as it is declared — an upload
+        of nothing but strings is a single message.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -415,6 +467,31 @@ class SceneService(object):
     "chain A" far better than a grammar invented here could. And nothing is
     inferred from what an array is called: a representation declares the element
     types and shapes it accepts, and a client binds whatever it uploaded.
+
+    **Structure above the element** — a molecule's residues and chains, and
+    anything shaped like them — is more arrays, not a message of its own. Two
+    pieces make it work. A dense integer array per element says which group each
+    belongs to, and further arrays keyed on that index carry the group's own
+    properties. So residues are a `residue_index` per atom, running 0..r, plus
+    arrays of length r holding each residue's name, its author numbering, and its
+    secondary structure.
+
+    The dense index is the part worth insisting on, because author numbering is
+    not a key: residue ids repeat across chains, skip, go negative, and carry
+    insertion codes, so 100, 100A and 100B are three residues wearing two
+    numbers. Author numbering is a *label*, carried in the side arrays like any
+    other property.
+
+    This shape is not molecular. It is the same shape a mesh's material groups or
+    a point cloud's clusters take, which is why it is described here rather than
+    in a message about proteins. It also keeps hierarchy free of time: coordinates
+    gain frames, and which residue an atom belongs to does not.
+
+    The same two pieces carry **text**, one level further down. A name is not
+    sent once per element; an integer index is, and a string array holds the
+    distinct values it points at. So an atom's name is an `atom_name_index` per
+    atom beside an `atom_name` array of the names that occur. This keeps every
+    string array small, which DTYPE_STRING requires — see below for why.
 
     What can be drawn is not fixed by this schema. Actor kinds come from
     whichever rendering backends the server was built with, so ask

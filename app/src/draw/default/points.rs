@@ -282,11 +282,7 @@ mod tests {
         let positions = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
-            .add(DataArray {
-                dtype: Dtype::Float32,
-                shape: vec![4, 3],
-                data: vec![0; 48],
-            });
+            .add(DataArray::numeric(Dtype::Float32, vec![4, 3], vec![0; 48]));
         // Held by handle, with no object involved: the array is not the object's
         // any more, and the name it arrived under carries no meaning.
         app.world_mut()
@@ -394,11 +390,11 @@ mod tests {
         let indices = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
-            .add(DataArray {
-                dtype: Dtype::Uint32,
-                shape: vec![2],
-                data: [0u32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
-            });
+            .add(DataArray::numeric(
+                Dtype::Uint32,
+                vec![2],
+                [0u32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+            ));
 
         *app.world_mut().get_mut::<Subset>(actor).unwrap() = Subset::Selected {
             array: indices,

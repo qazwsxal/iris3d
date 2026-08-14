@@ -4,6 +4,12 @@ The wire contract describes data the way numpy does — a raw little-endian byte
 buffer plus a dtype and a shape — so this wrapper is mostly a translation layer
 between ``numpy.ndarray`` and ``BufferSpec``/``Chunk``. Other language wrappers
 should end up looking much the same.
+
+Text is the one array that is not bytes. A numpy array of strings — or a plain
+list of them — uploads as a string array, carried whole in the header rather
+than chunked. It is how labelling data travels: which chain each atom belongs
+to is an integer array, and what those chains are *called* is a string array
+beside it.
 """
 
 from __future__ import annotations
@@ -78,6 +84,11 @@ _TO_PROTO: dict[np.dtype, Dtype] = {
     np.dtype(np.int64): Dtype.DTYPE_INT64,
     np.dtype(np.float32): Dtype.DTYPE_FLOAT32,
     np.dtype(np.float64): Dtype.DTYPE_FLOAT64,
+    # Text, whose numpy side is `object` rather than a width like `<U5`. The
+    # wire carries each string at its own length, so no fixed width is the
+    # truthful answer coming back: a `<U5` array uploads fine, but describing
+    # what the server holds as `<U5` would claim a padding the wire dropped.
+    np.dtype(object): Dtype.DTYPE_STRING,
 }
 
 _FROM_PROTO = {proto: dtype for dtype, proto in _TO_PROTO.items()}
@@ -511,25 +522,41 @@ def _summary(info: ObjectInfo) -> ObjectSummary:
     )
 
 
+#: numpy kinds that mean text: fixed-width unicode, byte strings, and object
+#: arrays, which is what ``np.asarray`` gives a plain list of ``str``.
+_TEXT_KINDS = "USO"
+
+
 def _declare(
     arrays: Mapping[str, np.ndarray], chunk_bytes: int
-) -> tuple[list[np.ndarray], list[BufferSpec]]:
+) -> tuple[list[np.ndarray | None], list[BufferSpec]]:
     """Validates arrays and describes them for a header.
 
     Shared by both upload streams, so an object upload and a bare data upload
     cannot disagree about what a well-formed declaration is.
+
+    A text array is declared complete: its strings go in the header and its
+    entry in the returned list is ``None``, because there is nothing left to
+    chunk. The list still holds a slot for it so that a chunk's index keeps
+    matching the header's.
     """
     if not arrays:
         raise ValueError("an upload needs at least one array")
     if chunk_bytes <= 0:
         raise ValueError("chunk_bytes must be positive")
 
-    prepared: list[np.ndarray] = []
+    prepared: list[np.ndarray | None] = []
     specs: list[BufferSpec] = []
     for buffer_name, array in arrays.items():
         array = _wire_ready(np.asarray(array))
         if array.size == 0:
             raise ValueError(f"array {buffer_name!r} is empty")
+
+        if array.dtype.kind in _TEXT_KINDS:
+            prepared.append(None)
+            specs.append(_text_spec(buffer_name, array))
+            continue
+
         prepared.append(array)
         specs.append(
             BufferSpec(
@@ -542,11 +569,41 @@ def _declare(
     return prepared, specs
 
 
+def _text_spec(buffer_name: str, array: np.ndarray) -> BufferSpec:
+    """Declares one text array, values and all.
+
+    ``byte_length`` is 0 and no chunk ever follows: the strings travel inline,
+    so the array is committed by the header alone. numpy's own width is
+    dropped on the way — ``<U5`` pads every entry out to five characters and
+    the wire carries each string at its own length.
+    """
+    values = [str(value) for value in array.reshape(-1)]
+    if any("\x00" in value for value in values):
+        raise ValueError(
+            f"array {buffer_name!r} holds a string with an embedded null; "
+            "the wire carries text, not packed bytes"
+        )
+    return BufferSpec(
+        name=buffer_name,
+        dtype=Dtype.DTYPE_STRING,
+        shape=list(array.shape),
+        byte_length=0,
+        values=values,
+    )
+
+
 def _payload_chunks(
-    prepared: list[np.ndarray], chunk_bytes: int
+    prepared: list[np.ndarray | None], chunk_bytes: int
 ) -> Iterator[Chunk]:
-    """Slices every array into wire-sized chunks, in declaration order."""
+    """Slices every array into wire-sized chunks, in declaration order.
+
+    Text arrays are already on the wire in the header, so they are skipped —
+    their index is still consumed, keeping every chunk pointed at the right
+    declaration.
+    """
     for index, array in enumerate(prepared):
+        if array is None:
+            continue
         payload = memoryview(array).cast("B")
         for offset in range(0, len(payload), chunk_bytes):
             yield Chunk(
