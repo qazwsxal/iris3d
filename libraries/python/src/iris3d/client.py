@@ -1172,8 +1172,14 @@ class Client:
         request = RemoveFilterRequest(handle=FilterHandle(id=handle))
         return self._scene.RemoveFilter(request).removed
 
-    def filters(self) -> list[FilterSummary]:
-        """Every filter in the scene, in handle order."""
+    def list_filters(self) -> list[FilterSummary]:
+        """Every filter in the scene, in handle order.
+
+        Named to match :meth:`list_data`, :meth:`list_objects` and
+        :meth:`list_actors`. The ``*_kinds`` methods keep their shorter names:
+        they answer what the *server supports* rather than what the scene holds,
+        and return a mapping rather than a list.
+        """
         response = self._scene.ListFilters(ListFiltersRequest())
         return [_filter(info) for info in response.filters]
 

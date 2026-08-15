@@ -22,9 +22,16 @@
 //!
 //! `density` is what makes the volume solid and `colour` is what tints it, and
 //! they are deliberately separate bindings — density from one quantity and
-//! colour from another is the usual pairing in scientific volume rendering. The
-//! grid itself arrives as nine numbers rather than an array, because 64³ samples
-//! state their arrangement far more cheaply than 262144 coordinates can.
+//! colour from another is the usual pairing in scientific volume rendering.
+//!
+//! The grid's *shape* is not a parameter: it is read off the bound array, which
+//! declares itself as `(nx, ny, nz)`. It used to be a `dims` vector beside the
+//! field, which meant two statements of one fact that could contradict each
+//! other — and did, since its default of one sample per axis described no real
+//! grid at all. `origin` and `spacing` stay, because where a grid sits in the
+//! world is genuinely not something the numbers in it can say. `step` skips
+//! samples on the way to the texture, matching `contour`, so a 512³ field can be
+//! looked at before it is looked at properly.
 //!
 //! `opacity` and `emission` are separate controls on purpose. One decides how
 //! much the volume blocks and the other how much it gives off; a volume that
@@ -84,11 +91,22 @@ pub struct GridStyle {
 }
 
 /// Where the samples sit.
+///
+/// `dims` is **not** set from a parameter: it is measured off the bound array by
+/// [`size_grids`], because the array's shape already says how the grid is
+/// arranged and a parameter beside it could disagree with its own data. That is
+/// also why the field is not editable from a client — see the module header.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct GridBox {
     pub origin: Vec3,
+    /// Between the samples *actually read*, so already multiplied by
+    /// [`step`](Self::step). The box then covers the same world extent however
+    /// coarsely it is walked.
     pub spacing: Vec3,
+    /// After striding: the number of samples the texture holds.
     pub dims: UVec3,
+    /// How coarsely the array is read, per axis.
+    pub step: UVec3,
 }
 
 impl GridBox {
@@ -146,7 +164,10 @@ const PARAMS: &[ParamSpec] = &[
         label: "density",
         kind: ParamKind::Array {
             dtypes: &[],
-            shape: &[0],
+            // Three-dimensional, matching `contour`: a grid's shape is something
+            // the array already knows, and asking for it separately was a
+            // parameter that could disagree with its own data.
+            shape: &[0, 0, 0],
             required: true,
             structural: true,
         },
@@ -162,7 +183,7 @@ const PARAMS: &[ParamSpec] = &[
         label: "emission from",
         kind: ParamKind::Array {
             dtypes: &[],
-            shape: &[0],
+            shape: &[0, 0, 0],
             required: false,
             structural: true,
         },
@@ -179,7 +200,7 @@ const PARAMS: &[ParamSpec] = &[
         label: "colour by",
         kind: ParamKind::Array {
             dtypes: &[],
-            shape: &[0],
+            shape: &[0, 0, 0],
             required: false,
             structural: true,
         },
@@ -210,13 +231,13 @@ const PARAMS: &[ParamSpec] = &[
     },
     crate::draw::TINT,
     ParamSpec {
-        id: "dims",
-        label: "samples",
+        id: "step",
+        label: "step (samples skipped)",
         kind: ParamKind::Vector {
             components: 3,
             default: &[1.0, 1.0, 1.0],
             min: 1.0,
-            max: 4096.0,
+            max: 32.0,
             integral: true,
         },
     },
@@ -294,10 +315,20 @@ pub fn register(registry: &mut ActorRegistry) {
                     emission: float(params, "emission", 1.0),
                     steps: float(params, "steps", 128.0),
                 },
-                GridBox {
-                    origin: param_vec3(params, "origin", Vec3::ZERO),
-                    spacing: param_vec3(params, "spacing", Vec3::ONE),
-                    dims: param_uvec3(params, "dims", UVec3::ONE),
+                {
+                    let step = param_uvec3(params, "step", UVec3::ONE).max(UVec3::ONE);
+                    GridBox {
+                        origin: param_vec3(params, "origin", Vec3::ZERO),
+                        // Scaled by the stride, so raising the step coarsens the
+                        // volume in place rather than shrinking it towards the
+                        // origin.
+                        spacing: param_vec3(params, "spacing", Vec3::ONE) * step.as_vec3(),
+                        // A placeholder until `size_grids` measures the array.
+                        // Zero rather than one, because zero draws nothing while
+                        // one would draw a single voxel at the origin for a frame.
+                        dims: UVec3::ZERO,
+                        step,
+                    }
                 },
             ));
         },
@@ -325,6 +356,39 @@ pub fn invalidate(
 
 /// Builds each dirty volume's field texture and colour ramp.
 #[allow(clippy::too_many_arguments)]
+/// Measures each volume's grid off the array bound to it.
+///
+/// `apply` cannot do this: it turns a parameter map into components and has no
+/// reach into the data store, so the shape has to be read here instead. That is
+/// the whole reason `dims` used to be a parameter — and the reason it could
+/// state something the array contradicted.
+///
+/// Runs before [`invalidate`], so a grid that changes size marks the texture
+/// dirty through the ordinary `Changed<GridBox>` path rather than needing one of
+/// its own. Written only when it differs, or every frame would look like a
+/// resize and re-upload the volume.
+pub fn size_grids(
+    store: Res<DataStore>,
+    arrays: Res<Assets<DataArray>>,
+    mut grids: Query<(&Bindings, &mut GridBox)>,
+) {
+    for (bindings, mut grid) in &mut grids {
+        let measured = bound(bindings, "density", store.as_ref(), arrays.as_ref())
+            .and_then(|array| match array.shape.as_slice() {
+                [x, y, z] => Some(UVec3::new(*x as u32, *y as u32, *z as u32)),
+                _ => None,
+            })
+            // Ceiling division: a stride that does not divide the grid leaves a
+            // partial cell at the far edge, and the samples kept are still where
+            // they belong once the spacing is scaled to match.
+            .map(|full| (full + grid.step - UVec3::ONE) / grid.step)
+            .unwrap_or(UVec3::ZERO);
+        if grid.dims != measured {
+            grid.dims = measured;
+        }
+    }
+}
+
 pub fn draw_volumes(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -388,15 +452,24 @@ fn field_texture(
     arrays: &Assets<DataArray>,
     style: &GridStyle,
 ) -> Option<Image> {
+    // The texture's size, after striding.
     let expected = grid.point_count();
     if expected == 0 {
         return None;
     }
 
-    let density = bound(bindings, "density", store, arrays)?.to_f32();
-    if density.len() < expected {
+    // And the array's own, which is what everything below indexes with. Taken
+    // from the shape rather than reconstructed as `dims * step`: a stride that
+    // does not divide the grid leaves `dims` rounded up, so multiplying back out
+    // would overshoot and read the field transposed.
+    let array = bound(bindings, "density", store, arrays)?;
+    let source = grid_shape(array)?;
+    let full = source.x as usize * source.y as usize * source.z as usize;
+
+    let density = array.to_f32();
+    if density.len() < full {
         warn!(
-            "draw: a volume's density field has {} values for a grid of {expected}",
+            "draw: a volume's density field has {} values for a grid of {full}",
             density.len()
         );
         return None;
@@ -408,7 +481,7 @@ fn field_texture(
         bound(bindings, id, store, arrays)
             .map(|array| array.to_f32())
             .filter(|values| {
-                let long_enough = values.len() >= expected;
+                let long_enough = values.len() >= full;
                 if !long_enough {
                     warn!(
                         "draw: a volume's {id} field is shorter than its grid; \
@@ -421,16 +494,16 @@ fn field_texture(
     let tint_values = optional("colour");
     let glow_values = optional("emissive");
 
-    let density_range = range_of(&density[..expected]);
+    let density_range = range_of(&density[..full]);
     // Only the colour ramp honours an explicit `range` — that control says where
     // the *map* starts and ends, and applying it to emission would silently
     // rescale brightness when someone pinned a colour scale.
     let colour_range = tint_values
         .as_ref()
-        .map(|values| style.range.unwrap_or_else(|| range_of(&values[..expected])));
+        .map(|values| style.range.unwrap_or_else(|| range_of(&values[..full])));
     let glow_range = glow_values
         .as_ref()
-        .map(|values| range_of(&values[..expected]));
+        .map(|values| range_of(&values[..full]));
 
     // Reorder while normalising. The wire runs z fastest, which is what a numpy
     // array of shape (x, y, z) gives from a plain `.ravel()`. A 3D texture wants
@@ -440,6 +513,13 @@ fn field_texture(
         grid.dims.x as usize,
         grid.dims.y as usize,
         grid.dims.z as usize,
+    );
+    // Indexing walks the source grid, whose extents are the array's own.
+    let (sy, sz) = (source.y as usize, source.z as usize);
+    let (kx, ky, kz) = (
+        grid.step.x as usize,
+        grid.step.y as usize,
+        grid.step.z as usize,
     );
     let channel = |values: &Option<Vec<f32>>, range: Option<(f32, f32)>, index: usize, fallback| {
         match (values, range) {
@@ -451,7 +531,7 @@ fn field_texture(
     for z in 0..nz {
         for y in 0..ny {
             for x in 0..nx {
-                let index = (x * ny + y) * nz + z;
+                let index = ((x * kx) * sy + y * ky) * sz + z * kz;
                 let red = quantise(density[index], density_range);
                 data.push(red);
                 data.push(channel(&tint_values, colour_range, index, red));
@@ -539,6 +619,18 @@ pub fn place_grids(
     }
 }
 
+/// The grid an array declares, or `None` if it is not a three-dimensional one.
+///
+/// The same rule `contour` follows, and for the same reason: an array that says
+/// it is `(nx, ny, nz)` cannot disagree with itself, which a parameter beside it
+/// could and did.
+fn grid_shape(array: &DataArray) -> Option<UVec3> {
+    match array.shape.as_slice() {
+        [x, y, z] => Some(UVec3::new(*x as u32, *y as u32, *z as u32)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,6 +641,7 @@ mod tests {
             origin: Vec3::ZERO,
             spacing: Vec3::ONE,
             dims: UVec3::new(4, 4, 1),
+            step: UVec3::ONE,
         };
         // The z axis spans nothing, which is what a slice looks like. The
         // shaders need the inverse of this matrix, so a singular one would take
@@ -563,6 +656,7 @@ mod tests {
             origin: Vec3::ZERO,
             spacing: Vec3::splat(2.0),
             dims: UVec3::splat(5),
+            step: UVec3::ONE,
         };
         // Five samples two apart span eight units, not ten: the extent is
         // between the first and last sample, not around them.
@@ -590,6 +684,45 @@ mod tests {
         assert_eq!(got, vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
     }
 
+    /// Striding reads every `step`-th sample of the *source* grid.
+    ///
+    /// The extents it indexes with have to be the array's own, not the strided
+    /// ones multiplied back out: a step that does not divide the grid leaves
+    /// `dims` rounded up, so reconstructing the source that way overshoots and
+    /// transposes the volume — the same plausible-picture-of-the-wrong-thing the
+    /// test above guards against, arrived at from the other side.
+    #[test]
+    fn a_step_reads_every_nth_sample_of_the_source() {
+        // A 4x1x4 source, strided by two on x and z: four samples out.
+        let (sx, sy, sz) = (4usize, 1usize, 4usize);
+        let (kx, ky, kz) = (2usize, 1usize, 2usize);
+        let wire: Vec<f32> = (0..(sx * sy * sz)).map(|index| index as f32).collect();
+        let (nx, ny, nz) = (sx.div_ceil(kx), sy.div_ceil(ky), sz.div_ceil(kz));
+
+        let mut got = Vec::new();
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    got.push(wire[((x * kx) * sy + y * ky) * sz + z * kz]);
+                }
+            }
+        }
+        // Source index is (x * 1 + 0) * 4 + z, so x=0,2 and z=0,2 pick out
+        // 0, 8 then 2, 10 — x fastest, as the texture wants.
+        assert_eq!(got, vec![0.0, 8.0, 2.0, 10.0]);
+    }
+
+    /// A grid is measured off the array, and anything that is not a 3D one is
+    /// refused rather than guessed at.
+    #[test]
+    fn a_grid_is_read_from_the_arrays_shape() {
+        use crate::scene::Dtype;
+        let cube = DataArray::numeric(Dtype::Float32, vec![4, 5, 6], Vec::new());
+        assert_eq!(grid_shape(&cube), Some(UVec3::new(4, 5, 6)));
+        let flat = DataArray::numeric(Dtype::Float32, vec![120], Vec::new());
+        assert_eq!(grid_shape(&flat), None);
+    }
+
     #[test]
     fn quantising_puts_the_extremes_at_the_ends() {
         let range = (-2.0, 6.0);
@@ -610,3 +743,4 @@ mod tests {
         assert_eq!(range_of(&[f32::NAN, f32::INFINITY]), (0.0, 1.0));
     }
 }
+

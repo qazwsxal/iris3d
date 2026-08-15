@@ -427,6 +427,10 @@ impl Plugin for MomentBackendPlugin {
         app.add_systems(
             Update,
             (
+                // Before the invalidations: measuring a volume's grid off its
+                // array can change `GridBox`, and `volume::invalidate` is what
+                // turns that into a texture rebuild.
+                volume::size_grids.before(Invalidate),
                 (
                     surface::invalidate,
                     medium::invalidate,
