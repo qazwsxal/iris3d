@@ -247,18 +247,28 @@ def main():
                 f"{', '.join(r.kind for r in summary.actors) or '-':<16}"
             )
 
-        # The arrays are their own listing now, because they belong to no object.
+        # Data is its own listing now, because it belongs to no object. Arrays
+        # and the meshes filters assembled come back together — one handle
+        # space — so each row says which it is.
         held = client.list_data()
-        print(f"\n{'handle':<8}{'array':<20}{'type':<20}size")
-        print("-" * 60)
-        for array in held:
-            print(
-                f"d{array.handle:<7}{array.name:<20}"
-                f"{f'{array.dtype}{list(array.shape)}':<20}"
-                f"{array.byte_length / 1024:.1f} KiB"
-            )
-        total = sum(a.byte_length for a in held)
-        print(f"\n{total / 1024:.1f} KiB resident across {len(held)} arrays")
+        print(f"\n{'handle':<8}{'name':<20}{'type':<28}size")
+        print("-" * 68)
+        for entry in held:
+            if isinstance(entry, iris3d.GeometrySummary):
+                # No size: the vertices live on the GPU and are never fetched.
+                described = f"mesh[{entry.vertices} v, {entry.triangles} t]"
+                size = "-"
+            else:
+                described = f"{entry.dtype}{list(entry.shape)}"
+                size = f"{entry.byte_length / 1024:.1f} KiB"
+            print(f"d{entry.handle:<7}{entry.name:<20}{described:<28}{size}")
+        arrays = [e for e in held if isinstance(e, iris3d.DataSummary)]
+        total = sum(a.byte_length for a in arrays)
+        meshes = len(held) - len(arrays)
+        print(
+            f"\n{total / 1024:.1f} KiB resident across {len(arrays)} arrays, "
+            f"plus {meshes} assembled mesh(es)"
+        )
 
 
 if __name__ == "__main__":

@@ -208,12 +208,26 @@ fn draw_ui(
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!(
+                    // The meshes are counted apart from the arrays because
+                    // their vertices are on the GPU rather than in
+                    // `Assets<DataArray>` — and because this is where sharing
+                    // shows: drawing one ribbon as a lit mesh *and* as an
+                    // absorbing solid should add an actor and no vertices.
+                    let mut summary = format!(
                         "{} objects · {} arrays · {}",
                         world.rows.len(),
                         arrays.len(),
                         human_bytes(world.total_bytes)
-                    ));
+                    );
+                    if world.meshes > 0 {
+                        summary.push_str(&format!(
+                            " · {} mesh{}, {} verts",
+                            world.meshes,
+                            if world.meshes == 1 { "" } else { "es" },
+                            world.vertices
+                        ));
+                    }
+                    ui.label(summary);
                 });
             });
         })

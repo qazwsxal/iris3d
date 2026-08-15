@@ -119,6 +119,14 @@ pub struct Gathered {
     /// takes — see [`ParamKind::accepts`](crate::scene::registry::ParamKind).
     pub bindable: Vec<(u64, HeldMeta)>,
     pub total_bytes: u64,
+    /// Meshes a filter assembled, and the vertices across them.
+    ///
+    /// Counted separately from the arrays because a vertex is on the GPU rather
+    /// than in `Assets<DataArray>`, and because this is the number that answers
+    /// "did sharing the geometry work": drawing one ribbon two ways should move
+    /// neither of these.
+    pub meshes: usize,
+    pub vertices: u64,
 }
 
 impl Gathered {
@@ -284,5 +292,7 @@ pub fn gather(
         held,
         bindable,
         total_bytes,
+        meshes: store.iter_geometry().count(),
+        vertices: store.iter_geometry().map(|(_, mesh)| mesh.meta.vertices).sum(),
     }
 }

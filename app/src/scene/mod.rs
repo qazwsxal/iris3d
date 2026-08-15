@@ -838,14 +838,17 @@ pub fn apply_scene_commands(
     }
 }
 
-/// Checks that every array an actor kind reads is bound, and bound to something
+/// Checks that every input an actor kind reads is bound, and bound to something
 /// it can actually read.
 ///
 /// Separate from [`registry::ParamKind::sanitise`] on purpose. Sanitising judges
 /// a value on its own and runs wherever a parameter is written; this needs the
 /// [`DataStore`] to see what a handle points at, and the store is not reachable
 /// from all of those places. So one answers "is this the right sort of value"
-/// and the other "is that particular array the right shape".
+/// and the other "is that particular array or mesh the right shape".
+///
+/// Arrays and meshes share a handle space, so this is also where binding one
+/// where the other belongs is caught and named.
 fn check_bindings(
     kind: &registry::ActorKind,
     params: &registry::ParamMap,
