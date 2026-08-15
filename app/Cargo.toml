@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.19.0", features = ["dynamic_linking"] }
+# Plain defaults. Both sides of this merge took a feature away and both were
+# right: `bevy_solari` went with the raytracing pathway it existed for, and
+# `dynamic_linking` went so the machine-global rustc-wrapper can cache — it does
+# not cache dylibs, and the two together fail to link.
+bevy = { version = "0.19.0" }
 bevy_egui = "0.41.1"
 clap = { version = "4.5", features = ["derive"] }
 prost = "0.14.3"
