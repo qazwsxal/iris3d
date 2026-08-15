@@ -159,6 +159,10 @@ pub type FilterData<'w, 's> = Query<
 >;
 
 /// The whole scene as the UI sees it for one frame.
+///
+/// `Default` is an empty scene — nothing uploaded and nothing drawn, which is a
+/// real state and the one the control tests draw against.
+#[derive(Default)]
 pub struct Gathered {
     pub rows: HashMap<Entity, Row>,
     /// Objects with no object parent, in handle order.

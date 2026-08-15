@@ -286,3 +286,82 @@ pub fn draft_form(
 fn continue_unreachable() -> Target {
     Target::Filter(u64::MAX, "")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::Dtype;
+
+    const SPECS: &[ParamSpec] = &[
+        ParamSpec {
+            id: "level",
+            label: "level",
+            kind: ParamKind::Float {
+                default: 0.5,
+                min: 0.0,
+                max: 1.0,
+                logarithmic: false,
+            },
+        },
+        ParamSpec {
+            id: "step",
+            label: "step",
+            kind: ParamKind::Vector {
+                components: 3,
+                default: &[1.0, 1.0, 1.0],
+                min: 1.0,
+                max: 32.0,
+                integral: true,
+            },
+        },
+        ParamSpec {
+            id: "map",
+            label: "map",
+            kind: ParamKind::Choice {
+                options: &["viridis", "grayscale"],
+                default: "viridis",
+            },
+        },
+        ParamSpec {
+            id: "field",
+            label: "field",
+            kind: ParamKind::Array {
+                dtypes: &[Dtype::Float32],
+                shape: &[0],
+                required: true,
+                structural: true,
+            },
+        },
+    ];
+
+    /// Drawing the controls, with nobody touching them, changes nothing.
+    ///
+    /// Worth pinning because the failure is invisible. A widget that writes its
+    /// value back on every frame sends a `SetFilterParam` every frame, which
+    /// looks like a value drifting on its own — and the value it drifts *to*
+    /// looks plausible, so it reads as the data being odd rather than the
+    /// interface editing it. Each control is generated, so one such widget would
+    /// do this to every kind at once.
+    #[test]
+    fn drawing_the_controls_edits_nothing() {
+        let scene = Gathered::default();
+        let mut params = ParamMap::default();
+        params.insert("level".into(), ParamValue::Float(0.5));
+        params.insert(
+            "step".into(),
+            ParamValue::Vector(vec![1.0, 1.0, 1.0]),
+        );
+        params.insert("map".into(), ParamValue::Text("viridis".into()));
+
+        let mut edited = Vec::new();
+        egui::__run_test_ui(|ui| {
+            let edits = controls(ui, &scene, SPECS, &params, "test", |_| None);
+            edited.extend(edits.set.iter().map(|(id, _)| *id));
+            assert!(edits.offered.is_none());
+        });
+        assert!(
+            edited.is_empty(),
+            "drawing alone reported edits to {edited:?}"
+        );
+    }
+}
