@@ -16,7 +16,10 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::counter::UniqueID;
-use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
+use crate::filter::{FilterKindId, FilterParams, FilterRegistry, OutputSpec, Outputs, Running, Stale};
+use crate::scene::registry::{
+    ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec, data as bound_handle,
+};
 use crate::scene::{BufferMeta, DataStore, HeldMeta, Parents, Placement};
 use crate::scene::{DataArray, SceneObject, Subset};
 
@@ -55,11 +58,48 @@ pub struct ActorRow {
     pub places: usize,
 }
 
+/// One filter as a row.
+///
+/// The mirror of [`ActorRow`], and deliberately so: a filter kind declares
+/// `ParamSpec`s exactly as an actor kind does, which is what lets one set of
+/// generated controls serve both. What a filter has instead of a place in the
+/// tree is [`outputs`](Self::outputs) — it is reached through the data it
+/// writes, not through anything it is drawn under.
+pub struct FilterRow {
+    pub entity: Entity,
+    pub id: u64,
+    pub kind: &'static str,
+    pub label: &'static str,
+    pub specs: &'static [ParamSpec],
+    pub params: ParamMap,
+    /// What it writes, in declaration order, as `(output id, handle)`.
+    ///
+    /// Allocated when the filter was created rather than when it first ran, so
+    /// these are bindable before a single value exists behind them.
+    pub outputs: Vec<(&'static OutputSpec, u64)>,
+    /// A run is in flight.
+    pub busy: bool,
+    /// The results no longer follow from the inputs.
+    ///
+    /// Worth showing beside `busy` rather than folding the two together: a chain
+    /// costs a frame per link, so a filter three deep sits stale-but-not-yet-busy
+    /// for a moment after every edit, and that is normal rather than stuck.
+    pub stale: bool,
+}
+
 /// Who holds an array, and what reads it.
 pub struct Owner {
     pub object: u64,
     /// The buffer name it was uploaded under.
     pub name: String,
+}
+
+/// Something that reads a handle: the filter or actor, and which input.
+pub struct Consumer {
+    /// The reader's own handle, for naming it.
+    pub id: u64,
+    pub label: &'static str,
+    pub input: &'static str,
 }
 
 /// Everything the UI reads about objects, in one query.
@@ -93,6 +133,31 @@ pub type ActorData<'w, 's> = Query<
     ),
 >;
 
+/// Everything the UI reads about filters. See [`ObjectData`].
+///
+/// Read-only on purpose, rather than [`filter::Filters`](crate::filter::Filters)
+/// — that wraps a mutable query over the same components and would conflict with
+/// every other reader in the schedule. The UI never writes a filter directly
+/// anyway; it asks through [`SceneCommand`](crate::scene::SceneCommand).
+///
+/// [`Running`] has private fields, so `Has` is as much as can be learned about a
+/// run in flight from out here. It is enough: the question the panel asks is
+/// "is this one busy", not "since when".
+pub type FilterData<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static UniqueID,
+        &'static FilterKindId,
+        &'static FilterParams,
+        &'static Outputs,
+        Has<Stale>,
+        Has<Running>,
+    ),
+    With<FilterKindId>,
+>;
+
 /// The whole scene as the UI sees it for one frame.
 pub struct Gathered {
     pub rows: HashMap<Entity, Row>,
@@ -118,6 +183,21 @@ pub struct Gathered {
     /// Arrays and meshes together, because an input decides for itself which it
     /// takes — see [`ParamKind::accepts`](crate::scene::registry::ParamKind).
     pub bindable: Vec<(u64, HeldMeta)>,
+    /// Every filter, in handle order. Flat, because a filter belongs to no
+    /// object — it is reached through the data it writes.
+    pub filters: Vec<FilterRow>,
+    /// Data handle → the filter that writes it.
+    ///
+    /// What turns a bare `d12` on an input row into `d12 · from [3] colour map`,
+    /// which is the whole of a chain's legibility until the node editor exists.
+    /// Built straight off each filter's `Outputs`; no `Graph` is needed for it.
+    pub producers: HashMap<u64, u64>,
+    /// Data handle → everything that reads it, filters and actors alike.
+    ///
+    /// The other direction of the same question, and the one that answers "is it
+    /// safe to remove this filter" — an output nothing reads is a dead branch,
+    /// and the panel should say so rather than leave it looking connected.
+    pub consumers: HashMap<u64, Vec<Consumer>>,
     pub total_bytes: u64,
     /// Meshes a filter assembled, and the vertices across them.
     ///
@@ -149,6 +229,36 @@ impl Gathered {
                 .map(|actor| (None, actor))
         })
     }
+
+    /// By handle rather than entity, as everything else that names a filter
+    /// does. It also sidesteps a race: a filter is created through a command, and
+    /// its reply arrives before the spawn has been applied, so there is a moment
+    /// when the handle exists and the entity does not.
+    pub fn filter(&self, id: u64) -> Option<&FilterRow> {
+        self.filters.iter().find(|row| row.id == id)
+    }
+
+    /// How to name a bound handle on an input row.
+    ///
+    /// `d12 colour · from [3] colour map` when a filter writes it, `d4 positions`
+    /// when it was uploaded. Saying where data came from is what makes a chain
+    /// readable in a flat list; without it every input is an opaque number.
+    pub fn describe_handle(&self, handle: u64) -> String {
+        let name = self
+            .bindable
+            .iter()
+            .find(|(id, _)| *id == handle)
+            .map(|(_, meta)| meta.name())
+            .unwrap_or("<gone>");
+        match self
+            .producers
+            .get(&handle)
+            .and_then(|producer| self.filters.iter().find(|row| row.id == *producer))
+        {
+            Some(from) => format!("d{handle} {name} · from [{}] {}", from.id, from.label),
+            None => format!("d{handle} {name}"),
+        }
+    }
 }
 
 /// One actor as a row, or `None` if the entity is not an actor.
@@ -172,8 +282,10 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
 pub fn gather(
     objects: &ObjectData,
     actors: &ActorData,
+    filters: &FilterData,
     placements: &Query<&Placement>,
     registry: &ActorRegistry,
+    filter_registry: &FilterRegistry,
     store: &DataStore,
 ) -> Gathered {
     let mut rows: HashMap<Entity, Row> = HashMap::new();
@@ -276,6 +388,83 @@ pub fn gather(
     let mut ordered: Vec<Entity> = rows.keys().copied().collect();
     ordered.sort_by_key(handle);
 
+    // Filters, and the two directions of the graph they make between them.
+    let mut filter_rows: Vec<FilterRow> = Vec::new();
+    let mut producers: HashMap<u64, u64> = HashMap::new();
+    let mut consumers: HashMap<u64, Vec<Consumer>> = HashMap::new();
+
+    for (entity, id, kind, params, outputs, stale, busy) in filters {
+        let Some(registered) = filter_registry.get(kind.0) else {
+            // A kind with no registration cannot run or be configured, so there
+            // is nothing useful to show for it.
+            continue;
+        };
+        for spec in registered.outputs {
+            if let Some(handle) = outputs.get(spec.id) {
+                producers.insert(handle, id.0);
+            }
+        }
+        filter_rows.push(FilterRow {
+            entity,
+            id: id.0,
+            kind: registered.id,
+            label: registered.label,
+            specs: registered.params,
+            params: params.0.clone(),
+            // Walked over the kind's *declaration* rather than over the
+            // component's map, so the order is the one the kind states and holds
+            // still frame to frame. Iterating the `HashMap` would reshuffle the
+            // rows under the pointer.
+            outputs: registered
+                .outputs
+                .iter()
+                .filter_map(|spec| Some((spec, outputs.get(spec.id)?)))
+                .collect(),
+            busy,
+            stale,
+        });
+    }
+    filter_rows.sort_by_key(|row| row.id);
+
+    // Who reads what. Filters and actors together — an output feeding a `surface`
+    // is exactly as much a consumer as one feeding another filter, and the panel
+    // asks the question the same way for both.
+    let mut record = |params: &ParamMap, specs: &'static [ParamSpec], reader: Consumer| {
+        for spec in specs.iter().filter(|spec| spec.kind.is_input()) {
+            if let Some(handle) = bound_handle(params, spec.id) {
+                consumers.entry(handle).or_default().push(Consumer {
+                    input: spec.id,
+                    ..reader
+                });
+            }
+        }
+    };
+    for row in &filter_rows {
+        record(
+            &row.params,
+            row.specs,
+            Consumer {
+                id: row.id,
+                label: row.label,
+                input: "",
+            },
+        );
+    }
+    for (_, id, kind, params, ..) in actors {
+        let Some(registered) = registry.get(kind.0) else {
+            continue;
+        };
+        record(
+            &params.0,
+            registered.params,
+            Consumer {
+                id: id.0,
+                label: registered.label,
+                input: "",
+            },
+        );
+    }
+
     // Every array in memory. They are all held rather than owned now, so there
     // is no second source to add in.
     let total_bytes: u64 = store
@@ -291,6 +480,9 @@ pub fn gather(
         owners,
         held,
         bindable,
+        filters: filter_rows,
+        producers,
+        consumers,
         total_bytes,
         meshes: store.iter_geometry().count(),
         vertices: store.iter_geometry().map(|(_, mesh)| mesh.meta.vertices).sum(),

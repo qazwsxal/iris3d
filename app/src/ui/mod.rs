@@ -16,7 +16,9 @@
 
 mod actors;
 mod data;
+mod filters;
 mod gather;
+mod params;
 mod scene;
 
 use bevy::asset::AssetId;
@@ -26,12 +28,13 @@ use bevy::prelude::*;
 use bevy_egui::egui::{LayerId, Ui, UiBuilder};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui};
 
-use crate::scene::link::spawn_actor;
-use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamValue};
-use crate::scene::{DataArray, Placement, SceneCommand, Subset};
+use crate::filter::FilterSummary;
+
+use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamValue};
+use crate::scene::{DataArray, Placement, SceneCommand, SceneError};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
-use gather::{ActorData, ObjectData};
+use gather::{ActorData, FilterData, ObjectData};
 
 pub struct UiPlugin;
 
@@ -49,9 +52,13 @@ impl Plugin for UiPlugin {
             })
             .init_resource::<UiState>()
             .init_resource::<PendingActions>()
+            .init_resource::<Pending>()
             .add_systems(Startup, spawn_egui_camera)
             .add_systems(EguiPrimaryContextPass, draw_ui)
-            .add_systems(Update, apply_actions);
+            // `collect_replies` before `apply_actions`, so a reply that lands
+            // this tick queues its binding and that binding is applied in the
+            // same tick rather than the next one.
+            .add_systems(Update, (collect_replies, apply_actions).chain());
     }
 }
 
@@ -90,8 +97,61 @@ const EGUI_LAYER: usize = 1;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Data,
+    Filters,
     Actors,
     Scene,
+}
+
+/// Something being assembled, before it exists.
+///
+/// Neither an actor nor a filter can be created empty and filled in afterwards:
+/// both check that every required input is bound *before* anything is spawned,
+/// so a `geometry` filter with no positions and a `surface` with no geometry are
+/// refused alike. That is right — either one has nothing to do — but it means
+/// the interface has to hold a half-built thing somewhere, and this is where.
+///
+/// The Actors tab used to duck this by spawning through `spawn_actor` directly,
+/// which skips the check the command path runs. It could therefore make actors
+/// a script could not: `add_actor("surface")` over gRPC is refused outright,
+/// while the button beside it produced one that silently drew nothing. Same
+/// draft for both closes that gap.
+pub struct Draft {
+    pub kind: &'static str,
+    pub params: ParamMap,
+    pub making: Making,
+}
+
+/// Which half of the split a draft is building.
+#[derive(Clone, Copy)]
+pub enum Making {
+    /// Where to plug the finished filter in, once its handles are known.
+    Filter(Option<(&'static str, Target)>),
+    /// The object to draw it under.
+    Actor(Entity),
+}
+
+/// Something already in the scene that a newly created filter should feed.
+///
+/// The two halves of the split need asking differently — an actor's parameters
+/// are written straight onto its component, a filter's go back down the same
+/// command channel a script uses — so which it is has to be carried along.
+#[derive(Clone, Copy)]
+pub enum Target {
+    /// An actor entity and the input to bind.
+    Actor(Entity, &'static str),
+    /// A filter's handle and the input to bind.
+    Filter(u64, &'static str),
+    /// An actor that does not exist yet, to be created once the handle does.
+    ///
+    /// What "assemble…" means when it is clicked from an actor *draft*: the
+    /// actor cannot be made before the geometry it requires, so the draft is
+    /// carried along in here and spent when the filter lands. Without it the
+    /// offer would have to nest one draft inside another.
+    NewActor {
+        object: Entity,
+        kind: &'static str,
+        input: &'static str,
+    },
 }
 
 #[derive(Resource)]
@@ -107,6 +167,11 @@ pub struct UiState {
     pub selected: Option<Entity>,
     pub selected_actor: Option<Entity>,
     pub selected_array: Option<AssetId<DataArray>>,
+    /// The selected filter, by handle. See [`Gathered::filter`].
+    pub selected_filter: Option<u64>,
+    /// The actor or filter being built, if a create form is open. One at a
+    /// time, which is what keeps an offer from nesting a draft inside a draft.
+    pub draft: Option<Draft>,
 }
 
 impl Default for UiState {
@@ -117,6 +182,8 @@ impl Default for UiState {
             selected: None,
             selected_actor: None,
             selected_array: None,
+            selected_filter: None,
+            draft: None,
         }
     }
 }
@@ -134,16 +201,76 @@ enum UiAction {
     Delete(u64),
     Frame(Entity),
     FrameAll,
-    /// Draw an object an additional way. The object keeps the actors it
+    /// Start drawing an object an additional way. The object keeps the actors it
     /// already has — this adds, it does not replace.
+    ///
+    /// Opens a draft rather than spawning: every kind has at least one required
+    /// input, so there is nothing useful to create before they are chosen.
     AddActor(Entity, &'static str),
     RemoveActor(Entity),
     /// Change one parameter of an actor, leaving the rest alone.
     SetParam(Entity, &'static str, ParamValue),
+
+    SelectFilter(u64),
+    /// Change one parameter of a filter, leaving the rest alone.
+    ///
+    /// By handle rather than entity, because it goes out as a `SceneCommand` and
+    /// that is the name a command speaks in.
+    SetFilterParam(u64, &'static str, ParamValue),
+    RemoveFilter(u64),
+    /// Open the create form for a kind, optionally remembering what to wire the
+    /// result into.
+    OfferFilter {
+        kind: &'static str,
+        then: Option<(&'static str, Target)>,
+    },
+    /// Build whatever is drafted for real.
+    Create {
+        kind: &'static str,
+        params: ParamMap,
+        making: Making,
+    },
+    /// Change one parameter of the draft. Goes through the queue like every
+    /// other edit rather than being written where it is read, so there is still
+    /// one place that says what the interface can do.
+    SetDraftParam(&'static str, ParamValue),
+    CancelDraft,
 }
 
 #[derive(Resource, Default)]
 struct PendingActions(Vec<UiAction>);
+
+/// Replies still in the air, and the last thing that was refused.
+///
+/// Every other action here is a fire-and-forget: `DeleteObject` drops its reply
+/// channel because there is nothing to learn from it. Creating a filter is not
+/// like that. The reply carries the handles its outputs were allocated, and
+/// those are the whole point — without them the interface cannot wire the new
+/// filter to the thing it was created for, and would have to make the user do it
+/// by hand immediately after offering not to.
+///
+/// So the receiver is kept and polled. It also gives refusals somewhere to land:
+/// a binding the backend will not accept, or a cycle, otherwise fails in silence
+/// and looks like a button that does nothing.
+#[derive(Resource, Default)]
+struct Pending {
+    waiting: Vec<Job>,
+    /// Shown at the foot of the panel until the next thing succeeds.
+    error: Option<String>,
+}
+
+struct Job {
+    reply: tokio::sync::oneshot::Receiver<Result<FilterSummary, SceneError>>,
+    /// Which output to bind, and where.
+    then: Option<(&'static str, Target)>,
+    /// Show the filter this reply is about once it lands.
+    ///
+    /// True for a creation and false for an edit. Without the distinction a
+    /// slider drag — which is one `SetFilter` per frame — would drag the
+    /// selection back to the filter being edited every frame, and take it off
+    /// whatever the user clicked in the middle of the drag.
+    select: bool,
+}
 
 #[allow(clippy::too_many_arguments)]
 fn draw_ui(
@@ -152,12 +279,15 @@ fn draw_ui(
     mut actions: ResMut<PendingActions>,
     objects: ObjectData,
     actor_data: ActorData,
+    filter_data: FilterData,
     placements: Query<&Placement>,
     registry: Res<ActorRegistry>,
+    filter_registry: Res<crate::filter::FilterRegistry>,
     arrays: Res<Assets<DataArray>>,
     store: Res<crate::scene::DataStore>,
     mut captured: ResMut<PointerCaptured>,
     mut overlays: ResMut<crate::viewport::OverlaySettings>,
+    pending: Res<Pending>,
     // Filtered on Camera3d, not `Without<EguiContext>` as bevy_egui's own
     // example does: with a single camera, bevy_egui puts the egui context on
     // that same entity, so excluding it matches nothing. A `Single` param that
@@ -180,7 +310,15 @@ fn draw_ui(
     );
 
     // Gather first, draw second.
-    let world = gather::gather(&objects, &actor_data, &placements, &registry, &store);
+    let world = gather::gather(
+        &objects,
+        &actor_data,
+        &filter_data,
+        &placements,
+        &registry,
+        &filter_registry,
+        &store,
+    );
 
     // How much the panels took, so the 3D camera can be inset to what is left.
     // Without this the scene renders across the whole window and hides behind
@@ -244,6 +382,7 @@ fn draw_ui(
                 ui.horizontal(|ui| {
                     for (tab, label) in [
                         (Tab::Data, "Data"),
+                        (Tab::Filters, "Filters"),
                         (Tab::Actors, "Actors"),
                         (Tab::Scene, "Scene"),
                     ] {
@@ -272,10 +411,36 @@ fn draw_ui(
                         egui::ScrollArea::vertical()
                             .id_salt("details")
                             .auto_shrink([false, false])
-                            .show(ui, |ui| match tab {
-                                Tab::Data => data::details(ui, &world, &state, &arrays),
-                                Tab::Actors => actors::details(ui, &world, &state, &mut actions),
-                                Tab::Scene => scene::details(ui, &world, &state, &mut actions),
+                            .show(ui, |ui| {
+                                match tab {
+                                    Tab::Data => data::details(ui, &world, &state, &arrays),
+                                    Tab::Filters => filters::details(
+                                        ui,
+                                        &world,
+                                        &state,
+                                        &filter_registry,
+                                        &mut actions,
+                                    ),
+                                    Tab::Actors => {
+                                        actors::details(
+                                            ui,
+                                            &world,
+                                            &state,
+                                            &registry,
+                                            &mut actions,
+                                        )
+                                    }
+                                    Tab::Scene => scene::details(ui, &world, &state, &mut actions),
+                                }
+                                // Whatever the backend last refused. Filters are
+                                // the only thing here that can be refused for a
+                                // reason worth reading — a binding that does not
+                                // fit, a cycle — and the reply that carries it is
+                                // otherwise dropped on the floor.
+                                if let Some(message) = &pending.error {
+                                    ui.separator();
+                                    ui.colored_label(ui.visuals().error_fg_color, message);
+                                }
                             });
                     });
 
@@ -283,6 +448,7 @@ fn draw_ui(
                     .id_salt("list")
                     .show(ui, |ui| match tab {
                         Tab::Data => data::list(ui, &world, &state, &mut actions, &arrays),
+                        Tab::Filters => filters::list(ui, &world, &state, &mut actions),
                         Tab::Actors => actors::list(ui, &world, &state, &mut actions),
                         Tab::Scene => scene::list(
                             ui,
@@ -331,13 +497,17 @@ fn apply_actions(
     mut actions: ResMut<PendingActions>,
     mut state: ResMut<UiState>,
     mut frame: ResMut<FrameRequest>,
-    mut counter: ResMut<crate::counter::GlobalIDCounter>,
+
     registry: Res<ActorRegistry>,
     mut visibility: Query<&mut Visibility>,
     mut params: Query<(&ActorKindId, &mut ActorParams)>,
     actor_entities: Query<(), With<ActorKindId>>,
-    scene_objects: Query<(), With<crate::scene::SceneObject>>,
+    // The handle as well as the membership: an actor is asked for by object
+    // handle, because that is the name the command speaks in.
+    scene_objects: Query<&crate::counter::UniqueID, With<crate::scene::SceneObject>>,
     bridge: Res<crate::grpc::GrpcBridge>,
+    filter_registry: Res<crate::filter::FilterRegistry>,
+    mut pending: ResMut<Pending>,
 ) {
     for action in actions.0.drain(..) {
         match action {
@@ -385,24 +555,11 @@ fn apply_actions(
                 let Some(registered) = registry.get(kind) else {
                     continue;
                 };
-                let (_, actor) = spawn_actor(
-                    &mut commands,
-                    &mut counter,
-                    // One object here. Drawing it somewhere else as well is a
-                    // second parent, which a client asks for by handle — there
-                    // is nothing to click on to mean "and also there".
-                    vec![object],
-                    // Selections are computed by a client, not clicked together
-                    // here, so the tree only ever adds a whole-dataset one.
-                    Subset::All,
-                    (
-                        ActorKindId(registered.id),
-                        ActorParams(registered.defaults()),
-                    ),
-                );
-                // Show what was just added, so its controls appear without a
-                // second click into the list.
-                state.selected_actor = Some(actor);
+                state.draft = Some(Draft {
+                    kind: registered.id,
+                    params: registered.defaults(),
+                    making: Making::Actor(object),
+                });
             }
             UiAction::RemoveActor(entity) => {
                 // Every copy of it goes: `Placements` is a linked relationship,
@@ -433,8 +590,193 @@ fn apply_actions(
                 };
                 current.0.insert(id.to_string(), value);
             }
+
+            UiAction::SelectFilter(id) => state.selected_filter = Some(id),
+
+            // Filters go down the command channel rather than being written
+            // here. Not for consistency's sake: `set` merges the change over the
+            // current map, re-checks every binding and refuses a cycle, and
+            // duplicating that in the interface would be a second, worse copy of
+            // the rules.
+            UiAction::SetFilterParam(id, input, value) => {
+                let mut params = ParamMap::default();
+                params.insert(input.to_string(), value);
+                let (reply, receiver) = tokio::sync::oneshot::channel();
+                if bridge
+                    .sender()
+                    .send(SceneCommand::SetFilter { id, params, reply })
+                    .is_ok()
+                {
+                    pending.waiting.push(Job {
+                        reply: receiver,
+                        then: None,
+                        select: false,
+                    });
+                }
+            }
+            UiAction::RemoveFilter(id) => {
+                let (reply, _) = tokio::sync::oneshot::channel();
+                let _ = bridge
+                    .sender()
+                    .send(SceneCommand::RemoveFilter { id, reply });
+                state.selected_filter = None;
+            }
+
+            UiAction::OfferFilter { kind, then } => {
+                let Some(registered) = filter_registry.get(kind) else {
+                    continue;
+                };
+                // Settings at their defaults, inputs left empty — `normalise`
+                // over an empty map is exactly that, and is what a filter kind
+                // has in place of the `defaults()` an actor kind carries.
+                state.draft = Some(Draft {
+                    kind: registered.id,
+                    params: registered.normalise(&ParamMap::default()),
+                    making: Making::Filter(then),
+                });
+                state.tab = Tab::Filters;
+            }
+            UiAction::SetDraftParam(input, value) => {
+                let Some(draft) = &mut state.draft else {
+                    continue;
+                };
+                // Whichever registry owns the kind being drafted. The two
+                // declare parameters the same way, which is what lets one form
+                // serve both, but they are separate namespaces.
+                let spec = match draft.making {
+                    Making::Filter(_) => filter_registry
+                        .get(draft.kind)
+                        .and_then(|kind| kind.params.iter().find(|spec| spec.id == input)),
+                    Making::Actor(_) => registry
+                        .get(draft.kind)
+                        .and_then(|kind| kind.params.iter().find(|spec| spec.id == input)),
+                };
+                let Some(value) = spec.and_then(|spec| spec.kind.sanitise(value)) else {
+                    continue;
+                };
+                draft.params.insert(input.to_string(), value);
+            }
+            UiAction::CancelDraft => state.draft = None,
+            UiAction::Create {
+                kind,
+                params,
+                making,
+            } => {
+                match making {
+                    Making::Filter(then) => {
+                        let (reply, receiver) = tokio::sync::oneshot::channel();
+                        if bridge
+                            .sender()
+                            .send(SceneCommand::AddFilter {
+                                kind: kind.to_string(),
+                                params,
+                                reply,
+                            })
+                            .is_ok()
+                        {
+                            pending.waiting.push(Job {
+                                reply: receiver,
+                                then,
+                                select: true,
+                            });
+                        }
+                    }
+                    // Down the command channel like everything else, so the
+                    // binding check that refuses a scripted `add_actor` refuses
+                    // this too. The reply is dropped: an actor's handles are not
+                    // needed afterwards the way a filter's outputs are.
+                    Making::Actor(object) => {
+                        let (reply, _) = tokio::sync::oneshot::channel();
+                        let _ = bridge.sender().send(SceneCommand::AddActor {
+                            // One object. Drawing it somewhere else as well is a
+                            // second parent, which a client asks for by handle —
+                            // there is nothing to click on to mean "and also
+                            // there".
+                            parents: scene_objects
+                                .get(object)
+                                .map(|id| vec![id.0])
+                                .unwrap_or_default(),
+                            kind: kind.to_string(),
+                            params,
+                            // Selections are computed by a client, not clicked
+                            // together here, so the tree only ever adds a
+                            // whole-dataset one.
+                            subset: None,
+                            reply,
+                        });
+                    }
+                }
+                // Closed on asking rather than on landing. The reply is a tick
+                // away at least, and leaving the form up meanwhile invites a
+                // second click that would build a second one.
+                state.draft = None;
+            }
         }
     }
+}
+
+/// Picks up the replies to the filter commands the interface sent.
+///
+/// Runs before [`apply_actions`] and pushes onto the same queue, so a filter
+/// created for an actor's empty input is bound to it in the tick its handles
+/// arrive, not the one after.
+fn collect_replies(mut pending: ResMut<Pending>, mut actions: ResMut<PendingActions>) {
+    let mut still_waiting = Vec::new();
+    for mut job in std::mem::take(&mut pending.waiting) {
+        match job.reply.try_recv() {
+            Ok(Ok(summary)) => {
+                pending.error = None;
+                // Show what was just made, without a second click into the list.
+                if job.select {
+                    actions.0.push(UiAction::SelectFilter(summary.id));
+                }
+                let Some((output, target)) = job.then else {
+                    continue;
+                };
+                // The handles are the reason the reply was kept at all.
+                let Some((_, handle)) = summary
+                    .outputs
+                    .iter()
+                    .find(|(id, _)| id == output)
+                else {
+                    warn!("ui: filter {} produced no output \"{output}\"", summary.id);
+                    continue;
+                };
+                actions.0.push(match target {
+                    Target::Actor(entity, input) => {
+                        UiAction::SetParam(entity, input, ParamValue::Data(*handle))
+                    }
+                    Target::Filter(id, input) => {
+                        UiAction::SetFilterParam(id, input, ParamValue::Data(*handle))
+                    }
+                    // The actor was waiting on this handle to exist, so make it
+                    // now, bound. It goes through the same binding check as any
+                    // other, and passes because the one thing it required is
+                    // exactly what just arrived.
+                    Target::NewActor {
+                        object,
+                        kind,
+                        input,
+                    } => {
+                        let mut params = ParamMap::default();
+                        params.insert(input.to_string(), ParamValue::Data(*handle));
+                        UiAction::Create {
+                            kind,
+                            params,
+                            making: Making::Actor(object),
+                        }
+                    }
+                });
+            }
+            Ok(Err(refused)) => pending.error = Some(refused.to_string()),
+            // Still in flight. The scene applies its commands on its own
+            // schedule, so a reply is normally one tick out and sometimes more.
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => still_waiting.push(job),
+            // The far end dropped it. Nothing to report and nothing to wait for.
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        }
+    }
+    pending.waiting = still_waiting;
 }
 
 fn human_bytes(bytes: u64) -> String {

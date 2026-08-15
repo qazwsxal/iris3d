@@ -206,6 +206,27 @@ pub enum FrameTarget {
     Subtree(Entity),
 }
 
+/// Whether a bounding box encloses anything at all.
+///
+/// A filter's geometry output is allocated the moment the filter is created and
+/// only filled when it first runs, and until then it is
+/// [`empty_mesh`](crate::filter): three coincident vertices, whose `Aabb` is a
+/// point. A filter that never produces — `contour` with its default one-sample
+/// grid, which has no cells to walk — leaves it that way for good.
+///
+/// Fitting to that is catastrophic rather than merely wrong. The radius comes
+/// out zero, the camera is placed a fraction of a millimetre from the origin,
+/// and the grid, the axes and every real object vanish at once; it reads as the
+/// whole world disappearing rather than as one empty mesh. So a box with no
+/// extent is treated as the absence of geometry, which is what it stands for.
+///
+/// Deliberately not `NoFrustumCulling` or a marker component: this is a question
+/// about the mesh's contents, and anything else that manages to be exactly flat
+/// deserves the same answer.
+pub(crate) fn has_extent(aabb: &Aabb) -> bool {
+    Vec3::from(aabb.half_extents).max_element() > 0.0
+}
+
 /// Frames the view when new geometry appears, or when the UI asks.
 ///
 /// Driven off `Aabb`, which Bevy computes for any mesh, so this works for any
@@ -257,6 +278,7 @@ fn frame_content(
     let include = |entity: Entity, min: &mut Vec3, max: &mut Vec3| {
         if let Ok((aabb, global, visible)) = bounds.get(entity)
             && visible.get()
+            && has_extent(aabb)
         {
             let centre = global.transform_point(Vec3::from(aabb.center));
             let extent = (global.affine().matrix3 * Vec3::from(aabb.half_extents)).abs();
@@ -281,7 +303,10 @@ fn frame_content(
             }
         }
         _ => {
-            for (aabb, global, _) in bounds.iter().filter(|(.., visible)| visible.get()) {
+            for (aabb, global, _) in bounds
+                .iter()
+                .filter(|(aabb, _, visible)| visible.get() && has_extent(aabb))
+            {
                 let centre = global.transform_point(Vec3::from(aabb.center));
                 let extent = (global.affine().matrix3 * Vec3::from(aabb.half_extents)).abs();
                 min = min.min(centre - extent);
@@ -405,5 +430,38 @@ fn screenshot(
 
     if automatic && request.exit_after {
         request.exit_at = Some(Timer::new(Duration::from_secs(2), TimerMode::Once));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aabb(half: Vec3) -> Aabb {
+        Aabb {
+            center: Vec3::ZERO.into(),
+            half_extents: half.into(),
+        }
+    }
+
+    /// The placeholder a filter's geometry output carries before it runs — and
+    /// for good, if it never does — must not count as something to look at.
+    ///
+    /// `empty_mesh` is three coincident vertices, so its `Aabb` is a point.
+    /// Framing to it puts the camera a fraction of a millimetre from the origin
+    /// and takes the grid, the axes and every real object with it. The symptom
+    /// is the entire world vanishing, which points at anything but one unfilled
+    /// mesh, so it is worth a test that names the cause.
+    #[test]
+    fn a_placeholder_mesh_is_not_something_to_look_at() {
+        assert!(!has_extent(&aabb(Vec3::ZERO)));
+    }
+
+    /// A surface can be genuinely flat — a plane, a single contour slice — and
+    /// still be worth framing. Only *no* extent in any direction disqualifies.
+    #[test]
+    fn a_flat_thing_still_counts() {
+        assert!(has_extent(&aabb(Vec3::new(5.0, 0.0, 5.0))));
+        assert!(has_extent(&aabb(Vec3::new(0.0, 0.0, 0.001))));
     }
 }

@@ -210,7 +210,7 @@ const PARAMS: &[ParamSpec] = &[
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
         id: "medium",
-        label: "absorbing medium",
+        label: "medium",
         params: PARAMS,
         apply: |entity, params| {
             let depiction = match text(params, "mode", "solid") {

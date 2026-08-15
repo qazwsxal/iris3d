@@ -144,10 +144,17 @@ fn subtree_bounds(
 }
 
 /// Rough size of everything on screen, used to scale the grid and axes.
+///
+/// Skips boxes with no extent for the reason
+/// [`has_extent`](super::has_extent) gives: a filter's geometry output is a
+/// placeholder until it runs, and one that never runs stays a point at the
+/// origin. Sizing the grid off that collapses its spacing to nothing, so the
+/// grid disappears at the same moment the camera does — two symptoms, one
+/// cause, and neither of them says which.
 fn scene_extent(bounds: &Query<(&Aabb, &GlobalTransform)>) -> Option<f32> {
     let mut min = Vec3::splat(f32::INFINITY);
     let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for (aabb, global) in bounds {
+    for (aabb, global) in bounds.iter().filter(|(aabb, _)| super::has_extent(aabb)) {
         let centre = global.transform_point(Vec3::from(aabb.center));
         let extent = (global.affine().matrix3 * Vec3::from(aabb.half_extents)).abs();
         min = min.min(centre - extent);

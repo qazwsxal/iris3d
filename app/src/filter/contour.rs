@@ -48,6 +48,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
+use crate::scene::DataArray;
 use crate::scene::registry::{ParamKind, ParamSpec, float, text, uvec3, vec3, vector};
 
 use super::colormap::{ColorMap, sample};
@@ -62,12 +63,17 @@ use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Reques
 const MAX_SAMPLES: usize = 300 * 300 * 300;
 
 const PARAMS: &[ParamSpec] = &[
+    // Three-dimensional, because a grid's shape is something the array already
+    // knows. Asking for it separately was a parameter that could disagree with
+    // its own data — and did: it defaulted to one sample per axis, which has no
+    // cells to walk, so a filter left alone produced nothing and said so only in
+    // a debug line.
     ParamSpec {
         id: "field",
         label: "field",
         kind: ParamKind::Array {
             dtypes: &[],
-            shape: &[0],
+            shape: &[0, 0, 0],
             required: true,
             structural: true,
         },
@@ -81,37 +87,55 @@ const PARAMS: &[ParamSpec] = &[
         label: "colour by",
         kind: ParamKind::Array {
             dtypes: &[],
-            shape: &[0],
+            shape: &[0, 0, 0],
             required: false,
             structural: true,
         },
     },
-    // Absolute, in the field's own units, because that is what a threshold
-    // means: "the 3-sigma contour" is a number, not a fraction of whatever
-    // happens to be loaded. The range is wide enough not to clamp a real field,
-    // which does make a slider over it useless — a normalised level beside this
-    // one is the obvious thing to add when scrubbing matters.
+    // A fraction of the field's own span, not a value in its units. 0 sits at
+    // the field's minimum, 1 at its maximum, 0.5 halfway.
+    //
+    // Absolute units are what a threshold *means* — "the 3-sigma contour" is a
+    // number, not a fraction of whatever happens to be loaded — and this gives
+    // that up. It buys the one thing absolute units cannot have: a declared
+    // range that is correct for every field. An absolute level has to declare
+    // ±1e6 to avoid clamping a real one, and a control over that range cannot
+    // be dragged to anything useful, which left the parameter unreachable from
+    // the UI entirely.
+    //
+    // Cheap here because the span is already computed — `span` reads it off the
+    // values for the colour ramp. When absolute entry is wanted back it belongs
+    // beside this rather than instead of it, and the run logs both so the
+    // number a fraction resolved to is never a mystery.
     ParamSpec {
         id: "level",
-        label: "level",
+        label: "level (fraction of the field's range)",
         kind: ParamKind::Float {
             default: 0.5,
-            min: -1.0e6,
-            max: 1.0e6,
+            min: 0.0,
+            max: 1.0,
             logarithmic: false,
         },
     },
     // The same three the `volume` actor declares, and meaning the same thing: a
     // 256³ grid states its geometry in nine numbers rather than 50 million
     // coordinates.
+    // How coarsely to walk the grid: 1 reads every sample, 2 every second, and
+    // so on. Per axis rather than one number, because volumes are routinely
+    // anisotropic — a tomogram is often much coarser in z already, and striding
+    // it as hard as x would throw away the axis that has least to spare.
+    //
+    // The cost of a contour is the cell count, so a stride of 2 is roughly an
+    // eighth of the work. That is the knob worth having on a slider: the grid's
+    // own shape is a fact, and how much of it to read is the choice.
     ParamSpec {
-        id: "dims",
-        label: "samples",
+        id: "step",
+        label: "step (samples skipped)",
         kind: ParamKind::Vector {
             components: 3,
             default: &[1.0, 1.0, 1.0],
             min: 1.0,
-            max: 4096.0,
+            max: 32.0,
             integral: true,
         },
     },
@@ -191,6 +215,41 @@ impl Field {
         let (ny, nz) = (self.dims.y as usize, self.dims.z as usize);
         self.values[(x * ny + y) * nz + z]
     }
+
+    /// Every `step`-th sample on each axis.
+    ///
+    /// The last sample on an axis is not forced into the result: a stride that
+    /// does not divide the grid leaves a partial cell at the far edge, and
+    /// stretching the final row to cover it would misplace that row in space.
+    /// Dropping it loses at most `step - 1` samples off an edge, and the ones
+    /// kept stay exactly where they belong once `spacing` is scaled to match.
+    fn subsampled(&self, step: UVec3) -> Field {
+        let dims = (self.dims + step - UVec3::ONE) / step;
+        let mut values = Vec::with_capacity((dims.x * dims.y * dims.z) as usize);
+        for x in 0..dims.x {
+            for y in 0..dims.y {
+                for z in 0..dims.z {
+                    values.push(self.at(
+                        (x * step.x) as usize,
+                        (y * step.y) as usize,
+                        (z * step.z) as usize,
+                    ));
+                }
+            }
+        }
+        Field { values, dims }
+    }
+}
+
+/// The grid shape an array declares, or `None` if it is not a 3D grid.
+///
+/// Read off the data rather than asked for. An array that says it is `(nx, ny,
+/// nz)` cannot disagree with itself, which a separate parameter could and did.
+fn grid_of(array: &DataArray) -> Option<UVec3> {
+    match array.shape.as_slice() {
+        [x, y, z] => Some(UVec3::new(*x as u32, *y as u32, *z as u32)),
+        _ => None,
+    }
 }
 
 fn run(request: &Request) -> Products {
@@ -198,7 +257,13 @@ fn run(request: &Request) -> Products {
     let Some(field) = request.input("field") else {
         return products;
     };
-    let dims = uvec3(&request.params, "dims", UVec3::ONE);
+    let Some(dims) = grid_of(field) else {
+        warn!(
+            "contour: the field has shape {:?}, which is not a 3D grid",
+            field.shape
+        );
+        return products;
+    };
     let expected = dims.x as usize * dims.y as usize * dims.z as usize;
     if expected == 0 || expected > MAX_SAMPLES {
         warn!("contour: {dims} samples is not a grid this will walk");
@@ -212,30 +277,55 @@ fn run(request: &Request) -> Products {
         );
         return products;
     }
-    // A contour needs a cell in every direction, so any axis of one sample has
-    // no interior at all. Answering with nothing is right: a plane has no
-    // isosurface, and inventing one from a single layer would be a guess.
-    if dims.min_element() < 2 {
-        debug!("contour: {dims} has no cells to walk");
-        return products;
-    }
 
+    let step = uvec3(&request.params, "step", UVec3::ONE).max(UVec3::ONE);
     let field = Field {
         values: values[..expected].to_vec(),
         dims,
+    }
+    .subsampled(step);
+
+    // A contour needs a cell in every direction, so any axis of one sample has
+    // no interior at all. Answering with nothing is right: a plane has no
+    // isosurface, and inventing one from a single layer would be a guess.
+    //
+    // Checked after subsampling, because that is what can cause it now — a step
+    // coarser than an axis is long leaves that axis one sample deep.
+    if field.dims.min_element() < 2 {
+        debug!(
+            "contour: {dims} at step {step} leaves {}, which has no cells to walk",
+            field.dims
+        );
+        return products;
+    }
+    // `level` is a fraction of the field's own span, so resolve it against the
+    // values actually loaded. A constant field has no span to take a fraction
+    // of, and no isosurface either — every cell is on the same side of every
+    // threshold — so there is nothing to answer with.
+    let fraction = float(&request.params, "level", 0.5);
+    let Some((low, high)) = span(&field.values) else {
+        debug!("contour: the field is constant, so no level crosses it");
+        return products;
     };
-    let level = float(&request.params, "level", 0.5);
-    let surface = extract(&field, level, vec3(&request.params, "spacing", Vec3::ONE));
+    let level = low + fraction * (high - low);
+
+    // Positions come back in *subsampled* grid units, so the spacing between
+    // them is the field's spacing times the stride. Without this the surface
+    // shrinks towards the origin as the step is raised, which reads as the
+    // geometry changing rather than the sampling.
+    let spacing = vec3(&request.params, "spacing", Vec3::ONE) * step.as_vec3();
+
+    let surface = extract(&field, level, spacing);
     if surface.positions.is_empty() {
-        // The level is outside the field, or outside the part of it that has a
-        // sign change. Producing nothing leaves whatever was there before, which
-        // is the honest outcome for a slider dragged past the end of the data.
-        debug!("contour: level {level} crosses nothing in this field");
+        // The level found no sign change. Reachable at the very ends of the
+        // range, where the threshold sits on the field's own extreme and only
+        // touches it. Producing nothing leaves whatever was there before, which
+        // is the honest outcome for a slider dragged to the end of the data.
+        debug!("contour: level {level} ({fraction} of {low}..{high}) crosses nothing");
         return products;
     }
 
     let origin = vec3(&request.params, "origin", Vec3::ZERO);
-    let spacing = vec3(&request.params, "spacing", Vec3::ONE);
     let positions: Vec<[f32; 3]> = surface
         .positions
         .iter()
@@ -258,32 +348,48 @@ fn run(request: &Request) -> Products {
     );
     mesh.insert_indices(Indices::U32(surface.indices));
 
-    if let Some(colours) = colours(request, &field, &surface.positions) {
+    if let Some(colours) = colours(request, dims, step, &surface.positions) {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
     }
 
-    debug!("contour: {vertices} vertices at level {level}");
+    // Both numbers, because a fraction alone cannot be checked against anything
+    // a person knows about their own data.
+    debug!("contour: {vertices} vertices at level {level} ({fraction} of {low}..{high})");
     products.insert("geometry", mesh.into());
     products
 }
 
 /// Samples `colour_field` where each vertex landed and maps it through the ramp.
 ///
-/// `None` when nothing is bound, when it is the wrong length for the grid, or
+/// `None` when nothing is bound, when it is the wrong shape for the grid, or
 /// when the field is constant — a range of zero width has no reading, and
 /// painting the whole surface with the bottom of the map would look like a
 /// result rather than an absence of one.
-fn colours(request: &Request, field: &Field, at: &[Vec3]) -> Option<Vec<[f32; 4]>> {
-    let expected = field.values.len();
-    let values = request.input("colour_field").map(|array| array.to_f32())?;
+///
+/// Takes the **full** grid and the stride rather than the subsampled field,
+/// because it has to subsample identically: the vertices are in subsampled grid
+/// units, so a colour source at full resolution would be read at a fraction of
+/// the right position and smear the ramp across the surface.
+fn colours(request: &Request, grid: UVec3, step: UVec3, at: &[Vec3]) -> Option<Vec<[f32; 4]>> {
+    let array = request.input("colour_field")?;
+    if grid_of(array) != Some(grid) {
+        warn!(
+            "contour: the colour field is {:?}, not the field's {grid}",
+            array.shape
+        );
+        return None;
+    }
+    let expected = (grid.x as usize) * (grid.y as usize) * (grid.z as usize);
+    let values = array.to_f32();
     if values.len() < expected {
         warn!("contour: the colour field is shorter than the grid");
         return None;
     }
     let source = Field {
         values: values[..expected].to_vec(),
-        dims: field.dims,
-    };
+        dims: grid,
+    }
+    .subsampled(step);
 
     let pinned = vector(&request.params, "range", 2);
     let sampled: Vec<f32> = at.iter().map(|p| trilinear(&source, *p)).collect();
@@ -305,12 +411,16 @@ fn colours(request: &Request, field: &Field, at: &[Vec3]) -> Option<Vec<[f32; 4]
     )
 }
 
-/// The span of the values actually on the surface, or `None` if it has no width.
+/// The low and high of a set of values, or `None` if it has no width.
 ///
-/// Over the sampled values rather than the whole field, which is the useful
-/// autoscale: a potential that runs from -80 to +80 across a box may only reach
-/// -5 to +5 on the surface being drawn, and stretching the ramp over the box
-/// would leave the surface one flat colour.
+/// Two callers, and *which* values they hand it is the whole point of each.
+///
+/// - `level` takes the span of the **whole field**, because a fraction of the
+///   field's range is what the parameter means.
+/// - `colours` takes the span of the values **sampled on the surface**, which
+///   is the useful autoscale: a potential that runs from -80 to +80 across a
+///   box may only reach -5 to +5 on the surface being drawn, and stretching the
+///   ramp over the box would leave the surface one flat colour.
 fn span(values: &[f32]) -> Option<(f32, f32)> {
     let low = values.iter().copied().fold(f32::INFINITY, f32::min);
     let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -565,7 +675,9 @@ mod tests {
         }
         DataArray::numeric(
             Dtype::Float32,
-            vec![(n * n * n) as u64],
+            // Declared as the grid it is, because that is now where `contour`
+            // reads the shape from rather than from a parameter beside it.
+            vec![n as u64, n as u64, n as u64],
             values.iter().flat_map(|v| v.to_le_bytes()).collect(),
         )
     }
@@ -581,19 +693,40 @@ mod tests {
         sampled(n, |p| r - p.distance(mid))
     }
 
-    fn request(n: u32, field: DataArray, params: &[(&str, ParamValue)]) -> Request {
+    /// A request over `field`, with `level` given the way these tests think.
+    ///
+    /// They speak in **absolute field values**, and should: "the surface of a
+    /// ball of radius 8 is the level-0 set" is the claim being checked, while a
+    /// fraction of whatever this grid's corners happen to reach is not something
+    /// an assertion can be written against. The parameter on the wire is a
+    /// fraction, so convert here, through the same [`span`] the filter uses.
+    ///
+    /// A test wanting the fraction itself overwrites `level` on the way out —
+    /// [`a_half_level_lands_at_the_middle_of_the_field`] does.
+    fn request(_n: u32, field: DataArray, params: &[(&str, ParamValue)]) -> Request {
         let mut map = ParamMap::default();
-        map.insert(
-            "dims".into(),
-            ParamValue::Vector(vec![n as f64, n as f64, n as f64]),
-        );
-        map.insert("level".into(), ParamValue::Float(0.0));
+        let mut level = 0.0;
         for (id, value) in params {
+            if *id == "level" {
+                level = value.as_float().expect("a level is a float");
+                continue;
+            }
             map.insert((*id).to_string(), value.clone());
         }
+        map.insert("level".into(), ParamValue::Float(fraction(&field, level)));
         let mut inputs = HashMap::new();
         inputs.insert("field", field);
         Request { params: map, inputs }
+    }
+
+    /// Where `value` sits in the field's own range, which is what `level` means.
+    ///
+    /// A value outside the range stays outside rather than being clamped: "a
+    /// level nothing reaches" is a case worth testing, and clamping would
+    /// quietly turn it into "the top of the field" instead.
+    fn fraction(field: &DataArray, value: f32) -> f32 {
+        let (low, high) = span(&field.to_f32()).expect("a test field with some width");
+        (value - low) / (high - low)
     }
 
     fn mesh(products: &Products) -> &Mesh {
@@ -818,9 +951,42 @@ mod tests {
         assert!(worst < 0.5, "worst radius was off by {worst}");
     }
 
+    /// `level` is a fraction of the field's own range, so a half lands halfway
+    /// up it whatever the units are. Asserted on a ramp along x, where the
+    /// answer is a plane whose position can be checked exactly: values run
+    /// 0..n-1, so half of that span is a surface standing at x = (n-1)/2.
+    ///
+    /// This is the property that makes one declared range of 0..1 correct for
+    /// every field, and the reason the parameter is reachable from a slider at
+    /// all.
+    #[test]
+    fn a_half_level_lands_at_the_middle_of_the_field() {
+        let n = 8u32;
+        let mut request = request(n, sampled(n, |p| p.x), &[]);
+        // Past the absolute-value helper deliberately: the fraction is the thing
+        // under test.
+        request
+            .params
+            .insert("level".into(), ParamValue::Float(0.5));
+
+        let middle = (n - 1) as f32 / 2.0;
+        for position in &positions(mesh(&run(&request))) {
+            assert!(
+                (position.x - middle).abs() < 0.6,
+                "half of a 0..{} ramp should stand at x = {middle}, found {position}",
+                n - 1
+            );
+        }
+    }
+
     /// A level nothing reaches produces nothing rather than an empty mesh. The
     /// previous surface then stands, which is what a slider dragged past the end
     /// of the data should do.
+    ///
+    /// Reached here by handing `run` a fraction far outside 0..1. A client
+    /// cannot: `sanitise` clamps the parameter to its declared range long before
+    /// this. So this is `run` being defensive about a map it did not build,
+    /// which is worth keeping — it is called with whatever the params hold.
     #[test]
     fn a_level_outside_the_field_produces_nothing() {
         let n = 16u32;
@@ -832,26 +998,77 @@ mod tests {
         assert!(products.is_empty());
     }
 
+    /// An array of the wrong rank is refused rather than guessed at.
+    ///
+    /// The shape *is* the grid now, so a flat array carries no grid at all.
+    #[test]
+    fn a_field_that_is_not_a_grid_produces_nothing() {
+        let flat = DataArray::numeric(
+            Dtype::Float32,
+            vec![64],
+            (0..64).flat_map(|i| (i as f32).to_le_bytes()).collect(),
+        );
+        assert!(run(&request(4, flat, &[])).is_empty());
+    }
+
     /// A grid with no interior has no isosurface, and says so rather than
     /// indexing off the end of a single layer.
     #[test]
     fn a_grid_with_no_cells_produces_nothing() {
-        let mut request = request(4, ball(4, 1.0), &[]);
-        request
-            .params
-            .insert("dims".into(), ParamValue::Vector(vec![64.0, 1.0, 1.0]));
+        let sheet = DataArray::numeric(
+            Dtype::Float32,
+            vec![64, 1, 1],
+            (0..64).flat_map(|i| (i as f32).to_le_bytes()).collect(),
+        );
+        assert!(run(&request(4, sheet, &[])).is_empty());
+    }
+
+    /// A field shorter than the shape it declares is refused rather than read
+    /// past the end of.
+    #[test]
+    fn a_short_field_produces_nothing() {
+        let n = 8u32;
+        let short = ball(n, 3.0);
+        let overstated = DataArray::numeric(Dtype::Float32, vec![16, 16, 16], short.data);
+        assert!(run(&request(n, overstated, &[])).is_empty());
+    }
+
+    /// A step coarser than an axis is long leaves that axis one sample deep,
+    /// which is the same "no cells to walk" case arrived at from the other end.
+    #[test]
+    fn a_step_that_flattens_an_axis_produces_nothing() {
+        let n = 8u32;
+        let request = request(
+            n,
+            ball(n, 3.0),
+            &[("step", ParamValue::Vector(vec![16.0, 1.0, 1.0]))],
+        );
         assert!(run(&request).is_empty());
     }
 
-    /// A field shorter than the grid it claims is refused rather than read past
-    /// the end of.
+    /// Striding reads less of the grid but describes the same shape in the same
+    /// place. The surface gets coarser, so it is checked with a looser tolerance
+    /// than the full-resolution test — the claim is that it still lands on the
+    /// sphere, not that it lands as precisely.
     #[test]
-    fn a_short_field_produces_nothing() {
-        let mut request = request(8, ball(8, 3.0), &[]);
-        request
-            .params
-            .insert("dims".into(), ParamValue::Vector(vec![16.0, 16.0, 16.0]));
-        assert!(run(&request).is_empty());
+    fn a_step_keeps_the_surface_where_it_was() {
+        let (n, r) = (32u32, 10.0);
+        let stepped = run(&request(
+            n,
+            ball(n, r),
+            &[("step", ParamValue::Vector(vec![2.0, 2.0, 2.0]))],
+        ));
+        let mesh = mesh(&stepped);
+        // Grid units, and the stride does not move the centre: sample 0 stays at
+        // the origin whatever the step, so the midpoint is where it always was.
+        let mid = centre(n);
+        let radii: Vec<f32> = positions(mesh).iter().map(|p| p.distance(mid)).collect();
+        assert!(!radii.is_empty(), "a stepped ball should still contour");
+        let worst = radii
+            .iter()
+            .map(|found| (found - r).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst < 1.0, "worst radius was off by {worst}");
     }
 
     /// A bound colour field is sampled where the vertices landed. A linear ramp

@@ -9,11 +9,11 @@
 use bevy_egui::egui;
 
 use crate::scene::Subset;
-use crate::scene::registry::{
-    ParamKind, ParamValue, data as registry_data, flag, float, text, vector as registry_vector,
-};
+use crate::scene::registry::ParamKind;
 
 use super::gather::{ActorRow, Gathered, Row};
+use super::params;
+use super::Making;
 use super::{PendingActions, UiAction, UiState};
 
 pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
@@ -100,7 +100,13 @@ fn entry(
     });
 }
 
-pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
+pub fn details(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    state: &UiState,
+    registry: &crate::scene::registry::ActorRegistry,
+    actions: &mut PendingActions,
+) {
     match state.selected_actor.and_then(|entity| scene.actor(entity)) {
         Some((row, actor)) => {
             controls(ui, scene, row, actor, actions);
@@ -111,14 +117,36 @@ pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &m
             ui.separator();
         }
     }
-    add(ui, scene, state, actions);
+    add(ui, scene, state, registry, actions);
 }
 
 /// The "draw this another way" row.
 ///
 /// Adding rather than replacing: an object may be drawn several ways at once,
 /// and each way is its own entity with its own settings.
-fn add(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
+fn add(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    state: &UiState,
+    registry: &crate::scene::registry::ActorRegistry,
+    actions: &mut PendingActions,
+) {
+    // A kind chosen but not yet made. Every actor kind has at least one required
+    // input, so there is nothing worth spawning before they are picked — the
+    // command path refuses an unbound actor, and the interface should not be
+    // able to make one the wire would reject.
+    if let Some(draft) = &state.draft
+        && let Making::Actor(_) = draft.making
+        && let Some(kind) = registry.get(draft.kind)
+    {
+        params::draft_form(ui, scene, actions, draft, kind.label, kind.params, |spec| {
+            // Geometry never comes from an upload, so an empty picker here is a
+            // missing filter rather than missing data.
+            matches!(spec.kind, ParamKind::Geometry { .. }).then_some("assemble…")
+        });
+        return;
+    }
+
     let Some(row) = state.selected.and_then(|entity| scene.rows.get(&entity)) else {
         ui.weak("Select an object to draw.");
         return;
@@ -179,145 +207,28 @@ fn controls(
     });
     ui.separator();
 
-    for spec in current.specs {
-        match spec.kind {
-            ParamKind::Float {
-                default,
-                min,
-                max,
-                logarithmic,
-            } => {
-                let mut value = float(&current.params, spec.id, default);
-                if ui
-                    .add(
-                        egui::Slider::new(&mut value, min..=max)
-                            .logarithmic(logarithmic)
-                            .text(spec.label),
-                    )
-                    .changed()
-                {
-                    actions.0.push(UiAction::SetParam(
-                        current.entity,
-                        spec.id,
-                        ParamValue::Float(value),
-                    ));
-                }
-            }
-            ParamKind::Vector {
-                components,
-                min,
-                max,
-                integral,
-                ..
-            } => {
-                // One drag value per component. Labelled x/y/z up to three and
-                // then by index, so a two-component parameter reads correctly
-                // without this needing to know what it is for.
-                let mut values = registry_vector(&current.params, spec.id, components);
-                let mut edited = false;
-                ui.horizontal(|ui| {
-                    ui.label(spec.label);
-                    for (axis, value) in values.iter_mut().enumerate() {
-                        let name = ["x", "y", "z", "w"]
-                            .get(axis)
-                            .copied()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| axis.to_string());
-                        let speed = if integral { 1.0 } else { 0.01 };
-                        if ui
-                            .add(
-                                egui::DragValue::new(value)
-                                    .speed(speed)
-                                    .range(min..=max)
-                                    .prefix(format!("{name} ")),
-                            )
-                            .changed()
-                        {
-                            edited = true;
-                        }
-                    }
-                });
-                if edited {
-                    actions.0.push(UiAction::SetParam(
-                        current.entity,
-                        spec.id,
-                        ParamValue::Vector(values),
-                    ));
-                }
-            }
-            ParamKind::Array { required, .. } | ParamKind::Geometry { required } => {
-                // Generated from the same declaration as every other control,
-                // which is the point of bindings being parameters: the picker
-                // only offers what the input will actually accept, because the
-                // input says what it accepts. Arrays and meshes go through the
-                // one control for the same reason — they are one handle space,
-                // and `accepts` is what separates them.
-                let bound = registry_data(&current.params, spec.id);
-                let label = bound
-                    .and_then(|id| scene.bindable.iter().find(|(held, _)| *held == id))
-                    .map(|(id, meta)| format!("d{id} {}", meta.name()))
-                    .unwrap_or_else(|| {
-                        if required {
-                            "REQUIRED".into()
-                        } else {
-                            "none".into()
-                        }
-                    });
-                ui.horizontal(|ui| {
-                    ui.label(spec.label);
-                    egui::ComboBox::from_id_salt((current.entity, spec.id))
-                        .selected_text(label)
-                        .show_ui(ui, |ui| {
-                            let mut any = false;
-                            for (id, meta) in &scene.bindable {
-                                if spec.kind.accepts(meta.as_held()).is_err() {
-                                    continue;
-                                }
-                                any = true;
-                                let picked = bound == Some(*id);
-                                let text =
-                                    format!("d{id} {} · {}", meta.name(), meta.describe());
-                                if ui.selectable_label(picked, text).clicked() && !picked {
-                                    actions.0.push(UiAction::SetParam(
-                                        current.entity,
-                                        spec.id,
-                                        ParamValue::Data(*id),
-                                    ));
-                                }
-                            }
-                            if !any {
-                                ui.weak("nothing held fits this input");
-                            }
-                        });
-                });
-            }
-            ParamKind::Choice { options, default } => {
-                let chosen = text(&current.params, spec.id, default);
-                ui.horizontal(|ui| {
-                    ui.label(spec.label);
-                    for option in options {
-                        if ui.selectable_label(chosen == *option, *option).clicked() {
-                            actions.0.push(UiAction::SetParam(
-                                current.entity,
-                                spec.id,
-                                ParamValue::Text((*option).to_string()),
-                            ));
-                        }
-                    }
-                });
-            }
-            ParamKind::Bool { default } => {
-                let mut value = flag(&current.params, spec.id, default);
-                if ui.checkbox(&mut value, spec.label).changed() {
-                    actions.0.push(UiAction::SetParam(
-                        current.entity,
-                        spec.id,
-                        ParamValue::Bool(value),
-                    ));
-                }
-            }
-        }
+    // An actor's geometry can only come from a filter, so an empty picker here
+    // is not a missing upload — it is a missing `geometry` filter. Offering to
+    // make one is the difference between this panel working and dead-ending;
+    // asking a person to know that assembly is a filter's job is the tool
+    // exposing its own plumbing.
+    let edits = params::controls(
+        ui,
+        scene,
+        current.specs,
+        &current.params,
+        current.entity,
+        |spec| matches!(spec.kind, ParamKind::Geometry { .. }).then_some("assemble…"),
+    );
+    for (id, value) in edits.set {
+        actions
+            .0
+            .push(UiAction::SetParam(current.entity, id, value));
     }
-
+    if let Some(input) = edits.offered {
+        actions.0.push(UiAction::OfferFilter {
+            kind: "geometry",
+            then: Some(("geometry", super::Target::Actor(current.entity, input))),
+        });
+    }
 }
-
