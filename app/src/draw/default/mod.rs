@@ -82,26 +82,25 @@
 //!
 //! Six kinds, split by whether they transmit.
 //!
-//! **Opaque, through the ordinary passes:** `mesh`, `points`,
+//! **Opaque, through the ordinary passes:** `surface`, `points`,
 //! `ball-and-stick` and `glycan`. These write depth and are the thing the
 //! absorbance is measured *in front of*.
 //!
-//! **Transmitting, into the moment buffer:** `solid` and `volume`.
+//! **Transmitting, into the moment buffer:** `medium` and `volume`.
 //!
-//! `mesh` and `solid` are the same triangles making different claims. A mesh is
-//! lit and opaque; a solid says those triangles *bound a medium*. Two kinds
-//! rather than one with a mode, because they go through different passes and
-//! their parameters are disjoint — see [`solid`].
+//! `surface` and `medium` are the same triangles making different claims. A
+//! surface is lit and opaque; a medium says those triangles *bound* something
+//! light is absorbed inside. Two kinds rather than one with a mode, because
+//! they go through different passes and their parameters are disjoint — see
+//! [`medium`], which also says why transparency is a kind here when every other
+//! tool makes it a property.
 //!
 //! There was a seventh, `cartoon`, and its absence is the point of the split
 //! this backend now sits under. It generated a ribbon *and* drew it, so showing
-//! one as a medium rather than a lit mesh meant a `mode` that duplicated `mesh`
-//! against `solid` inside a third place. It is [`filter::cartoon`](crate::filter::cartoon)
-//! now, and its triangles bind to either of those — or to both at once.
-//!
-//! Neither is called `surface`, deliberately. In structural biology that word
-//! means a *molecular* surface — solvent-accessible or solvent-excluded — and
-//! iris3d will want the name for exactly that.
+//! one as a medium rather than a lit surface meant a `mode` that duplicated
+//! `surface` against `medium` inside a third place. It is
+//! [`filter::cartoon`](crate::filter::cartoon) now, and its triangles bind to
+//! either of those — or to both at once.
 //!
 //! A kind a pathway cannot do is simply absent from the registry and refused by
 //! name rather than drawn wrongly.
@@ -130,13 +129,13 @@ use crate::scene::registry::ActorRegistry;
 
 mod extract;
 mod glycan;
+mod medium;
 mod molecule;
-mod mesh;
 mod pass;
 mod pipeline;
 mod points;
 mod prepare;
-mod solid;
+mod surface;
 mod volume;
 
 // Re-exported rather than imported separately in each kind module: whether a
@@ -417,8 +416,8 @@ impl Plugin for MomentBackendPlugin {
 
         {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
-            mesh::register(&mut registry);
-            solid::register(&mut registry);
+            surface::register(&mut registry);
+            medium::register(&mut registry);
             glycan::register(&mut registry);
             molecule::register(&mut registry);
             points::register(&mut registry);
@@ -429,8 +428,8 @@ impl Plugin for MomentBackendPlugin {
             Update,
             (
                 (
-                    mesh::invalidate,
-                    solid::invalidate,
+                    surface::invalidate,
+                    medium::invalidate,
                     glycan::invalidate,
                     molecule::invalidate,
                     points::invalidate,
@@ -438,8 +437,8 @@ impl Plugin for MomentBackendPlugin {
                 )
                     .in_set(Invalidate),
                 (
-                    mesh::draw_meshes,
-                    solid::draw_solids,
+                    surface::draw_surfaces,
+                    medium::draw_media,
                     glycan::draw_glycans,
                     molecule::draw_molecules,
                     points::draw_points,
@@ -448,7 +447,7 @@ impl Plugin for MomentBackendPlugin {
                     .in_set(Draw),
                 (
                     place_volumes,
-                    mesh::place_meshes,
+                    surface::place_surfaces,
                     glycan::place_glycans,
                     molecule::place_molecules,
                     points::place_points,

@@ -7,10 +7,10 @@
 //!
 //! # Why this is a filter and not something each actor does
 //!
-//! It used to be something each actor did. `mesh` and `solid` both took
+//! It used to be something each actor did. `surface` and `medium` both took
 //! positions, indices, normals and colour, and both built their own
 //! `bevy::Mesh` from them — so a ribbon drawn as a lit surface *and* as an
-//! absorbing solid was the same vertices uploaded twice, and a third way of
+//! absorbing medium was the same vertices uploaded twice, and a third way of
 //! drawing it would have been a third copy. The generation had already been made
 //! to happen once, by turning the cartoon into a filter; the vertex buffers were
 //! the half that was still duplicated per consumer.
@@ -24,7 +24,7 @@
 //!
 //! A client that uploaded positions and indices has arrays, not geometry, so it
 //! runs them through here first. That is deliberately the *same* path a filter's
-//! output takes rather than a second one: `mesh` has one input and no idea
+//! output takes rather than a second one: `surface` has one input and no idea
 //! whether what it draws was computed or uploaded.
 //!
 //! # Colour arrives here, not at the actor
@@ -205,7 +205,7 @@ fn run(request: &Request) -> Products {
     }
 
     // Opaque. The alpha of a vertex colour means nothing to either consumer —
-    // a lit mesh is opaque and a solid's transparency is its absorbance — so
+    // a lit surface is opaque and a medium's transparency is its absorbance — so
     // there is no fourth channel to carry and nothing to read one from.
     if let Some(colours) = colours.map(narrow) {
         let rgba: Vec<[f32; 4]> = colours.iter().map(|c| [c.x, c.y, c.z, 1.0]).collect();

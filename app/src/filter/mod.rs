@@ -11,8 +11,8 @@
 //! its own way. But its only caller was one actor's draw system. The ribbon
 //! lived for one frame, inside one actor, and nothing else could see it — so
 //! drawing the same ribbon as an absorbing medium meant giving that kind a
-//! `mode` parameter that duplicated the difference between the `mesh` and
-//! `solid` actor kinds.
+//! `mode` parameter that duplicated the difference between the `surface` and
+//! `medium` actor kinds.
 //!
 //! That is the combinatorial shape: every kind that *generates* geometry grows a
 //! mode for every way of *displaying* it, and two ways of displaying one ribbon

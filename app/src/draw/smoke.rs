@@ -287,7 +287,7 @@ fn the_backend_stands_up_with_every_kind_it_registers() {
 ///
 /// They used to hold two, built separately from the same four arrays, because
 /// each kind assembled its own. That is one upload of the vertices per way of
-/// drawing them, and a ribbon drawn as both a lit mesh and an absorbing solid
+/// drawing them, and a ribbon drawn as both a lit surface and an absorbing medium
 /// paid it twice. Handle equality is what proves nothing was duplicated;
 /// anything weaker passes while the memory is still doubled.
 #[test]
@@ -314,7 +314,7 @@ fn two_kinds_over_one_geometry_share_the_mesh() {
             name: "shared".into(),
         })
         .id();
-    let actors: Vec<Entity> = ["mesh", "solid"]
+    let actors: Vec<Entity> = ["surface", "medium"]
         .into_iter()
         .map(|kind| {
             let registered = app

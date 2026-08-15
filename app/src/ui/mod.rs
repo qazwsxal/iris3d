@@ -211,8 +211,8 @@ fn draw_ui(
                     // The meshes are counted apart from the arrays because
                     // their vertices are on the GPU rather than in
                     // `Assets<DataArray>` — and because this is where sharing
-                    // shows: drawing one ribbon as a lit mesh *and* as an
-                    // absorbing solid should add an actor and no vertices.
+                    // shows: drawing one ribbon as a lit surface *and* as an
+                    // absorbing medium should add an actor and no vertices.
                     let mut summary = format!(
                         "{} objects · {} arrays · {}",
                         world.rows.len(),

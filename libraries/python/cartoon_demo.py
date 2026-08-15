@@ -85,9 +85,9 @@ def main():
                 f"this build registers no 'cartoon' filter; it has "
                 f"{sorted(filters)}"
             )
-        if "mesh" not in available:
+        if "surface" not in available:
             raise SystemExit(
-                f"this build registers no 'mesh' kind; it has {sorted(available)}"
+                f"this build registers no 'surface' kind; it has {sorted(available)}"
             )
 
         root = client.create_object("cartoons")
@@ -125,8 +125,8 @@ def main():
 
             # The ribbon is a *filter*: atoms in, triangles out, drawing nothing.
             # What draws it is a separate choice, which is the whole point —
-            # `mesh` for a lit ribbon, `solid` for one you see through, and the
-            # curve is solved once either way.
+            # `surface` for a lit ribbon, `medium` for one you see through, and
+            # the curve is solved once either way.
             ribbon = client.add_filter(
                 "cartoon",
                 params={
@@ -149,7 +149,7 @@ def main():
 
             # The arrays become one mesh here, and that mesh is what an actor
             # binds. Every actor bound to it references the same vertex buffers,
-            # so drawing this ribbon as `mesh` *and* as `solid` is one upload
+            # so drawing this ribbon as `surface` *and* as `medium` is one upload
             # rather than two — add the second actor with the same handle to
             # see it. The colours have to be part of the assembly for the same
             # reason: a shared buffer cannot be painted per consumer.
@@ -164,7 +164,7 @@ def main():
             )
 
             client.add_actor(
-                "mesh",
+                "surface",
                 parent=handle,
                 params={"geometry": iris3d.Bind(shape["geometry"])},
             )

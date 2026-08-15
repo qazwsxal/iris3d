@@ -67,7 +67,7 @@ const PARAMS: &[ParamSpec] = &[
     // colours from the periodic table rather than to `tint`, because that is
     // what a molecule with no field on it should look like.
     //
-    // `structural`, unlike the same input on `mesh` and `points`. Not because a
+    // `structural`, unlike the same input on `surface` and `points`. Not because a
     // colour is structural here, but because this kind has no repaint path from
     // a *rebuild* decision: `read` runs first and `dirty.geometry` decides the
     // rest. Making a bound-array change repaint is worth doing — a merged

@@ -19,8 +19,8 @@
 //! Geometry exists because arrays could not express the thing that mattered.
 //! Positions, indices and normals as three arrays are three *descriptions* of a
 //! mesh, and every consumer that wanted to draw them had to assemble its own —
-//! so a ribbon drawn as a lit mesh and as an absorbing solid put the same
-//! vertices on the GPU twice. One `Handle<Mesh>` is one upload, referenced by
+//! so a ribbon drawn as a lit surface and as an absorbing medium put
+//! the same vertices on the GPU twice. One `Handle<Mesh>` is one upload, referenced by
 //! however many actors want it. See [`crate::filter::geometry`], which is what
 //! turns arrays into one.
 
@@ -139,8 +139,8 @@ pub struct NamedBuffer {
 /// it can read it, without being a second copy of the mesh itself.
 ///
 /// `normals` and `colours` are here rather than being looked up on the asset
-/// because both decide something outside the render world — a `solid` with no
-/// shell never asks for normals, and a `mesh` uses its flat `tint` exactly when
+/// because both decide something outside the render world — a `medium` with no
+/// shell never asks for normals, and a `surface` uses its flat `tint` exactly when
 /// the geometry carries no colours — and neither should have to reach into
 /// `Assets<Mesh>` to find out.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -283,7 +283,7 @@ fn mark_dirty(
     // Bevy re-uploads it with nothing here involved — so this is *not* how the
     // new vertices reach the screen. What it is for is the one thing about an
     // actor that depends on the mesh's contents rather than its identity:
-    // whether it carries colours, which decides whether `mesh` uses its flat
+    // whether it carries colours, which decides whether `surface` uses its flat
     // tint. A rebuild would be wrong; there is nothing to rebuild.
     let remeshed: Vec<_> = mesh_events
         .read()
@@ -438,7 +438,7 @@ pub(crate) const UNTINTED: &[f64] = &[0.8, 0.8, 0.85];
 ///
 /// Shared because it means the same thing everywhere, and because a kind
 /// spelling its own range or default differently would be a bug rather than a
-/// choice. What it *does* still differs by kind — a lit mesh takes it as a base
+/// choice. What it *does* still differs by kind — a lit surface takes it as a base
 /// colour and a medium as a transmission — and each says so where it reads it.
 pub(crate) const TINT: ParamSpec = ParamSpec {
     id: "tint",

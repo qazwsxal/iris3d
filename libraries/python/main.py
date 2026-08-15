@@ -133,7 +133,7 @@ def kind_for(arrays):
     if "elements" in arrays:
         return "ball-and-stick"
     if "indices" in arrays:
-        return "mesh"
+        return "surface"
     return "points"
 
 
@@ -145,12 +145,16 @@ def bind(client, kind, arrays):
     happen to call their coordinates "positions", and a sample that called them
     "xyz" would bind exactly the same way with one line changed here.
     """
-    # Input id -> the name this script's data happens to use for it. `mesh`
+    # Input id -> the name this script's data happens to use for it. `surface`
     # takes one input, so its arrays are named here for the *geometry filter*
     # that assembles them rather than for the actor itself.
     roles = {
         "points": {"positions": "positions"},
-        "mesh": {"positions": "positions", "indices": "indices", "normals": "normals"},
+        "surface": {
+            "positions": "positions",
+            "indices": "indices",
+            "normals": "normals",
+        },
         "ball-and-stick": {
             "positions": "positions",
             "elements": "elements",
@@ -184,8 +188,8 @@ def bind(client, kind, arrays):
         )
         params["colour"] = iris3d.Bind(colours["colour"])
 
-    if kind == "mesh":
-        # A `mesh` actor takes one input: geometry somebody assembled. Loose
+    if kind == "surface":
+        # A `surface` actor takes one input: geometry somebody assembled. Loose
         # arrays go through the `geometry` filter first, which is deliberately
         # the same path a computed ribbon takes rather than a second one for
         # uploads. The colours are part of that assembly, because two actors
@@ -267,7 +271,7 @@ def main():
         meshes = len(held) - len(arrays)
         print(
             f"\n{total / 1024:.1f} KiB resident across {len(arrays)} arrays, "
-            f"plus {meshes} assembled mesh(es)"
+            f"plus {meshes} assembled mesh{'' if meshes == 1 else 'es'}"
         )
 
 

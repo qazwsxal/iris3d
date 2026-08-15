@@ -170,7 +170,7 @@ service SceneService {
   //
   // That separation is the point. Generating geometry and displaying it are
   // different jobs, so one generated result can feed several actors — drawn as
-  // a lit mesh and as an absorbing medium at once, built once — and adding a
+  // a lit surface and as an absorbing medium at once, built once — and adding a
   // way to display something does not multiply the ways of generating it.
   //
   // The reply carries a handle for each declared output, allocated by this
@@ -583,14 +583,14 @@ message ArrayParam {
 // Not an ArrayParam of a particular shape, because it is not numbers the
 // representation decodes. It is geometry something else assembled, and every
 // consumer references it rather than building its own — so a ribbon drawn as a
-// lit mesh and as an absorbing solid is one upload rather than two.
+// lit surface and as an absorbing medium is one upload rather than two.
 //
 // Bind the `geometry` output of a filter. Arrays you uploaded yourself become
 // one by going through the "geometry" filter kind, which is deliberately the
 // same path a computed mesh takes rather than a second one.
 //
 // There is nothing to declare about what it must carry. A kind reads what it was
-// given — a solid asks for normals only when its shell is on, so refusing a
+// given — a medium asks for normals only when its shell is on, so refusing a
 // mesh without them would refuse the commoner case — and says so if it cannot
 // use it. What a handle actually carries is in GeometrySpec; ask ListData.
 message GeometryParam {

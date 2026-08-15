@@ -1,12 +1,12 @@
 //! An isosurface through a scalar field, by Surface Nets.
 //!
 //! A field on a regular grid in, one mesh out. This is the filter that delivers
-//! the `isosurface` representation: bind its geometry to [`mesh`] for a lit
-//! surface or to [`solid`] for one you can see the thickness of, and the
+//! the `isosurface` representation: bind its geometry to [`surface`] for a lit
+//! shape or to [`medium`] for one you can see the thickness of, and the
 //! extraction happens once for both.
 //!
-//! [`mesh`]: crate::draw::default::mesh
-//! [`solid`]: crate::draw::default::solid
+//! [`surface`]: crate::draw::default::surface
+//! [`medium`]: crate::draw::default::medium
 //!
 //! # Surface Nets, not marching cubes
 //!
@@ -21,7 +21,7 @@
 //! reconstruct creases — buys nothing, and marching cubes' table plus the MC33
 //! ambiguity fixes is complexity paid for a case that does not arise. Surface
 //! Nets also gives better-shaped triangles and is **watertight by construction**,
-//! which is exactly what `solid`'s signed prefix integral needs and what an
+//! which is exactly what `medium`'s signed prefix integral needs and what an
 //! imported CAD tessellation does not give. See `iris3d-gpu-isosurface-options`.
 //!
 //! # This is the CPU reference
@@ -659,7 +659,7 @@ mod tests {
         }
     }
 
-    /// Watertight by construction, which is what `solid` needs: every edge of
+    /// Watertight by construction, which is what `medium` needs: every edge of
     /// every triangle is shared by exactly one other triangle, walked in the
     /// opposite direction. A hole or a doubled face both show here.
     #[test]
@@ -721,7 +721,7 @@ mod tests {
     /// This is the case that looks like a bug and is not: a lobe running out of
     /// the box is cut flat, and the cut reads as a hole. Worth pinning down,
     /// because a genuine hole in the middle of a surface looks exactly the same
-    /// from a screenshot and means something entirely different — a solid drawn
+    /// from a screenshot and means something entirely different — a medium drawn
     /// from an open mesh integrates the interval wrongly rather than merely
     /// looking odd.
     #[test]

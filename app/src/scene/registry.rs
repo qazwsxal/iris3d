@@ -238,12 +238,12 @@ pub enum ParamKind {
     /// Not an [`Array`](Self::Array) of a particular shape, because it is not
     /// numbers the kind decodes. It is geometry somebody else assembled, and
     /// every consumer **references** it rather than building its own — which is
-    /// the whole reason it exists. A ribbon drawn as a lit mesh and as an
-    /// absorbing solid used to be the same vertices uploaded twice.
+    /// the whole reason it exists. A ribbon drawn as a lit surface and as an
+    /// absorbing medium used to be the same vertices uploaded twice.
     ///
     /// What it carries is described by
     /// [`GeometryMeta`](super::data::GeometryMeta), and a kind reads it rather
-    /// than declaring a requirement: `solid` wants normals only when its shell
+    /// than declaring a requirement: `medium` wants normals only when its shell
     /// is on, so refusing a normal-less mesh at bind time would refuse the
     /// commoner case. A kind that cannot use what it was given says so when it
     /// draws.

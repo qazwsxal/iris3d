@@ -9,13 +9,13 @@
 //! The curve and the sweep always lived apart from the drawing — the code below
 //! is nearly unchanged — but its only caller was one actor's draw system. The
 //! ribbon existed for one frame, inside one actor, and nothing else could see
-//! it. So showing a ribbon as an *absorbing medium* rather than a lit mesh meant
+//! it. So showing a ribbon as an *absorbing medium* rather than a lit surface meant
 //! giving that kind a `mode` parameter, which duplicated the whole difference
-//! between the [`mesh`](crate::draw) and `solid` actor kinds inside a third
+//! between the [`surface`](crate::draw) and `medium` actor kinds inside a third
 //! place that had no business knowing about either.
 //!
-//! As a filter there is no `mode`. The triangles are arrays; bind them to `mesh`
-//! and the ribbon is lit, bind them to `solid` and it is a medium you see
+//! As a filter there is no `mode`. The triangles are arrays; bind them to `surface`
+//! and the ribbon is lit, bind them to `medium` and it is a medium you see
 //! through, bind them to both and it is both — built once. Adding a third way of
 //! displaying triangles will not touch this file.
 //!

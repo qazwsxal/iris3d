@@ -169,7 +169,7 @@ const PARAMS: &[ParamSpec] = &[
     },
     // Unbound means colour by the density itself.
     //
-    // `structural`, unlike the same input on `mesh` and `points`, because there
+    // `structural`, unlike the same input on `surface` and `points`, because there
     // are no vertices to repaint. These values are packed into the green channel
     // of the 3D field texture, so new ones mean a new texture — the whole
     // upload, not four bytes a vertex. The cheap path here is a *ramp* change,

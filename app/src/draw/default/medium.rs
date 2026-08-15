@@ -1,24 +1,49 @@
-//! Closed triangle meshes, drawn as the boundary of an absorbing solid.
+//! Triangles drawn as the boundary of an absorbing medium.
 //!
-//! Not the same thing as [`mesh`](super::mesh), which is an ordinary lit mesh.
-//! This kind says the triangles *bound a medium*: what you see is the interior,
-//! so thick parts read dark and thin parts clear, and overlapping or nested
-//! solids compose without sorting.
+//! Not the same thing as [`surface`](super::surface), which draws them as an
+//! opaque lit skin. This kind says the triangles *bound a medium*: what you see
+//! is the interior, so thick parts read dark and thin parts clear, and
+//! overlapping or nested bodies compose without sorting.
 //!
 //! The two were one kind, and splitting them is what stopped a client binding
 //! triangles and getting something it had not asked for. Same geometry, two
 //! different claims about what it is, so two names.
 //!
-//! They are two kinds and not one kind with a mode, because they go through
-//! different passes: `mesh` through Bevy's ordinary opaque pass with a
-//! `StandardMaterial`, this one through [`moment_pass`](super::pass) and
-//! [`shell_pass`](super::pass) with [`MomentVolume`](super::MomentVolume). A
-//! mode inside a kind is right when the pass is the same — `solid` against
-//! `film`, below, is exactly that — and wrong when it is not. Their parameters
-//! are disjoint too: `sigma` means nothing to a lit mesh and `double_sided`
-//! nothing to a medium.
+//! # The name
 //!
-//! There is no `double_sided` here, unlike `mesh`: it is a lighting choice,
+//! A **medium** in the physical sense — light passing through it is absorbed
+//! along the way. Blender calls the same thing a volume absorption shader on an
+//! object's interior, and requires the same closed manifold mesh for it; the
+//! word `volume` is spent here on [`volume`](super::volume), the grid actor, so
+//! `medium` is what is left and what the physics calls it.
+//!
+//! It was called `solid` for a while, which was backwards twice over. In
+//! ChimeraX `solid` is the **opaque** filled style, the opposite of this, and in
+//! ordinary English a solid sounds like something you cannot see through. The
+//! word survives where it is right — as this kind's `mode`, where `solid` means
+//! a body with thickness against `film`, a surface without one.
+//!
+//! # Transparency is a kind here, and a property everywhere else
+//!
+//! Worth knowing, because it looks like a mistake. ParaView, PyMOL and ChimeraX
+//! all make transparency an *opacity setting* on the ordinary surface
+//! representation; none of them has a separate kind for it.
+//!
+//! This is not that. An opacity slider blends a surface with what is behind it;
+//! this integrates absorbance along the path *through* a body, which is a
+//! different physical claim, needs a closed mesh, and is the thing iris3d exists
+//! to compose correctly against a volume. Blender agrees it is a different
+//! thing rather than a slider.
+//!
+//! So they are two kinds and not one kind with a mode, and the rule is the pass:
+//! `surface` goes through Bevy's ordinary opaque pass with a `StandardMaterial`,
+//! this one through [`moment_pass`](super::pass) and [`shell_pass`](super::pass)
+//! with [`MomentVolume`](super::MomentVolume). A mode inside a kind is right
+//! when the pass is the same — `solid` against `film`, below, is exactly that —
+//! and wrong when it is not. Their parameters are disjoint too: `sigma` means
+//! nothing to a lit surface and `double_sided` nothing to a medium.
+//!
+//! There is no `double_sided` here, unlike `surface`: it is a lighting choice,
 //! and both faces are always drawn — they *have* to be, since the two of them
 //! are the endpoints of the interval being integrated.
 //!
@@ -26,9 +51,9 @@
 //!
 //! An actor here can produce both halves of what a piece of glass looks like:
 //!
-//! - the **interior**, always — a solid absorbing at `sigma` per unit of path
+//! - the **interior**, always — a body absorbing at `sigma` per unit of path
 //!   length, which is what makes thick parts read dark and thin parts clear;
-//! - the **surface**, when `shell` is on — a thin dielectric skin adding a
+//! - the **boundary**, when `shell` is on — a thin dielectric skin adding a
 //!   Fresnel-weighted specular reflection and absorbing nothing.
 //!
 //! They are two passes over the same mesh, and the second is what the shape
@@ -59,8 +84,8 @@
 //!
 //! Both are attributes of a mesh this kind shares rather than owns, so neither
 //! is something it can decline to carry: the same geometry drawn as a lit
-//! [`mesh`](super::mesh) wants exactly the ones this pass ignores. What that
-//! costs is stride, and what it buys is one upload instead of two. The
+//! [`surface`](super::surface) wants exactly the ones this pass ignores. What
+//! that costs is stride, and what it buys is one upload instead of two. The
 //! accumulation pipeline pulls only the position out of whatever layout it is
 //! given — see [`MomentMeshPipeline`](super::pipeline::MomentMeshPipeline).
 
@@ -82,7 +107,7 @@ const MODES: &[&str] = &["solid", "film"];
 /// world extracts. Keeping them apart is what lets one be edited by a client
 /// while the other is rebuilt from it.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct AbsorbingStyle {
+pub struct MediumStyle {
     /// Already resolved from `mode` plus whichever of `sigma` and `alpha` that
     /// mode reads, so nothing downstream has to consult two parameters to know
     /// what one mesh is.
@@ -100,7 +125,7 @@ pub struct AbsorbingStyle {
 }
 
 const PARAMS: &[ParamSpec] = &[
-    // The same one input `mesh` takes, and the same handle in practice: two
+    // The same one input `surface` takes, and the same handle in practice: two
     // actors of the two kinds over one geometry is what this whole split is for.
     // In `solid` mode the triangles must close the surface — see above.
     ParamSpec {
@@ -184,8 +209,8 @@ const PARAMS: &[ParamSpec] = &[
 
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
-        id: "solid",
-        label: "absorbing solid",
+        id: "medium",
+        label: "absorbing medium",
         params: PARAMS,
         apply: |entity, params| {
             let depiction = match text(params, "mode", "solid") {
@@ -200,7 +225,7 @@ pub fn register(registry: &mut ActorRegistry) {
                     sigma: float(params, "sigma", 1.0),
                 },
             };
-            entity.insert(AbsorbingStyle {
+            entity.insert(MediumStyle {
                 depiction,
                 tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
                 ior: flag(params, "shell", false).then(|| float(params, "ior", 1.49)),
@@ -217,7 +242,7 @@ pub fn register(registry: &mut ActorRegistry) {
 /// shared now and carries whatever it carries, so switching the shell on can
 /// only succeed or be refused by the pipeline — there is nothing left to
 /// rebuild, and no way to add normals to a mesh another actor is drawing.
-pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<AbsorbingStyle>>) {
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<MediumStyle>>) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
     }
@@ -228,12 +253,12 @@ pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<Absorbi
 /// The tail is what makes it this pathway's query rather than another's: a mesh
 /// and an absorbance, which is what the moment passes consume.
 type Drawable<'a> = (
-    Actor<'a, AbsorbingStyle>,
+    Actor<'a, MediumStyle>,
     Option<&'a Mesh3d>,
     Option<&'a MomentVolume>,
 );
 
-pub fn draw_solids(
+pub fn draw_media(
     mut commands: Commands,
     store: Res<DataStore>,
     dirty: Query<Drawable>,
@@ -242,7 +267,7 @@ pub fn draw_solids(
         if !dirty.any() {
             continue;
         }
-        let Some(geometry) = super::mesh::geometry(bindings, &store) else {
+        let Some(geometry) = super::surface::geometry(bindings, &store) else {
             continue;
         };
 
@@ -259,7 +284,7 @@ pub fn draw_solids(
         // which pass wanted it.
         if style.ior.is_some() && !geometry.meta.normals {
             warn!(
-                "draw: a solid's shell needs normals, and \"{}\" carries none",
+                "draw: a medium's shell needs normals, and \"{}\" carries none",
                 geometry.meta.name
             );
         }

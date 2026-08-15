@@ -1,9 +1,9 @@
-//! Triangle meshes, lit.
+//! Triangles drawn as an opaque, lit surface.
 //!
-//! An ordinary opaque mesh: it goes through Bevy's ordinary passes, writes
-//! depth, and is what the absorbance of anything in front of it is measured
-//! against. Geometry in, a lit shape out — the least surprising thing an id can
-//! mean, and the same thing under every pathway.
+//! It goes through Bevy's ordinary passes, writes depth, and is what the
+//! absorbance of anything in front of it is measured against. Geometry in, a lit
+//! shape out — the least surprising thing an id can mean, and the same thing
+//! under every pathway.
 //!
 //! # It builds nothing
 //!
@@ -11,22 +11,30 @@
 //! The vertices were assembled once by whatever produced the geometry — see
 //! [`filter::geometry`](crate::filter::geometry) — and this kind adds a material
 //! and a pass. That is the whole difference between it and
-//! [`solid`](super::solid): same handle, same buffers, two materials.
+//! [`medium`](super::medium): same handle, same buffers, two materials.
 //!
 //! This kind used to take positions, indices, normals and colour and build its
-//! own `bevy::Mesh` from them, as `solid` separately did. Two actors over one
+//! own `bevy::Mesh` from them, as `medium` separately did. Two actors over one
 //! ribbon were therefore two uploads of the same vertices, which is what the
 //! split into filters set out to stop.
 //!
-//! # Not called `surface`
+//! # The name
 //!
-//! Deliberately. In structural biology a surface is a *molecular* surface —
-//! solvent-accessible or solvent-excluded, what PyMOL and ChimeraX both mean by
-//! the word — and iris3d will want the name for exactly that. Spending it on
-//! "whatever triangles a client uploaded" would take it out of reach.
+//! `surface` is what ParaView, VTK, MayaVi and PyMOL all call this — an opaque
+//! filled representation of triangles — so it is the one word a person arriving
+//! from any of them already knows.
 //!
-//! For a closed mesh drawn as the *solid it bounds* — thickness you can see
-//! through, optionally with a glass skin — see [`solid`](super::solid).
+//! It was called `mesh` for a while, to keep `surface` free for a *molecular*
+//! surface. That reservation is void: in PyMOL and ChimeraX `mesh` means the
+//! **wireframe**, so the name was borrowed from the representation iris3d still
+//! intends to add, and `mesh` collided with the `Mesh` being passed around
+//! besides. A solvent-excluded surface is a **filter** now that generating
+//! geometry and displaying it are separate jobs — `ses`, `sas` — and what draws
+//! its triangles is this. PyMOL's `show surface` conflates the two because it
+//! has to; iris3d does not.
+//!
+//! For a closed mesh drawn as the *medium it bounds* — thickness you can see
+//! through, optionally with a glass skin — see [`medium`](super::medium).
 
 use bevy::prelude::*;
 
@@ -41,14 +49,14 @@ use super::{Actor, Dirty, mark};
 /// ordinary material, since an opaque surface takes no part in the moment
 /// passes.
 type Drawable<'a> = (
-    Actor<'a, MeshStyle>,
+    Actor<'a, SurfaceStyle>,
     Option<&'a Mesh3d>,
     Option<&'a MeshMaterial3d<StandardMaterial>>,
 );
 
-/// Cell surfaces, shaded.
+/// Triangles, shaded and opaque.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct MeshStyle {
+pub struct SurfaceStyle {
     /// Light and draw back faces as well as front ones.
     ///
     /// On by default because scientific meshes are routinely open or have
@@ -78,11 +86,11 @@ const PARAMS: &[ParamSpec] = &[
 
 pub fn register(registry: &mut ActorRegistry) {
     registry.register(ActorKind {
-        id: "mesh",
-        label: "mesh",
+        id: "surface",
+        label: "surface",
         params: PARAMS,
         apply: |entity, params| {
-            entity.insert(MeshStyle {
+            entity.insert(SurfaceStyle {
                 double_sided: flag(params, "double_sided", true),
                 tint: crate::draw::tint(params, "tint", Vec3::splat(0.8)),
             });
@@ -91,13 +99,13 @@ pub fn register(registry: &mut ActorRegistry) {
 }
 
 /// `double_sided` is a material property; nothing about the mesh depends on it.
-pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<MeshStyle>>) {
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<SurfaceStyle>>) {
     for entity in &changed {
         mark(&mut commands, entity, Dirty::MATERIAL);
     }
 }
 
-pub fn draw_meshes(
+pub fn draw_surfaces(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     store: Res<DataStore>,
@@ -187,9 +195,9 @@ fn ensure_material(
 
 /// Gives every placement the mesh and material the actor holds.
 #[allow(clippy::type_complexity)]
-pub fn place_meshes(
+pub fn place_surfaces(
     mut commands: Commands,
-    actors: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>), With<MeshStyle>>,
+    actors: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>), With<SurfaceStyle>>,
     placements: Query<(
         Entity,
         &Placement,

@@ -87,7 +87,7 @@ def main():
     with iris3d.Client(wait_timeout=iris3d.DEFAULT_CONNECT_TIMEOUT) as client:
         kinds = client.actor_kinds()
         filters = client.filter_kinds()
-        missing = {"mesh", "volume"} - set(kinds)
+        missing = {"surface", "volume"} - set(kinds)
         if missing:
             raise SystemExit(
                 f"this build registers no {', '.join(sorted(missing))}; "
@@ -115,9 +115,9 @@ def main():
                 wanted.setdefault(extra, structure[extra])
         held = client.upload_data(wanted)
 
-        # The ribbon is a filter — atoms in, triangles out — and `mesh` is what
-        # makes those triangles opaque. There is no `mode` to set any more: an
-        # absorbing ribbon is the same filter bound to `solid` instead, which is
+        # The ribbon is a filter — atoms in, triangles out — and `surface` is
+        # what makes those triangles opaque. There is no `mode` to set any more: an
+        # absorbing ribbon is the same filter bound to `medium` instead, which is
         # the whole reason generating and displaying were split apart.
         #
         # Opaque is what this demo needs. The ribbon writes depth, so the
@@ -143,7 +143,7 @@ def main():
             },
         )
         client.add_actor(
-            "mesh",
+            "surface",
             parent=ribbon,
             params={
                 "geometry": iris3d.Bind(shape["geometry"]),

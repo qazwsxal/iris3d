@@ -366,7 +366,7 @@ class FilterSummary:
         """The handle for one output, so binding reads as one expression::
 
         colours = client.add_filter("colormap", params={"values": Bind(field)})
-        client.add_actor("mesh", params={"colour": Bind(colours["colour"])})
+        client.add_actor("surface", params={"colour": Bind(colours["colour"])})
         """
         return self.outputs[output]
 
@@ -968,7 +968,7 @@ class Client:
         subsets. Selections are computed here rather than described to the
         server, so anything numpy can express works::
 
-            client.add_actor("mesh", parent=node,
+            client.add_actor("surface", parent=node,
                              subset=positions[:, 2] > 0, ...)
 
         A mesh cell survives only when all of its corners do, and a bond only
@@ -1089,14 +1089,14 @@ class Client:
             field = client.upload_data({"b_factor": values})["b_factor"]
             colours = client.add_filter("colormap",
                                         params={"values": Bind(field)})
-            client.add_actor("mesh", params={
+            client.add_actor("surface", params={
                 "positions": Bind(xyz),
                 "indices": Bind(tris),
                 "colour": Bind(colours["colour"]),
             })
 
         That separation is the point: one generated result can feed several
-        actors, so drawing a ribbon as a lit mesh *and* as an absorbing medium
+        actors, so drawing a ribbon as a lit surface *and* as an absorbing medium
         builds it once rather than twice.
 
         The returned handles are usable immediately. Until the first run
