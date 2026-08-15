@@ -279,15 +279,34 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
     })
 }
 
-pub fn gather(
-    objects: &ObjectData,
-    actors: &ActorData,
-    filters: &FilterData,
-    placements: &Query<&Placement>,
-    registry: &ActorRegistry,
-    filter_registry: &FilterRegistry,
-    store: &DataStore,
-) -> Gathered {
+/// Everything one pass over the world reads, as a single system parameter.
+///
+/// Seven of them, and they always travel together — this *is* [`gather`]'s
+/// argument list. Bundling them is not only tidiness: `draw_ui` was at
+/// seventeen parameters against Bevy's limit of sixteen, and a system that goes
+/// one over fails with "does not describe a valid system configuration", which
+/// names none of the parameters involved.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SceneRead<'w, 's> {
+    pub objects: ObjectData<'w, 's>,
+    pub actors: ActorData<'w, 's>,
+    pub filters: FilterData<'w, 's>,
+    pub placements: Query<'w, 's, &'static Placement>,
+    pub registry: Res<'w, ActorRegistry>,
+    pub filter_registry: Res<'w, FilterRegistry>,
+    pub store: Res<'w, DataStore>,
+}
+
+pub fn gather(read: &SceneRead) -> Gathered {
+    let SceneRead {
+        objects,
+        actors,
+        filters,
+        placements,
+        registry,
+        filter_registry,
+        store,
+    } = read;
     let mut rows: HashMap<Entity, Row> = HashMap::new();
     let mut roots: Vec<Entity> = Vec::new();
     let mut owners: HashMap<AssetId<DataArray>, Owner> = HashMap::new();

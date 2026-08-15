@@ -18,6 +18,7 @@ mod actors;
 mod data;
 mod filters;
 mod gather;
+mod nodes;
 mod params;
 mod scene;
 
@@ -31,10 +32,9 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiCon
 use crate::filter::FilterSummary;
 
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamValue};
-use crate::scene::{DataArray, Placement, SceneCommand, SceneError};
+use crate::scene::{DataArray, SceneCommand, SceneError};
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
-use gather::{ActorData, FilterData, ObjectData};
 
 pub struct UiPlugin;
 
@@ -53,6 +53,7 @@ impl Plugin for UiPlugin {
             .init_resource::<UiState>()
             .init_resource::<PendingActions>()
             .init_resource::<Pending>()
+            .init_resource::<nodes::NodeGraph>()
             .add_systems(Startup, spawn_egui_camera)
             .add_systems(EguiPrimaryContextPass, draw_ui)
             // `collect_replies` before `apply_actions`, so a reply that lands
@@ -92,6 +93,19 @@ fn spawn_egui_camera(mut commands: Commands) {
 
 /// A layer of its own for the egui camera, so it renders no world content.
 const EGUI_LAYER: usize = 1;
+
+/// Which of the two views the window is showing.
+///
+/// Two whole views rather than a third panel: the graph wants the window, and
+/// the scene it describes is the same one the panel lists, so there is nothing
+/// to see side by side.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// The 3D scene, with the tabbed panel down the right.
+    Scene,
+    /// The node canvas, filling the window.
+    Nodes,
+}
 
 /// Which tab of the panel is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -156,6 +170,7 @@ pub enum Target {
 
 #[derive(Resource)]
 pub struct UiState {
+    pub view: View,
     pub tab: Tab,
     pub show_panel: bool,
     /// The selected object.
@@ -177,6 +192,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            view: View::Scene,
             tab: Tab::Scene,
             show_panel: true,
             selected: None,
@@ -277,17 +293,12 @@ fn draw_ui(
     mut contexts: EguiContexts,
     mut state: ResMut<UiState>,
     mut actions: ResMut<PendingActions>,
-    objects: ObjectData,
-    actor_data: ActorData,
-    filter_data: FilterData,
-    placements: Query<&Placement>,
-    registry: Res<ActorRegistry>,
-    filter_registry: Res<crate::filter::FilterRegistry>,
+    read: gather::SceneRead,
     arrays: Res<Assets<DataArray>>,
-    store: Res<crate::scene::DataStore>,
     mut captured: ResMut<PointerCaptured>,
     mut overlays: ResMut<crate::viewport::OverlaySettings>,
     pending: Res<Pending>,
+    mut graph: ResMut<nodes::NodeGraph>,
     // Filtered on Camera3d, not `Without<EguiContext>` as bevy_egui's own
     // example does: with a single camera, bevy_egui puts the egui context on
     // that same entity, so excluding it matches nothing. A `Single` param that
@@ -310,15 +321,7 @@ fn draw_ui(
     );
 
     // Gather first, draw second.
-    let world = gather::gather(
-        &objects,
-        &actor_data,
-        &filter_data,
-        &placements,
-        &registry,
-        &filter_registry,
-        &store,
-    );
+    let world = gather::gather(&read);
 
     // How much the panels took, so the 3D camera can be inset to what is left.
     // Without this the scene renders across the whole window and hides behind
@@ -346,6 +349,15 @@ fn draw_ui(
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right-to-left, so this is the rightmost thing in the bar.
+                    let (label, to) = match state.view {
+                        View::Scene => ("Nodes", View::Nodes),
+                        View::Nodes => ("Scene", View::Scene),
+                    };
+                    if ui.button(label).clicked() {
+                        state.view = to;
+                    }
+                    ui.separator();
                     // The meshes are counted apart from the arrays because
                     // their vertices are on the GPU rather than in
                     // `Assets<DataArray>` — and because this is where sharing
@@ -372,6 +384,19 @@ fn draw_ui(
         .response
         .rect
         .height();
+
+    // The node view takes the window. Drawn before the panel and returning
+    // early, so `right` stays zero and the 3D camera is given nothing below —
+    // there is no scene on screen to inset it into.
+    if state.view == View::Nodes {
+        nodes::show(&mut root, &mut graph, &world, &mut actions);
+        // Nothing of the 3D scene is on screen, so the camera is given no
+        // viewport at all rather than a sliver behind the canvas.
+        if let Ok(mut camera) = cameras.single_mut() {
+            camera.viewport = None;
+        }
+        return Ok(());
+    }
 
     let mut right = 0.0;
     if state.show_panel {
@@ -418,7 +443,7 @@ fn draw_ui(
                                         ui,
                                         &world,
                                         &state,
-                                        &filter_registry,
+                                        &read.filter_registry,
                                         &mut actions,
                                     ),
                                     Tab::Actors => {
@@ -426,7 +451,7 @@ fn draw_ui(
                                             ui,
                                             &world,
                                             &state,
-                                            &registry,
+                                            &read.registry,
                                             &mut actions,
                                         )
                                     }
@@ -497,8 +522,8 @@ fn apply_actions(
     mut actions: ResMut<PendingActions>,
     mut state: ResMut<UiState>,
     mut frame: ResMut<FrameRequest>,
-
     registry: Res<ActorRegistry>,
+    filter_registry: Res<crate::filter::FilterRegistry>,
     mut visibility: Query<&mut Visibility>,
     mut params: Query<(&ActorKindId, &mut ActorParams)>,
     actor_entities: Query<(), With<ActorKindId>>,
@@ -506,7 +531,6 @@ fn apply_actions(
     // handle, because that is the name the command speaks in.
     scene_objects: Query<&crate::counter::UniqueID, With<crate::scene::SceneObject>>,
     bridge: Res<crate::grpc::GrpcBridge>,
-    filter_registry: Res<crate::filter::FilterRegistry>,
     mut pending: ResMut<Pending>,
 ) {
     for action in actions.0.drain(..) {
