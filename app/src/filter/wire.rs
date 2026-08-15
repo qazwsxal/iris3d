@@ -31,20 +31,30 @@ use crate::scene::{DataArray, DataStore, SceneError};
 
 use super::{FilterKindId, FilterParams, FilterRegistry, Generation, OutputKind, OutputSpec, Outputs};
 
-/// The mesh a geometry output starts as: a triangle list with no triangles.
+/// The mesh a geometry output starts as: **one degenerate triangle**, which
+/// draws nothing.
 ///
-/// Positions and indices are inserted empty rather than left off, so the layout
-/// a consumer's pipeline specialises over is the one it will keep once the
-/// filter has run. A mesh with no attributes at all specialises to nothing and
-/// the error names a missing `Vertex_Position`, which is a confusing way to say
-/// "it has not run yet".
+/// Positions and indices are present rather than left off, so the layout a
+/// consumer's pipeline specialises over is the one it will keep once the filter
+/// has run. A mesh with no attributes at all specialises to nothing, and the
+/// error names a missing `Vertex_Position` — a confusing way to say "it has not
+/// run yet".
+///
+/// Three coincident vertices rather than none, which is not a nicety.
+/// `MeshAllocator` sub-allocates every mesh into a shared slab, and a
+/// **zero-length** buffer gets a key it never allocates space for — so the first
+/// write into it logs `Use-after-free: attempted to copy element data for an
+/// unallocated key`, twice, once for the vertices and once for the indices.
+/// Rendering survives it, which is what makes it worth pinning down here: the
+/// only symptom was two red lines during startup. A triangle of zero area is a
+/// real allocation and rasterises nothing.
 fn empty_mesh() -> Mesh {
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-    mesh.insert_indices(bevy::mesh::Indices::U32(Vec::new()));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; 3]);
+    mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 1, 2]));
     mesh
 }
 
