@@ -18,7 +18,7 @@ use bevy::ecs::system::EntityCommands;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use super::data::{BufferMeta, Dtype};
+use super::data::{Dtype, Held};
 
 /// A single tunable value on an actor.
 ///
@@ -232,26 +232,66 @@ pub enum ParamKind {
         /// two apart precisely because they differ by orders of magnitude.
         structural: bool,
     },
+    /// A mesh the kind draws, as one handle: vertices, triangles, and whatever
+    /// attributes came with them.
+    ///
+    /// Not an [`Array`](Self::Array) of a particular shape, because it is not
+    /// numbers the kind decodes. It is geometry somebody else assembled, and
+    /// every consumer **references** it rather than building its own — which is
+    /// the whole reason it exists. A ribbon drawn as a lit mesh and as an
+    /// absorbing solid used to be the same vertices uploaded twice.
+    ///
+    /// What it carries is described by
+    /// [`GeometryMeta`](super::data::GeometryMeta), and a kind reads it rather
+    /// than declaring a requirement: `solid` wants normals only when its shell
+    /// is on, so refusing a normal-less mesh at bind time would refuse the
+    /// commoner case. A kind that cannot use what it was given says so when it
+    /// draws.
+    ///
+    /// There is no `structural` here. Nothing downstream rebuilds when the
+    /// vertices move: the consumer holds the same `Handle<Mesh>` it always did
+    /// and Bevy re-uploads the asset underneath it.
+    Geometry {
+        /// Whether the kind can draw without it.
+        required: bool,
+    },
 }
 
 impl ParamKind {
+    /// Whether this parameter binds data rather than carrying a setting.
+    ///
+    /// The two data kinds against the four settings. Asked wherever bindings are
+    /// gathered, so that adding a third never means finding every `matches!`.
+    pub fn is_input(self) -> bool {
+        matches!(self, ParamKind::Array { .. } | ParamKind::Geometry { .. })
+    }
+
+    /// Whether the kind refuses to work without this input bound. `false` for
+    /// anything that is not an input at all.
+    pub fn is_required(self) -> bool {
+        match self {
+            ParamKind::Array { required, .. } | ParamKind::Geometry { required } => required,
+            _ => false,
+        }
+    }
+
     /// The value to start from, or `None` for a parameter with nothing sensible
     /// to start from.
     ///
-    /// Only [`Array`](Self::Array) has none. There is no default array — handle
-    /// 0 is a real array belonging to whoever uploaded first, so inventing one
-    /// would silently draw somebody else's data.
+    /// Only the input kinds have none. There is no default array — handle 0 is a
+    /// real array belonging to whoever uploaded first, so inventing one would
+    /// silently draw somebody else's data.
     pub fn default_value(self) -> Option<ParamValue> {
         match self {
             ParamKind::Float { default, .. } => Some(ParamValue::Float(default)),
             ParamKind::Bool { default } => Some(ParamValue::Bool(default)),
             ParamKind::Choice { default, .. } => Some(ParamValue::Text(default.to_string())),
             ParamKind::Vector { default, .. } => Some(ParamValue::Vector(default.to_vec())),
-            ParamKind::Array { .. } => None,
+            ParamKind::Array { .. } | ParamKind::Geometry { .. } => None,
         }
     }
 
-    /// Whether an array of this description may be bound here.
+    /// Whether what the handle names may be bound here.
     ///
     /// Deliberately not part of [`sanitise`](Self::sanitise). Sanitising judges
     /// a value on its own and is called wherever a parameter is written;
@@ -259,10 +299,25 @@ impl ParamKind {
     /// what the handle actually points at, and the store is not reachable from
     /// every one of those places. So the two checks stay separate: sanitise
     /// decides "is this the right *kind* of value", this decides "is that
-    /// particular array the right shape".
-    pub fn accepts(self, meta: &BufferMeta) -> Result<(), String> {
+    /// particular thing the right shape".
+    ///
+    /// An array bound where geometry belongs is refused here rather than at draw
+    /// time, and says so plainly: the two are one handle space, so the mistake
+    /// is easy to make and cheap to name.
+    pub fn accepts(self, held: Held<'_>) -> Result<(), String> {
+        let meta = match (self, held) {
+            (ParamKind::Geometry { .. }, Held::Geometry(_)) => return Ok(()),
+            (ParamKind::Geometry { .. }, Held::Array(_)) => {
+                return Err("is an array but this input takes geometry".into());
+            }
+            (ParamKind::Array { .. }, Held::Geometry(_)) => {
+                return Err("is geometry but this input takes an array".into());
+            }
+            (ParamKind::Array { .. }, Held::Array(meta)) => meta,
+            _ => return Err("not an input parameter".into()),
+        };
         let ParamKind::Array { dtypes, shape, .. } = self else {
-            return Err("not an array parameter".into());
+            unreachable!("matched an array parameter above");
         };
         if !dtypes.is_empty() && !dtypes.contains(&meta.dtype) {
             return Err(format!(
@@ -330,10 +385,12 @@ impl ParamKind {
                         .collect(),
                 )
             }),
-            // Whether the array *fits* is `accepts`, checked where the store is
-            // reachable. Here it only has to be a handle rather than a number
-            // somebody meant as a slider value.
-            (ParamKind::Array { .. }, ParamValue::Data(id)) => Some(ParamValue::Data(id)),
+            // Whether what the handle names *fits* is `accepts`, checked where
+            // the store is reachable. Here it only has to be a handle rather
+            // than a number somebody meant as a slider value.
+            (ParamKind::Array { .. } | ParamKind::Geometry { .. }, ParamValue::Data(id)) => {
+                Some(ParamValue::Data(id))
+            }
             _ => None,
         }
     }
@@ -383,11 +440,9 @@ impl ActorKind {
         self.params.iter().find(|spec| spec.id == id)
     }
 
-    /// Every input this kind reads an array from, required or not.
+    /// Every input this kind binds data to — array or geometry, required or not.
     pub fn inputs(&self) -> impl Iterator<Item = &ParamSpec> {
-        self.params
-            .iter()
-            .filter(|spec| matches!(spec.kind, ParamKind::Array { .. }))
+        self.params.iter().filter(|spec| spec.kind.is_input())
     }
 
     /// Settings at their starting values. Array inputs are absent: they have no
@@ -559,6 +614,7 @@ pub fn apply_actor_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::data::BufferMeta;
 
     const SPECS: &[ParamSpec] = &[
         ParamSpec {
@@ -624,6 +680,17 @@ mod tests {
             name: "whatever".into(),
             dtype,
             shape: shape.to_vec(),
+        }
+    }
+
+    /// A mesh, for the checks that an input tells the two apart.
+    fn geometry() -> super::super::data::GeometryMeta {
+        super::super::data::GeometryMeta {
+            name: "whatever".into(),
+            vertices: 8,
+            triangles: 4,
+            normals: true,
+            colours: false,
         }
     }
 
@@ -710,20 +777,23 @@ mod tests {
     /// at all binds, which is the whole point of binding over inference.
     #[test]
     fn an_input_accepts_the_shape_it_declared() {
+        let takes = |kind: ParamKind, dtype, shape: &[u64]| {
+            kind.accepts(Held::Array(&meta(dtype, shape))).is_ok()
+        };
         let positions = WITH_INPUTS[0].kind;
-        assert!(positions.accepts(&meta(Dtype::Float32, &[500, 3])).is_ok());
-        assert!(positions.accepts(&meta(Dtype::Float32, &[1, 3])).is_ok());
+        assert!(takes(positions, Dtype::Float32, &[500, 3]));
+        assert!(takes(positions, Dtype::Float32, &[1, 3]));
 
         // Wrong element type, wrong component count, wrong rank.
-        assert!(positions.accepts(&meta(Dtype::Float64, &[500, 3])).is_err());
-        assert!(positions.accepts(&meta(Dtype::Float32, &[500, 2])).is_err());
-        assert!(positions.accepts(&meta(Dtype::Float32, &[500])).is_err());
+        assert!(!takes(positions, Dtype::Float64, &[500, 3]));
+        assert!(!takes(positions, Dtype::Float32, &[500, 2]));
+        assert!(!takes(positions, Dtype::Float32, &[500]));
 
         // An empty dtype list takes anything numeric.
         let scalars = WITH_INPUTS[1].kind;
-        assert!(scalars.accepts(&meta(Dtype::Uint8, &[8])).is_ok());
-        assert!(scalars.accepts(&meta(Dtype::Float64, &[8])).is_ok());
-        assert!(scalars.accepts(&meta(Dtype::Float64, &[8, 3])).is_err());
+        assert!(takes(scalars, Dtype::Uint8, &[8]));
+        assert!(takes(scalars, Dtype::Float64, &[8]));
+        assert!(!takes(scalars, Dtype::Float64, &[8, 3]));
     }
 
     /// The error says what the input wanted, in its own terms, so a client can
@@ -732,10 +802,29 @@ mod tests {
     fn a_rejected_binding_explains_itself() {
         let positions = WITH_INPUTS[0].kind;
         let reason = positions
-            .accepts(&meta(Dtype::Float32, &[500, 4]))
+            .accepts(Held::Array(&meta(Dtype::Float32, &[500, 4])))
             .expect_err("four components is not three");
         assert!(reason.contains("[500, 4]"), "{reason}");
         assert!(reason.contains("[n, 3]"), "{reason}");
+    }
+
+    /// Arrays and meshes share one handle space, so binding the wrong sort is an
+    /// easy mistake — and one the caller is told about by name rather than
+    /// finding out from a blank screen.
+    #[test]
+    fn an_input_refuses_the_other_sort_of_handle() {
+        let positions = WITH_INPUTS[0].kind;
+        let reason = positions
+            .accepts(Held::Geometry(&geometry()))
+            .expect_err("a mesh is not an array of positions");
+        assert!(reason.contains("geometry"), "{reason}");
+
+        let takes_geometry = ParamKind::Geometry { required: true };
+        assert!(takes_geometry.accepts(Held::Geometry(&geometry())).is_ok());
+        let reason = takes_geometry
+            .accepts(Held::Array(&meta(Dtype::Float32, &[500, 3])))
+            .expect_err("positions are not a mesh");
+        assert!(reason.contains("array"), "{reason}");
     }
 
     /// Settings have defaults; arrays do not. Handle 0 is a real array

@@ -48,25 +48,28 @@
 //! tessellations especially, which are routinely not closed. What it costs is
 //! thickness: every crossing counts the same however deep the part is.
 //!
-//! # What is not read
+//! # What it does not read
 //!
-//! No per-vertex `colour`. Absorbance is a property of a medium, so it is one
-//! value for the whole volume rather than something varying across a surface
-//! the interior does not have; colour arrives through the `tint` parameter,
-//! read as a transmission. `normals` *are* read, but only when a shell is on — the
-//! accumulation cares where a boundary is, not which way it faces, so a volume
-//! with no skin never pays for them.
+//! The geometry's per-vertex colours mean nothing here. Absorbance is a property
+//! of a medium, so it is one value for the whole volume rather than something
+//! varying across a surface the interior does not have; colour arrives through
+//! the `tint` parameter, read as a transmission. Its **normals** are read, but
+//! only when a shell is on — the accumulation cares where a boundary is, not
+//! which way it faces, so a volume with no skin never pays for them.
+//!
+//! Both are attributes of a mesh this kind shares rather than owns, so neither
+//! is something it can decline to carry: the same geometry drawn as a lit
+//! [`mesh`](super::mesh) wants exactly the ones this pass ignores. What that
+//! costs is stride, and what it buys is one upload instead of two. The
+//! accumulation pipeline pulls only the position out of whatever layout it is
+//! given — see [`MomentMeshPipeline`](super::pipeline::MomentMeshPipeline).
 
-use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::scene::registry::Bindings;
 use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag, float, text};
-use crate::scene::subset::Remap;
-use crate::scene::{DataArray, DataStore, Dtype, Subset};
+use crate::scene::DataStore;
 
-use super::{Actor, Depiction, Dirty, MomentShell, MomentVolume, bound, mark};
+use super::{Actor, Depiction, Dirty, MomentShell, MomentVolume, mark};
 
 /// The two ways this kind can deposit absorbance. See [`Depiction`].
 const MODES: &[&str] = &["solid", "film"];
@@ -97,38 +100,13 @@ pub struct AbsorbingStyle {
 }
 
 const PARAMS: &[ParamSpec] = &[
+    // The same one input `mesh` takes, and the same handle in practice: two
+    // actors of the two kinds over one geometry is what this whole split is for.
+    // In `solid` mode the triangles must close the surface — see above.
     ParamSpec {
-        id: "positions",
-        label: "positions",
-        kind: ParamKind::Array {
-            dtypes: &[Dtype::Float32],
-            shape: &[0, 3],
-            required: true,
-            structural: true,
-        },
-    },
-    ParamSpec {
-        id: "indices",
-        label: "triangles (must close the surface)",
-        kind: ParamKind::Array {
-            dtypes: &[Dtype::Uint32],
-            shape: &[0, 3],
-            required: true,
-            structural: true,
-        },
-    },
-    // Unbound means "work them out from the triangles". Only the shell reads
-    // them — an absorbance depends on where a boundary is, not which way it
-    // faces — so a volume with no shell never pays for them.
-    ParamSpec {
-        id: "normals",
-        label: "normals",
-        kind: ParamKind::Array {
-            dtypes: &[Dtype::Float32],
-            shape: &[0, 3],
-            required: false,
-            structural: true,
-        },
+        id: "geometry",
+        label: "geometry (must close the surface in solid mode)",
+        kind: ParamKind::Geometry { required: true },
     },
     // Which of the two ways of depositing absorbance the mesh uses. `solid`
     // needs a closed mesh and shows thickness; `film` needs nothing and does
@@ -232,34 +210,23 @@ pub fn register(registry: &mut ActorRegistry) {
     });
 }
 
-/// Turning the shell on or off is a *geometry* change, and the rest is not.
+/// Nothing here changes the mesh, because this kind no longer owns one.
 ///
-/// Everything here writes a number the render world reads per frame — except
-/// switching the shell on, which needs normals the mesh may not carry. That is
-/// a rebuild, and the alternative was building normals for every volume in case
-/// a shell is switched on later.
-pub fn invalidate(
-    mut commands: Commands,
-    changed: Query<(Entity, &AbsorbingStyle), Changed<AbsorbingStyle>>,
-    mut previous: Local<bevy::platform::collections::HashMap<Entity, bool>>,
-) {
-    for (entity, style) in &changed {
-        let wants_shell = style.ior.is_some();
-        let had_shell = previous.insert(entity, wants_shell);
-        if had_shell.is_some_and(|had| had != wants_shell) {
-            mark(&mut commands, entity, Dirty::GEOMETRY);
-        } else {
-            mark(&mut commands, entity, Dirty::MATERIAL);
-        }
+/// Turning the shell on used to be a rebuild: it needs normals, and a volume
+/// with no shell was built without them to save the stride. The geometry is
+/// shared now and carries whatever it carries, so switching the shell on can
+/// only succeed or be refused by the pipeline — there is nothing left to
+/// rebuild, and no way to add normals to a mesh another actor is drawing.
+pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<AbsorbingStyle>>) {
+    for entity in &changed {
+        mark(&mut commands, entity, Dirty::MATERIAL);
     }
 }
 
 /// What this backend needs to redraw one actor.
 ///
 /// The tail is what makes it this pathway's query rather than another's: a mesh
-/// and an absorbance, which is what the moment passes consume. Carrying the
-/// previous mesh handle is what makes reuse rather than reallocation possible,
-/// so dragging `sigma` allocates nothing.
+/// and an absorbance, which is what the moment passes consume.
 type Drawable<'a> = (
     Actor<'a, AbsorbingStyle>,
     Option<&'a Mesh3d>,
@@ -268,26 +235,38 @@ type Drawable<'a> = (
 
 pub fn draw_solids(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    arrays: Res<Assets<DataArray>>,
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, subset, bindings, dirty), mesh3d, _volume) in &dirty {
+    for ((entity, style, _subset, bindings, dirty), mesh3d, _volume) in &dirty {
         if !dirty.any() {
             continue;
         }
+        let Some(geometry) = super::mesh::geometry(bindings, &store) else {
+            continue;
+        };
 
-        if dirty.geometry
-            && let Some(mesh) = build(bindings, subset, &store, &arrays, style.ior.is_some())
-        {
-            ensure_mesh(&mut commands, entity, &mut meshes, mesh3d, mesh);
+        // The same handle a `mesh` actor over the same geometry holds. One
+        // upload, two materials, two passes.
+        if mesh3d.map(|Mesh3d(handle)| handle.id()) != Some(geometry.handle.id()) {
+            commands
+                .entity(entity)
+                .insert(Mesh3d(geometry.handle.clone()));
         }
 
-        // Unconditional rather than gated on `dirty.material`: a rebuild leaves
-        // the absorbance untouched, and an actor drawn for the first time is
-        // dirty in every way at once, so writing it here costs one comparison
-        // in `place_volumes` and cannot be missed.
+        // Said once, where the geometry is known, rather than left to a
+        // pipeline error that names a missing vertex attribute without saying
+        // which pass wanted it.
+        if style.ior.is_some() && !geometry.meta.normals {
+            warn!(
+                "draw: a solid's shell needs normals, and \"{}\" carries none",
+                geometry.meta.name
+            );
+        }
+
+        // Unconditional rather than gated on `dirty.material`: an actor drawn
+        // for the first time is dirty in every way at once, so writing it here
+        // costs one comparison in `place_volumes` and cannot be missed.
         let mut actor = commands.entity(entity);
         actor.insert(MomentVolume {
             depiction: style.depiction,
@@ -322,32 +301,6 @@ pub(super) fn normal_reflectance(ior: f32) -> f32 {
     ratio * ratio
 }
 
-/// Replaces a mesh in place when the actor already has one.
-///
-/// Reusing the handle keeps every placement pointing at the same asset — and,
-/// more to the point, stops each rebuild leaking a fresh `Mesh` into `Assets`.
-/// The early return rather than an `else` is load-bearing: it ends the mutable
-/// borrow of `meshes` before the second arm needs one.
-///
-/// The same function as the default backend's, written again here. Backends
-/// duplicate rather than share their drawing code by design — see
-/// [`crate::draw`] — and this one is four lines.
-fn ensure_mesh(
-    commands: &mut Commands,
-    entity: Entity,
-    meshes: &mut Assets<Mesh>,
-    existing: Option<&Mesh3d>,
-    mesh: Mesh,
-) {
-    if let Some(Mesh3d(handle)) = existing
-        && let Some(mut slot) = meshes.get_mut(handle)
-    {
-        *slot = mesh;
-        return;
-    }
-    commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
-}
-
 /// The flat colour, read as the fraction of each channel the solid lets
 /// through.
 ///
@@ -365,103 +318,4 @@ fn ensure_mesh(
 /// that is not a breach of the rule that backends duplicate.
 pub(super) fn transmission(tint: Vec3) -> Vec3 {
     tint.clamp(Vec3::ZERO, Vec3::ONE)
-}
-
-/// Builds the boundary mesh from what the actor binds.
-///
-/// Positions and triangles only. Returns `None` when there is nothing to draw,
-/// which covers an array released underneath a binding as well as a subset that
-/// left no whole triangle.
-fn build(
-    bindings: &Bindings,
-    subset: &Subset,
-    store: &DataStore,
-    arrays: &Assets<DataArray>,
-    needs_normals: bool,
-) -> Option<Mesh> {
-    let (position_array, index_array) = (
-        bound(bindings, "positions", store, arrays)?,
-        bound(bindings, "indices", store, arrays)?,
-    );
-    let all = position_array.to_vec3();
-    let Some(all_indices) = index_array.to_u32() else {
-        warn!("draw: mesh indices are not an integer type");
-        return None;
-    };
-    if all.is_empty() || all_indices.is_empty() {
-        return None;
-    }
-    if let Some(out_of_range) = all_indices.iter().find(|i| **i as usize >= all.len()) {
-        warn!(
-            "draw: mesh index {out_of_range} exceeds {} vertices",
-            all.len()
-        );
-        return None;
-    }
-
-    // A triangle survives only if all three of its corners do, and the
-    // surviving points are renumbered, so the connectivity has to be rewritten
-    // rather than merely filtered. Worth saying plainly: a subset of a closed
-    // mesh is generally *not* closed, and this pathway will draw the result as
-    // though the cut faces were infinitely far away.
-    let kept = subset.selected(all.len(), arrays);
-    let (positions, indices) = match &kept {
-        Some(kept) => {
-            let remap = Remap::new(kept, all.len());
-            let positions: Vec<Vec3> = kept.iter().map(|index| all[*index as usize]).collect();
-            let indices: Vec<u32> = all_indices
-                .chunks_exact(3)
-                .filter_map(|corners| remap.cell(corners))
-                .flatten()
-                .collect();
-            if indices.is_empty() {
-                info!("draw: a subset left no whole triangles; nothing to draw");
-                return None;
-            }
-            (positions, indices)
-        }
-        None => (all, all_indices),
-    };
-
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(
-        Mesh::ATTRIBUTE_POSITION,
-        positions
-            .iter()
-            .map(|p| [p.x, p.y, p.z])
-            .collect::<Vec<_>>(),
-    );
-    mesh.insert_indices(Indices::U32(indices));
-
-    // Only when a shell is on. Normals are dead weight in the accumulation —
-    // they widen every vertex by twelve bytes for a pass that never reads them
-    // — so a volume with no skin does not carry them.
-    if needs_normals {
-        let supplied = bound(bindings, "normals", store, arrays)
-            .map(|array| array.to_vec3())
-            .filter(|normals| normals.len() == position_array.count() as usize)
-            .map(|normals| match &kept {
-                Some(kept) => kept.iter().map(|index| normals[*index as usize]).collect(),
-                None => normals,
-            });
-        match supplied {
-            Some(normals) => mesh.insert_attribute(
-                Mesh::ATTRIBUTE_NORMAL,
-                normals.iter().map(|n| [n.x, n.y, n.z]).collect::<Vec<_>>(),
-            ),
-            // Smooth, because the mesh is indexed and a shell is meant to read
-            // as a continuous surface. Faceting a glass object turns one
-            // highlight into a mosaic of them.
-            None => mesh.compute_normals(),
-        }
-    }
-
-    debug!(
-        "draw: absorbing surface rebuilt with {} vertices",
-        positions.len()
-    );
-    Some(mesh)
 }

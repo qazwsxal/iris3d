@@ -359,14 +359,47 @@ message UploadDataResponse {
 }
 
 // DataInfo describes one held array without transferring its contents.
+// GeometrySpec describes one mesh a handle names.
+//
+// The counterpart of BufferSpec, and thin for the same reason: enough to say
+// what a handle is and enough to decide whether an input can read it, without
+// being a second copy of the mesh. The vertices themselves stay on the GPU;
+// there is no fetch for them yet.
+message GeometrySpec {
+  // Label for this mesh, taken from the output that produced it.
+  string name = 1;
+
+  uint64 vertices = 2;
+  uint64 triangles = 3;
+
+  // A normal per vertex. Read by lighting and by a glass shell, never by the
+  // absorbance accumulation.
+  bool normals = 4;
+
+  // A linear RGB colour per vertex, already mapped. Which ramp and what range
+  // produced them was the colormap filter's business.
+  bool colours = 5;
+}
+
+// DataInfo describes what one handle names.
+//
+// Field 2 was `spec`, when every handle named an array. It is the `buffer` arm
+// of the oneof now, at the same number and type, because a handle may also name
+// geometry.
 message DataInfo {
   DataHandle handle = 1;
-  BufferSpec spec = 2;
+
+  oneof spec {
+    BufferSpec buffer = 2;
+    GeometrySpec geometry = 3;
+  }
 }
 
 message ListDataRequest {}
 
 message ListDataResponse {
+  // Arrays first, then meshes, each in handle order. The field is named
+  // `arrays` from when that was all there was.
   repeated DataInfo arrays = 1;
 }
 
@@ -488,6 +521,7 @@ message ParamSpec {
     ChoiceParam choice = 6;
     ArrayParam array = 7;
     VectorParam vector = 8;
+    GeometryParam geometry = 9;
   }
 }
 
@@ -541,6 +575,27 @@ message ArrayParam {
   // Whether the representation can draw without it. Positions cannot be
   // omitted; a field that only tints something can.
   bool required = 3;
+}
+
+// GeometryParam is a mesh the representation draws, bound as one handle:
+// vertices, triangles and whatever attributes came with them.
+//
+// Not an ArrayParam of a particular shape, because it is not numbers the
+// representation decodes. It is geometry something else assembled, and every
+// consumer references it rather than building its own — so a ribbon drawn as a
+// lit mesh and as an absorbing solid is one upload rather than two.
+//
+// Bind the `geometry` output of a filter. Arrays you uploaded yourself become
+// one by going through the "geometry" filter kind, which is deliberately the
+// same path a computed mesh takes rather than a second one.
+//
+// There is nothing to declare about what it must carry. A kind reads what it was
+// given — a solid asks for normals only when its shell is on, so refusing a
+// mesh without them would refuse the commoner case — and says so if it cannot
+// use it. What a handle actually carries is in GeometrySpec; ask ListData.
+message GeometryParam {
+  // Whether the representation can draw without it.
+  bool required = 1;
 }
 
 // Colouring is a filter, not a message here. `Color`, `ColorSpec` and `Range`
@@ -830,17 +885,38 @@ message FilterKindInfo {
   repeated OutputSpec outputs = 4;
 }
 
-// OutputSpec describes one array a filter writes.
+// OutputSpec describes one thing a filter writes.
+//
+// Fields 3 and 4 were `dtype` and `shape`, when every output was an array. They
+// are inside ArrayOutput now, because an output may also be geometry.
 message OutputSpec {
+  reserved 3, 4;
+
   string id = 1;
   string label = 2;
-  Dtype dtype = 3;
+
+  oneof kind {
+    ArrayOutput array = 5;
+    GeometryOutput geometry = 6;
+  }
+}
+
+// ArrayOutput is an array of numbers, described the way an uploaded one is.
+message ArrayOutput {
+  Dtype dtype = 1;
 
   // Shape, where 0 is an axis decided at run time: [0, 3] is three components
   // per element, however many elements there turn out to be. This is the form
   // of the output, never its size.
-  repeated uint64 shape = 4;
+  repeated uint64 shape = 2;
 }
+
+// GeometryOutput is one mesh, bindable to any GeometryParam input.
+//
+// Nothing to declare: which attributes a run produces depends on what was bound
+// to it, so the answer comes back in GeometrySpec after it has run rather than
+// being promised in advance.
+message GeometryOutput {}
 
 message AddFilterRequest {
   // Registered kind id. REQUIRED: ask ListFilterKinds and name one.

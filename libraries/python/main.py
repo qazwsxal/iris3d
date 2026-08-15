@@ -145,7 +145,9 @@ def bind(client, kind, arrays):
     happen to call their coordinates "positions", and a sample that called them
     "xyz" would bind exactly the same way with one line changed here.
     """
-    # Input id -> the name this script's data happens to use for it.
+    # Input id -> the name this script's data happens to use for it. `mesh`
+    # takes one input, so its arrays are named here for the *geometry filter*
+    # that assembles them rather than for the actor itself.
     roles = {
         "points": {"positions": "positions"},
         "mesh": {"positions": "positions", "indices": "indices", "normals": "normals"},
@@ -173,15 +175,23 @@ def bind(client, kind, arrays):
         if name in held
     }
     if scalar is not None:
-        # Through a filter, not a setting. The actor's `colour` input takes
-        # linear RGB, so what turns a scalar field into colours is a `colormap`
-        # of its own — which is what lets the same field be shown through a
-        # different ramp, or a different field entirely, without touching the
-        # actor.
+        # Through a filter, not a setting. Colour reaches a consumer as linear
+        # RGB, so what turns a scalar field into colours is a `colormap` of its
+        # own — which is what lets the same field be shown through a different
+        # ramp, or a different field entirely, without touching the actor.
         colours = client.add_filter(
             "colormap", params={"values": iris3d.Bind(held[scalar])}
         )
         params["colour"] = iris3d.Bind(colours["colour"])
+
+    if kind == "mesh":
+        # A `mesh` actor takes one input: geometry somebody assembled. Loose
+        # arrays go through the `geometry` filter first, which is deliberately
+        # the same path a computed ribbon takes rather than a second one for
+        # uploads. The colours are part of that assembly, because two actors
+        # over one mesh share the vertex buffer and cannot each paint it.
+        shape = client.add_filter("geometry", params=params)
+        return {"geometry": iris3d.Bind(shape["geometry"])}
     return params
 
 

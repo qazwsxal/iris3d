@@ -66,26 +66,47 @@ use crate::scene::{DataArray, DataStore};
 
 pub(crate) mod cartoon;
 pub(crate) mod colormap;
+pub(crate) mod geometry;
 mod wire;
 
 pub use wire::{FilterKindSummary, FilterSummary, Filters, Graph};
 pub(crate) use wire::{add, list, list_kinds, remove, set};
 
-/// One array a filter writes.
+/// One thing a filter writes.
 ///
-/// The mirror of [`ParamKind::Array`](crate::scene::registry::ParamKind::Array)
-/// on the way in, and declared for the same reason: a client is told that
-/// `colormap` produces `float32 [n, 3]` rather than having to run it and look.
+/// The mirror of [`ParamKind`](crate::scene::registry::ParamKind) on the way in,
+/// and declared for the same reason: a client is told that `colormap` produces
+/// `float32 [n, 3]` rather than having to run it and look.
 #[derive(Debug, Clone, Copy)]
 pub struct OutputSpec {
     /// Stable identifier, used as the key in [`Outputs`] and on the wire.
     pub id: &'static str,
     pub label: &'static str,
-    pub dtype: Dtype,
-    /// Shape, where `0` is an axis decided at run time — `[0, 3]` for a colour
-    /// per element. A contour's vertex count is not knowable before it runs, so
-    /// this describes the *form* of the output and never its size.
-    pub shape: &'static [u64],
+    pub kind: OutputKind,
+}
+
+/// What sort of thing an output is.
+///
+/// The same two things a handle can name — see [`DataStore`] — because a
+/// filter's outputs are ordinary handles and a consumer cannot tell one from an
+/// upload.
+#[derive(Debug, Clone, Copy)]
+pub enum OutputKind {
+    Array {
+        dtype: Dtype,
+        /// Shape, where `0` is an axis decided at run time — `[0, 3]` for a
+        /// colour per element. A contour's vertex count is not knowable before
+        /// it runs, so this describes the *form* of the output and never its
+        /// size.
+        shape: &'static [u64],
+    },
+    /// One mesh, which every consumer references rather than copies.
+    ///
+    /// Nothing further to declare: what a mesh carries is decided by the run,
+    /// and a consumer reads it off
+    /// [`GeometryMeta`](crate::scene::data::GeometryMeta) afterwards rather than
+    /// being promised it in advance.
+    Geometry,
 }
 
 /// Everything one run gets, owned.
@@ -109,13 +130,59 @@ impl Request {
     }
 }
 
+/// One finished output.
+///
+/// A `Mesh` is built on the worker thread like everything else here. It is an
+/// engine type rather than a pathway one — no pipeline, no material, no bind
+/// group — so a filter producing one is still above the backends, in the way
+/// [`DataArray`] is.
+pub enum Product {
+    Array(DataArray),
+    Geometry(Mesh),
+}
+
+// Only a kind's own tests read a product back: [`collect`] takes them by value
+// and matches, because it has to write each into a different place. These are
+// how a test says "this output should have been an array" and gets told so by
+// name rather than by a match arm that panics.
+#[cfg(test)]
+impl Product {
+    /// The array, or `None` when this output is geometry.
+    pub fn array(&self) -> Option<&DataArray> {
+        match self {
+            Product::Array(array) => Some(array),
+            Product::Geometry(_) => None,
+        }
+    }
+
+    /// The mesh, or `None` when this output is an array.
+    pub fn geometry(&self) -> Option<&Mesh> {
+        match self {
+            Product::Geometry(mesh) => Some(mesh),
+            Product::Array(_) => None,
+        }
+    }
+}
+
+impl From<DataArray> for Product {
+    fn from(array: DataArray) -> Self {
+        Product::Array(array)
+    }
+}
+
+impl From<Mesh> for Product {
+    fn from(mesh: Mesh) -> Self {
+        Product::Geometry(mesh)
+    }
+}
+
 /// What a run produced, keyed by [`OutputSpec::id`].
 ///
 /// A run that cannot produce something — degenerate input, an unbound optional
 /// it turned out to need — leaves it out rather than inventing an array. The
 /// previous contents then stand, which is the honest outcome: nothing was
 /// learned, so nothing changes.
-pub type Products = HashMap<&'static str, DataArray>;
+pub type Products = HashMap<&'static str, Product>;
 
 /// A way of deriving data, as declared by whatever implements it.
 ///
@@ -136,11 +203,14 @@ pub struct FilterKind {
 }
 
 impl FilterKind {
-    /// Every input this kind reads an array from, required or not.
+    /// Every input this kind binds data to, required or not.
+    ///
+    /// Only array inputs reach a run today — see [`Request`]. A filter reading
+    /// another's *geometry* would have to copy a whole mesh onto the worker
+    /// thread, and nothing wants that yet: the one filter that produces geometry
+    /// takes arrays.
     pub fn inputs(&self) -> impl Iterator<Item = &ParamSpec> {
-        self.params
-            .iter()
-            .filter(|spec| matches!(spec.kind, crate::scene::registry::ParamKind::Array { .. }))
+        self.params.iter().filter(|spec| spec.kind.is_input())
     }
 
     /// A complete, in-range parameter map built from whatever was supplied. See
@@ -272,6 +342,7 @@ impl Plugin for FilterPlugin {
             let mut registry = app.world_mut().resource_mut::<FilterRegistry>();
             cartoon::register(&mut registry);
             colormap::register(&mut registry);
+            geometry::register(&mut registry);
         }
 
         app.configure_sets(
@@ -346,7 +417,7 @@ fn mark_stale(
         for (entity, bound) in &bindings {
             let touched = bound.0.values().any(|id| {
                 store
-                    .get(*id)
+                    .array(*id)
                     .is_some_and(|held| modified.contains(&held.handle.id()))
             });
             if touched {
@@ -391,7 +462,7 @@ fn start(
             let Some(handle) = bound.get(spec.id) else {
                 continue;
             };
-            let Some(array) = store.get(handle).and_then(|held| arrays.get(&held.handle)) else {
+            let Some(array) = store.array(handle).and_then(|held| arrays.get(&held.handle)) else {
                 continue;
             };
             inputs.insert(spec.id, array.clone());
@@ -412,14 +483,20 @@ fn start(
     }
 }
 
-/// Writes a finished run into the output arrays.
+/// Writes a finished run into the output arrays and meshes.
 ///
 /// Rewrites the existing assets rather than replacing the handles, which is what
 /// keeps a consumer's binding valid and what raises the `AssetEvent::Modified`
 /// everything downstream is watching.
+///
+/// A geometry output rewrites a `Mesh` the same way, and that is the whole reach
+/// of it: an actor already holds a `Mesh3d` naming that asset, so Bevy re-uploads
+/// the new vertices under it with nothing in this module involved. Nothing
+/// rebuilds and nothing rebinds.
 fn collect(
     mut commands: Commands,
     mut arrays: ResMut<Assets<DataArray>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut store: ResMut<DataStore>,
     mut running: Query<(Entity, &mut Running, &Generation, &Outputs, &FilterKindId)>,
 ) {
@@ -441,24 +518,60 @@ fn collect(
                 warn!("filter: {} produced undeclared output \"{output}\"", kind.0);
                 continue;
             };
-            let Some(held) = store.get(handle) else {
-                continue;
-            };
-            let meta = BufferMeta {
-                name: output.to_string(),
-                dtype: produced.dtype,
-                shape: produced.shape.clone(),
-            };
-            let asset = held.handle.clone();
-            let Some(mut existing) = arrays.get_mut(&asset) else {
-                continue;
-            };
-            *existing = produced;
-            // The meta as well as the bytes: an output's length is decided by
-            // the run, so a consumer asking what shape this handle is has to be
-            // told the new answer rather than the one it was created with.
-            store.insert(handle, meta, asset);
+            match produced {
+                Product::Array(produced) => {
+                    let Some(held) = store.array(handle) else {
+                        continue;
+                    };
+                    let meta = BufferMeta {
+                        name: output.to_string(),
+                        dtype: produced.dtype,
+                        shape: produced.shape.clone(),
+                    };
+                    let asset = held.handle.clone();
+                    let Some(mut existing) = arrays.get_mut(&asset) else {
+                        continue;
+                    };
+                    *existing = produced;
+                    // The meta as well as the bytes: an output's length is
+                    // decided by the run, so a consumer asking what shape this
+                    // handle is has to be told the new answer rather than the
+                    // one it was created with.
+                    store.insert(handle, meta, asset);
+                }
+                Product::Geometry(produced) => {
+                    let Some(held) = store.geometry(handle) else {
+                        continue;
+                    };
+                    let meta = describe(output, &produced);
+                    let asset = held.handle.clone();
+                    let Some(mut existing) = meshes.get_mut(&asset) else {
+                        continue;
+                    };
+                    *existing = produced;
+                    store.insert_geometry(handle, meta, asset);
+                }
+            }
         }
+    }
+}
+
+/// What a finished mesh carries, as a consumer will be told it.
+///
+/// Read off the mesh rather than declared by the kind: which attributes a run
+/// produced depends on what was bound to it, so `cartoon` with no colours bound
+/// and `cartoon` with them are the same kind producing different geometry.
+pub(crate) fn describe(name: &str, mesh: &Mesh) -> crate::scene::data::GeometryMeta {
+    crate::scene::data::GeometryMeta {
+        name: name.to_string(),
+        vertices: mesh.count_vertices() as u64,
+        // Triangles rather than indices, because that is what a caller counts.
+        // An unindexed mesh has none and its vertices are its corners.
+        triangles: mesh
+            .indices()
+            .map_or(mesh.count_vertices() / 3, |indices| indices.len() / 3) as u64,
+        normals: mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_some(),
+        colours: mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some(),
     }
 }
 

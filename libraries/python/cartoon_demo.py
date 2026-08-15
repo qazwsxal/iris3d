@@ -147,15 +147,26 @@ def main():
                 },
             )
 
-            client.add_actor(
-                "mesh",
-                parent=handle,
+            # The arrays become one mesh here, and that mesh is what an actor
+            # binds. Every actor bound to it references the same vertex buffers,
+            # so drawing this ribbon as `mesh` *and* as `solid` is one upload
+            # rather than two — add the second actor with the same handle to
+            # see it. The colours have to be part of the assembly for the same
+            # reason: a shared buffer cannot be painted per consumer.
+            shape = client.add_filter(
+                "geometry",
                 params={
                     "positions": iris3d.Bind(ribbon["positions"]),
                     "indices": iris3d.Bind(ribbon["indices"]),
                     "normals": iris3d.Bind(ribbon["normals"]),
                     "colour": iris3d.Bind(rainbow["colour"]),
                 },
+            )
+
+            client.add_actor(
+                "mesh",
+                parent=handle,
+                params={"geometry": iris3d.Bind(shape["geometry"])},
             )
             # Glycans, as a second actor under the same object. A cartoon draws
             # nothing for a sugar — it has no backbone — so the two are

@@ -11,19 +11,20 @@ use crate::scene::data::Association;
 
 use crate::scene::registry::{ParamKind, ParamMap, ParamSpec, ParamValue};
 use crate::scene::subset::SubsetRequest;
-use crate::filter::{FilterKindSummary, FilterSummary};
+use crate::filter::{FilterKindSummary, FilterSummary, OutputKind};
 use crate::scene::{
-    ActorSummary, BufferMeta, DataSummary, Dtype, KindSummary, NamedBuffer, ObjectSummary,
-    SceneCommand, SceneError, SubsetEncoding,
+    ActorSummary, BufferMeta, DataSummary, Dtype, HeldMeta, KindSummary, NamedBuffer,
+    ObjectSummary, SceneCommand, SceneError, SubsetEncoding,
 };
 
 use super::SceneSender;
 use super::proto::{
     ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, AddFilterRequest,
-    AddFilterResponse, ArrayParam, BoolParam, BufferSpec, ChoiceParam, Chunk,
+    AddFilterResponse, ArrayOutput, ArrayParam, BoolParam, BufferSpec, ChoiceParam, Chunk,
     CreateObjectRequest, CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest,
     DeleteObjectResponse, Dtype as ProtoDtype, FilterHandle, FilterInfo, FilterKindInfo,
-    FilterOutput, FloatParam, ListActorKindsRequest, ListActorKindsResponse, ListActorsRequest,
+    FilterOutput, FloatParam, GeometryOutput, GeometryParam, GeometrySpec, ListActorKindsRequest,
+    ListActorKindsResponse, ListActorsRequest,
     ListActorsResponse, ListDataRequest, ListDataResponse, ListFilterKindsRequest,
     ListFilterKindsResponse, ListFiltersRequest, ListFiltersResponse, ListObjectsRequest,
     ListObjectsResponse, ObjectHandle, ObjectInfo, OutputSpec as ProtoOutputSpec,
@@ -32,8 +33,9 @@ use super::proto::{
     RemoveFilterResponse, SetActorRequest, SetActorResponse, SetFilterRequest, SetFilterResponse,
     SetParentRequest, SetParentResponse, SetTransformRequest, SetTransformResponse,
     Subset as ProtoSubset, SubsetInfo, UploadDataRequest, UploadDataResponse, VectorParam,
-    VectorValue, param_spec, param_value::Value, scene_service_server::SceneService,
-    subset as subset_proto, upload_data_request::Payload as DataPayload,
+    VectorValue, data_info, output_spec, param_spec, param_value::Value,
+    scene_service_server::SceneService, subset as subset_proto,
+    upload_data_request::Payload as DataPayload,
 };
 use bevy::math::{Quat, Vec3};
 
@@ -712,6 +714,9 @@ fn spec_to_proto(spec: &ParamSpec) -> ProtoSpec {
                 shape: shape.to_vec(),
                 required,
             }),
+            ParamKind::Geometry { required } => {
+                param_spec::Kind::Geometry(GeometryParam { required })
+            }
         }),
     }
 }
@@ -751,8 +756,13 @@ fn filter_kind_info(summary: &FilterKindSummary) -> FilterKindInfo {
             .map(|spec| ProtoOutputSpec {
                 id: spec.id.to_string(),
                 label: spec.label.to_string(),
-                dtype: proto_dtype(spec.dtype) as i32,
-                shape: spec.shape.to_vec(),
+                kind: Some(match spec.kind {
+                    OutputKind::Array { dtype, shape } => output_spec::Kind::Array(ArrayOutput {
+                        dtype: proto_dtype(dtype) as i32,
+                        shape: shape.to_vec(),
+                    }),
+                    OutputKind::Geometry => output_spec::Kind::Geometry(GeometryOutput {}),
+                }),
             })
             .collect(),
     }
@@ -1025,10 +1035,19 @@ fn object_info(summary: &ObjectSummary) -> ObjectInfo {
     }
 }
 
-fn data_info(array: &DataSummary) -> DataInfo {
+fn data_info(held: &DataSummary) -> DataInfo {
     DataInfo {
-        handle: Some(DataHandle { id: array.id }),
-        spec: Some(buffer_spec(&array.meta)),
+        handle: Some(DataHandle { id: held.id }),
+        spec: Some(match &held.meta {
+            HeldMeta::Array(meta) => data_info::Spec::Buffer(buffer_spec(meta)),
+            HeldMeta::Geometry(meta) => data_info::Spec::Geometry(GeometrySpec {
+                name: meta.name.clone(),
+                vertices: meta.vertices,
+                triangles: meta.triangles,
+                normals: meta.normals,
+                colours: meta.colours,
+            }),
+        }),
     }
 }
 

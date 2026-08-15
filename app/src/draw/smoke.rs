@@ -36,7 +36,7 @@
 
 use bevy::prelude::*;
 
-use crate::scene::data::{BufferMeta, Dtype};
+use crate::scene::data::{BufferMeta, Dtype, GeometryMeta};
 use crate::scene::link::{Parents, Shown};
 use crate::scene::registry::{
     ActorKindId, ActorParams, ActorRegistry, ParamKind, ParamSpec, ParamValue,
@@ -84,15 +84,43 @@ fn headless() -> App {
     app
 }
 
-/// An array that satisfies what an input declared.
+/// Something that satisfies what an input declared.
 ///
-/// Read off the [`ParamKind::Array`] rather than written per kind, so this stays
+/// Read off the [`ParamKind`] rather than written per kind, so this stays
 /// correct for inputs that do not exist yet. A `0` in the declared shape is the
 /// free axis and becomes [`ELEMENTS`]; a fixed axis is taken as given.
 fn conforming(spec: &ParamSpec, id: u64, app: &mut App) -> Option<u64> {
-    let ParamKind::Array { dtypes, shape, .. } = spec.kind else {
-        return None;
-    };
+    let dtypes;
+    let shape;
+    match spec.kind {
+        ParamKind::Array {
+            dtypes: d,
+            shape: s,
+            ..
+        } => {
+            dtypes = d;
+            shape = s;
+        }
+        // A degenerate mesh, for the same reason the arrays are degenerate: a
+        // kind that cannot survive one is worth hearing about, and it means a
+        // kind taking geometry is covered here without editing this file.
+        ParamKind::Geometry { .. } => {
+            let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh());
+            app.world_mut().resource_mut::<DataStore>().insert_geometry(
+                id,
+                GeometryMeta {
+                    name: spec.id.to_string(),
+                    vertices: ELEMENTS,
+                    triangles: ELEMENTS / 3,
+                    normals: true,
+                    colours: true,
+                },
+                handle,
+            );
+            return Some(id);
+        }
+        _ => return None,
+    }
     // The first accepted type. An empty list accepts anything, and `float32` is
     // what a client would most likely send.
     let dtype = dtypes.first().copied().unwrap_or(Dtype::Float32);
@@ -144,8 +172,23 @@ fn conforming(spec: &ParamSpec, id: u64, app: &mut App) -> Option<u64> {
     Some(id)
 }
 
-/// Spawns an object with one actor of `kind` drawn under it, bound to arrays
-/// that fit every input the kind declares.
+/// A mesh carrying every attribute a consumer might read, so a kind is met with
+/// the widest layout rather than the narrowest.
+fn mesh() -> Mesh {
+    let mut mesh = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    );
+    let count = ELEMENTS as usize;
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; count]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; count]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32; 4]; count]);
+    mesh.insert_indices(bevy::mesh::Indices::U32((0..ELEMENTS as u32).collect()));
+    mesh
+}
+
+/// Spawns an object with one actor of `kind` drawn under it, bound to data that
+/// fits every input the kind declares.
 ///
 /// Built through the same parameter map a client's call produces: defaults for
 /// the settings, a handle for each input. Nothing here inserts a style component
@@ -237,4 +280,77 @@ fn stand_up() {
 #[test]
 fn the_backend_stands_up_with_every_kind_it_registers() {
     stand_up();
+}
+
+/// The point of stage 4, asserted directly: two actors of two kinds over one
+/// geometry hold the **same** `Mesh` asset.
+///
+/// They used to hold two, built separately from the same four arrays, because
+/// each kind assembled its own. That is one upload of the vertices per way of
+/// drawing them, and a ribbon drawn as both a lit mesh and an absorbing solid
+/// paid it twice. Handle equality is what proves nothing was duplicated;
+/// anything weaker passes while the memory is still doubled.
+#[test]
+fn two_kinds_over_one_geometry_share_the_mesh() {
+    let mut app = headless();
+
+    let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh());
+    let asset = handle.id();
+    app.world_mut().resource_mut::<DataStore>().insert_geometry(
+        0,
+        GeometryMeta {
+            name: "ribbon".into(),
+            vertices: ELEMENTS,
+            triangles: ELEMENTS / 3,
+            normals: true,
+            colours: true,
+        },
+        handle,
+    );
+
+    let object = app
+        .world_mut()
+        .spawn(SceneObject {
+            name: "shared".into(),
+        })
+        .id();
+    let actors: Vec<Entity> = ["mesh", "solid"]
+        .into_iter()
+        .map(|kind| {
+            let registered = app
+                .world()
+                .resource::<ActorRegistry>()
+                .get(kind)
+                .expect("registered by the backend");
+            let mut params = registered.defaults();
+            params.insert("geometry".into(), ParamValue::Data(0));
+            app.world_mut()
+                .spawn((
+                    ActorKindId(kind),
+                    ActorParams(params),
+                    Subset::All,
+                    Parents(vec![object]),
+                    Shown(true),
+                    Visibility::Hidden,
+                ))
+                .id()
+        })
+        .collect();
+
+    for _ in 0..3 {
+        app.update();
+    }
+
+    for actor in &actors {
+        assert_eq!(
+            app.world().get::<Mesh3d>(*actor).map(|mesh| mesh.0.id()),
+            Some(asset),
+            "an actor should reference the geometry it binds, not a copy of it"
+        );
+    }
+    assert_eq!(
+        app.world().resource::<Assets<Mesh>>().len(),
+        1,
+        "two actors over one geometry should not have produced a second mesh"
+    );
 }

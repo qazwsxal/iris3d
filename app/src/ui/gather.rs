@@ -17,7 +17,7 @@ use bevy::prelude::*;
 
 use crate::counter::UniqueID;
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec};
-use crate::scene::{BufferMeta, DataStore, Parents, Placement};
+use crate::scene::{BufferMeta, DataStore, HeldMeta, Parents, Placement};
 use crate::scene::{DataArray, SceneObject, Subset};
 
 /// A flattened view of one object.
@@ -114,8 +114,10 @@ pub struct Gathered {
     /// them — without this they would be listed as unreferenced, which is the
     /// opposite of true.
     pub held: HashMap<AssetId<DataArray>, (u64, BufferMeta)>,
-    /// Every held array in handle order, for the input pickers.
-    pub bindable: Vec<(u64, BufferMeta)>,
+    /// Everything a client holds, in handle order, for the input pickers.
+    /// Arrays and meshes together, because an input decides for itself which it
+    /// takes — see [`ParamKind::accepts`](crate::scene::registry::ParamKind).
+    pub bindable: Vec<(u64, HeldMeta)>,
     pub total_bytes: u64,
 }
 
@@ -173,10 +175,16 @@ pub fn gather(
         .iter()
         .map(|(id, array)| (array.handle.id(), (id, array.meta.clone())))
         .collect();
-    // The same arrays as a list an input picker can walk, in handle order.
-    let mut bindable: Vec<(u64, BufferMeta)> = store
+    // The same, plus the meshes, as a list an input picker can walk in handle
+    // order.
+    let mut bindable: Vec<(u64, HeldMeta)> = store
         .iter()
-        .map(|(id, array)| (id, array.meta.clone()))
+        .map(|(id, array)| (id, HeldMeta::Array(array.meta.clone())))
+        .chain(
+            store
+                .iter_geometry()
+                .map(|(id, mesh)| (id, HeldMeta::Geometry(mesh.meta.clone()))),
+        )
         .collect();
     bindable.sort_by_key(|(id, _)| *id);
 

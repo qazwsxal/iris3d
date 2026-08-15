@@ -86,13 +86,29 @@ class UploadDataResponse(_message.Message):
     total_bytes: int
     def __init__(self, arrays: _Optional[_Iterable[_Union[DataInfo, _Mapping]]] = ..., total_bytes: _Optional[int] = ...) -> None: ...
 
+class GeometrySpec(_message.Message):
+    __slots__ = ("name", "vertices", "triangles", "normals", "colours")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    VERTICES_FIELD_NUMBER: _ClassVar[int]
+    TRIANGLES_FIELD_NUMBER: _ClassVar[int]
+    NORMALS_FIELD_NUMBER: _ClassVar[int]
+    COLOURS_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    vertices: int
+    triangles: int
+    normals: bool
+    colours: bool
+    def __init__(self, name: _Optional[str] = ..., vertices: _Optional[int] = ..., triangles: _Optional[int] = ..., normals: _Optional[bool] = ..., colours: _Optional[bool] = ...) -> None: ...
+
 class DataInfo(_message.Message):
-    __slots__ = ("handle", "spec")
+    __slots__ = ("handle", "buffer", "geometry")
     HANDLE_FIELD_NUMBER: _ClassVar[int]
-    SPEC_FIELD_NUMBER: _ClassVar[int]
+    BUFFER_FIELD_NUMBER: _ClassVar[int]
+    GEOMETRY_FIELD_NUMBER: _ClassVar[int]
     handle: DataHandle
-    spec: BufferSpec
-    def __init__(self, handle: _Optional[_Union[DataHandle, _Mapping]] = ..., spec: _Optional[_Union[BufferSpec, _Mapping]] = ...) -> None: ...
+    buffer: BufferSpec
+    geometry: GeometrySpec
+    def __init__(self, handle: _Optional[_Union[DataHandle, _Mapping]] = ..., buffer: _Optional[_Union[BufferSpec, _Mapping]] = ..., geometry: _Optional[_Union[GeometrySpec, _Mapping]] = ...) -> None: ...
 
 class ListDataRequest(_message.Message):
     __slots__ = ()
@@ -181,7 +197,7 @@ class ChoiceParam(_message.Message):
     def __init__(self, options: _Optional[_Iterable[str]] = ..., default_value: _Optional[str] = ...) -> None: ...
 
 class ParamSpec(_message.Message):
-    __slots__ = ("id", "label", "number", "flag", "choice", "array", "vector")
+    __slots__ = ("id", "label", "number", "flag", "choice", "array", "vector", "geometry")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     NUMBER_FIELD_NUMBER: _ClassVar[int]
@@ -189,6 +205,7 @@ class ParamSpec(_message.Message):
     CHOICE_FIELD_NUMBER: _ClassVar[int]
     ARRAY_FIELD_NUMBER: _ClassVar[int]
     VECTOR_FIELD_NUMBER: _ClassVar[int]
+    GEOMETRY_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
     number: FloatParam
@@ -196,7 +213,8 @@ class ParamSpec(_message.Message):
     choice: ChoiceParam
     array: ArrayParam
     vector: VectorParam
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ..., vector: _Optional[_Union[VectorParam, _Mapping]] = ...) -> None: ...
+    geometry: GeometryParam
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ..., vector: _Optional[_Union[VectorParam, _Mapping]] = ..., geometry: _Optional[_Union[GeometryParam, _Mapping]] = ...) -> None: ...
 
 class VectorValue(_message.Message):
     __slots__ = ("components",)
@@ -227,6 +245,12 @@ class ArrayParam(_message.Message):
     shape: _containers.RepeatedScalarFieldContainer[int]
     required: bool
     def __init__(self, dtypes: _Optional[_Iterable[_Union[Dtype, str]]] = ..., shape: _Optional[_Iterable[int]] = ..., required: _Optional[bool] = ...) -> None: ...
+
+class GeometryParam(_message.Message):
+    __slots__ = ("required",)
+    REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    required: bool
+    def __init__(self, required: _Optional[bool] = ...) -> None: ...
 
 class Subset(_message.Message):
     __slots__ = ("data", "dtype", "encoding", "association")
@@ -429,16 +453,28 @@ class FilterKindInfo(_message.Message):
     def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ..., outputs: _Optional[_Iterable[_Union[OutputSpec, _Mapping]]] = ...) -> None: ...
 
 class OutputSpec(_message.Message):
-    __slots__ = ("id", "label", "dtype", "shape")
+    __slots__ = ("id", "label", "array", "geometry")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
-    DTYPE_FIELD_NUMBER: _ClassVar[int]
-    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    ARRAY_FIELD_NUMBER: _ClassVar[int]
+    GEOMETRY_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
+    array: ArrayOutput
+    geometry: GeometryOutput
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., array: _Optional[_Union[ArrayOutput, _Mapping]] = ..., geometry: _Optional[_Union[GeometryOutput, _Mapping]] = ...) -> None: ...
+
+class ArrayOutput(_message.Message):
+    __slots__ = ("dtype", "shape")
+    DTYPE_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
     dtype: Dtype
     shape: _containers.RepeatedScalarFieldContainer[int]
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ...) -> None: ...
+    def __init__(self, dtype: _Optional[_Union[Dtype, str]] = ..., shape: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class GeometryOutput(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
 
 class AddFilterRequest(_message.Message):
     __slots__ = ("kind", "params")

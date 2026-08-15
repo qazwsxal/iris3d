@@ -4,6 +4,7 @@ from . import molecules, testdata
 from .client import (
     Bind,
     DataSummary,
+    GeometrySummary,
     DEFAULT_ADDRESS,
     DEFAULT_CHUNK_BYTES,
     DEFAULT_CONNECT_TIMEOUT,
@@ -26,6 +27,7 @@ from .v1.scene_pb2_grpc import SceneServiceStub
 __all__ = [
     "Bind",
     "DataSummary",
+    "GeometrySummary",
     "DEFAULT_ADDRESS",
     "DEFAULT_CHUNK_BYTES",
     "DEFAULT_CONNECT_TIMEOUT",

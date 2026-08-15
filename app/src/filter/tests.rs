@@ -31,8 +31,10 @@ const DOUBLE: &[ParamSpec] = &[ParamSpec {
 const DOUBLED: &[OutputSpec] = &[OutputSpec {
     id: "doubled",
     label: "doubled",
-    dtype: Dtype::Float32,
-    shape: &[0],
+    kind: super::OutputKind::Array {
+        dtype: Dtype::Float32,
+        shape: &[0],
+    },
 }];
 
 fn double(request: &Request) -> Products {
@@ -47,7 +49,7 @@ fn double(request: &Request) -> Products {
         .collect();
     products.insert(
         "doubled",
-        DataArray::numeric(Dtype::Float32, values.shape.clone(), bytes),
+        DataArray::numeric(Dtype::Float32, values.shape.clone(), bytes).into(),
     );
     products
 }
@@ -56,6 +58,9 @@ fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
     app.init_asset::<DataArray>()
+        // A geometry output is a `Mesh`, so `collect` writes into this even
+        // where no kind registered here produces one.
+        .init_asset::<Mesh>()
         .init_resource::<DataStore>()
         .init_resource::<crate::scene::registry::ActorRegistry>()
         .add_systems(Update, apply_actor_params);
@@ -169,7 +174,7 @@ fn held(app: &App, id: u64) -> Vec<f32> {
     let store = app.world().resource::<DataStore>();
     let arrays = app.world().resource::<Assets<DataArray>>();
     arrays
-        .get(&store.get(id).expect("a held array").handle)
+        .get(&store.array(id).expect("a held array").handle)
         .expect("the asset")
         .to_f32()
 }
@@ -195,7 +200,7 @@ fn an_output_handle_is_bindable_before_the_first_run() {
     spawn(&mut app, "double", 100, 0);
 
     // No frames at all: the handle is already in the store.
-    assert!(app.world().resource::<DataStore>().get(100).is_some());
+    assert!(app.world().resource::<DataStore>().array(100).is_some());
     assert_eq!(held(&app, 100), Vec::<f32>::new(), "empty until it has run");
 }
 
@@ -211,7 +216,7 @@ fn re_running_keeps_the_same_handle() {
     let before = app
         .world()
         .resource::<DataStore>()
-        .get(100)
+        .array(100)
         .expect("held")
         .handle
         .id();
@@ -228,7 +233,7 @@ fn re_running_keeps_the_same_handle() {
     let after = app
         .world()
         .resource::<DataStore>()
-        .get(100)
+        .array(100)
         .expect("held")
         .handle
         .id();
@@ -248,7 +253,7 @@ fn rewriting_a_bound_array_re_runs_the_filter() {
     let source = app
         .world()
         .resource::<DataStore>()
-        .get(0)
+        .array(0)
         .expect("held")
         .handle
         .clone();

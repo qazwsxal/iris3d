@@ -232,9 +232,10 @@ class ParamInfo:
 
     id: str
     label: str
-    #: "float", "bool", "choice", "array" or "vector".
+    #: "float", "bool", "choice", "array", "geometry" or "vector".
     type: str
-    #: Absent for an array input: there is no default array, so it starts unbound.
+    #: Absent for an input: there is no default array or mesh, so it starts
+    #: unbound.
     default: float | bool | str | tuple[float, ...] | tuple[int, ...] | None
     #: Allowed range, for float parameters only.
     range: tuple[float, float] | None = None
@@ -246,7 +247,7 @@ class ParamInfo:
     #: Declared shape, for arrays only. 0 accepts any length on that axis, so
     #: positions read ``(0, 3)`` and a scalar field ``(0,)``.
     shape: tuple[int, ...] = ()
-    #: Whether the kind can draw without it, for arrays only.
+    #: Whether the kind can draw without it, for both sorts of input.
     required: bool = False
     #: How many numbers it takes, for vectors only.
     components: int = 0
@@ -256,13 +257,16 @@ class ParamInfo:
 
 @dataclass(frozen=True)
 class Bind:
-    """Binds an uploaded array to one of an actor kind's inputs.
+    """Binds a handle to one of a kind's inputs.
 
     Wrapped rather than passed as a bare handle so it cannot be mistaken for a
     slider value::
 
         data = client.upload_data({"xyz": positions})
         client.add_actor(obj, "points", params={"positions": iris3d.Bind(data["xyz"])})
+
+    The same wrapper binds geometry, because a mesh is named by a handle from
+    the same sequence an array is.
     """
 
     handle: int
@@ -281,6 +285,29 @@ class DataSummary:
 
 
 @dataclass(frozen=True)
+class GeometrySummary:
+    """One mesh the scene holds, described without its vertices.
+
+    Produced by a filter — the ``geometry`` kind assembles arrays into one — and
+    bound to an actor's geometry input. Every actor bound to it references the
+    same vertex buffers rather than building its own, which is why two ways of
+    drawing one ribbon cost one upload.
+
+    The vertices stay on the GPU. There is no fetch for them.
+    """
+
+    handle: int
+    #: The output it came from, e.g. "geometry".
+    name: str
+    vertices: int
+    triangles: int
+    #: A normal per vertex. Read by lighting and by a glass shell.
+    normals: bool
+    #: A linear RGB colour per vertex, already mapped.
+    colours: bool
+
+
+@dataclass(frozen=True)
 class ActorKindSummary:
     """A way of drawing that the running server supports."""
 
@@ -291,15 +318,22 @@ class ActorKindSummary:
 
 @dataclass(frozen=True)
 class OutputInfo:
-    """One array a filter kind writes."""
+    """One thing a filter kind writes."""
 
     id: str
     label: str
-    dtype: np.dtype
-    #: Declared shape, where 0 is an axis decided when it runs. A colour output
-    #: reads ``(0, 3)``: three components per element, however many elements
-    #: there turn out to be.
-    shape: tuple[int, ...]
+    #: "array" or "geometry".
+    type: str
+    #: Element type, for array outputs only.
+    dtype: np.dtype | None = None
+    #: Declared shape, for array outputs only, where 0 is an axis decided when
+    #: it runs. A colour output reads ``(0, 3)``: three components per element,
+    #: however many elements there turn out to be.
+    #:
+    #: A geometry output declares nothing. Which attributes a run produces
+    #: depends on what was bound to it, so the answer comes back in
+    #: :class:`GeometrySummary` afterwards rather than being promised here.
+    shape: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -447,13 +481,27 @@ def _actor(info: ActorInfo) -> ActorSummary:
     )
 
 
-def _data(info: DataInfo) -> DataSummary:
+def _data(info: DataInfo) -> DataSummary | GeometrySummary:
+    """Reads one entry of a listing, which is an array or a mesh.
+
+    One handle space, so the two arrive in one listing and are told apart by
+    which arm of the oneof is set.
+    """
+    if info.WhichOneof("spec") == "geometry":
+        return GeometrySummary(
+            handle=info.handle.id,
+            name=info.geometry.name,
+            vertices=info.geometry.vertices,
+            triangles=info.geometry.triangles,
+            normals=info.geometry.normals,
+            colours=info.geometry.colours,
+        )
     return DataSummary(
         handle=info.handle.id,
-        name=info.spec.name,
-        dtype=from_proto_dtype(info.spec.dtype),
-        shape=tuple(info.spec.shape),
-        byte_length=info.spec.byte_length,
+        name=info.buffer.name,
+        dtype=from_proto_dtype(info.buffer.dtype),
+        shape=tuple(info.buffer.shape),
+        byte_length=info.buffer.byte_length,
     )
 
 
@@ -511,6 +559,19 @@ def _param_infos(specs) -> tuple[ParamInfo, ...]:
                     required=spec.array.required,
                 )
             )
+        elif kind == "geometry":
+            params.append(
+                ParamInfo(
+                    id=spec.id,
+                    label=spec.label,
+                    type="geometry",
+                    # As for an array: nothing to default to, so it starts
+                    # unbound. Nothing to declare either — the kind reads what
+                    # it was given rather than demanding attributes in advance.
+                    default=None,
+                    required=spec.geometry.required,
+                )
+            )
         else:
             params.append(
                 ParamInfo(
@@ -533,20 +594,24 @@ def _kind(info: ActorKindInfo) -> ActorKindSummary:
     )
 
 
+def _output(output) -> OutputInfo:
+    if output.WhichOneof("kind") == "geometry":
+        return OutputInfo(id=output.id, label=output.label, type="geometry")
+    return OutputInfo(
+        id=output.id,
+        label=output.label,
+        type="array",
+        dtype=from_proto_dtype(output.array.dtype),
+        shape=tuple(output.array.shape),
+    )
+
+
 def _filter_kind(info: FilterKindInfo) -> FilterKindSummary:
     return FilterKindSummary(
         id=info.id,
         label=info.label,
         params=_param_infos(info.params),
-        outputs=tuple(
-            OutputInfo(
-                id=output.id,
-                label=output.label,
-                dtype=from_proto_dtype(output.dtype),
-                shape=tuple(output.shape),
-            )
-            for output in info.outputs
-        ),
+        outputs=tuple(_output(output) for output in info.outputs),
     )
 
 
@@ -740,11 +805,16 @@ class Client:
         """
         response = self._scene.UploadData(data_messages(arrays, chunk_bytes))
         return {
-            info.spec.name: info.handle.id for info in response.arrays
+            info.buffer.name: info.handle.id for info in response.arrays
         }
 
-    def list_data(self) -> list[DataSummary]:
-        """Every array currently held, whether or not anything draws it."""
+    def list_data(self) -> list[DataSummary | GeometrySummary]:
+        """Everything currently held, whether or not anything draws it.
+
+        Arrays first, then the meshes filters have assembled. One handle space,
+        so both come back from one call, and each entry says which it is by its
+        own type.
+        """
         response = self._scene.ListData(ListDataRequest())
         return [_data(info) for info in response.arrays]
 

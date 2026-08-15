@@ -21,14 +21,32 @@ use bevy::ecs::system::SystemParam;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::PrimitiveTopology;
+
 use crate::counter::{GlobalIDCounter, UniqueID};
-use crate::scene::data::BufferMeta;
+use crate::scene::data::{BufferMeta, GeometryMeta};
 use crate::scene::registry::{ParamMap, ParamSpec};
 use crate::scene::{DataArray, DataStore, SceneError};
 
-use super::{
-    FilterKindId, FilterParams, FilterRegistry, Generation, OutputSpec, Outputs,
-};
+use super::{FilterKindId, FilterParams, FilterRegistry, Generation, OutputKind, OutputSpec, Outputs};
+
+/// The mesh a geometry output starts as: a triangle list with no triangles.
+///
+/// Positions and indices are inserted empty rather than left off, so the layout
+/// a consumer's pipeline specialises over is the one it will keep once the
+/// filter has run. A mesh with no attributes at all specialises to nothing and
+/// the error names a missing `Vertex_Position`, which is a confusing way to say
+/// "it has not run yet".
+fn empty_mesh() -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
+    mesh.insert_indices(bevy::mesh::Indices::U32(Vec::new()));
+    mesh
+}
 
 /// Mutable view of the filter entities, for the same reason
 /// [`ActorQuery`](crate::scene) is one query: a read-only query over the same
@@ -175,6 +193,7 @@ pub fn add(
     registry: &FilterRegistry,
     graph: &mut Graph,
     arrays: &mut Assets<DataArray>,
+    meshes: &mut Assets<Mesh>,
     store: &mut DataStore,
     kind: String,
     params: ParamMap,
@@ -197,21 +216,41 @@ pub fn add(
     let mut listed = Vec::new();
     for spec in registered.outputs {
         let handle = counter.next();
-        // The **declared** shape, not `[0]`. An empty `colormap` output has to
-        // describe itself as `[n, 3]` from the start, or binding it to an input
-        // that takes `[n, 3]` would be refused until the first run had happened
-        // — which is exactly the wait these handles exist to avoid.
-        let shape = spec.shape.to_vec();
-        let asset = arrays.add(DataArray::numeric(spec.dtype, shape.clone(), Vec::new()));
-        store.insert(
-            handle,
-            BufferMeta {
-                name: spec.id.to_string(),
-                dtype: spec.dtype,
-                shape,
-            },
-            asset,
-        );
+        match spec.kind {
+            OutputKind::Array { dtype, shape } => {
+                // The **declared** shape, not `[0]`. An empty `colormap` output
+                // has to describe itself as `[n, 3]` from the start, or binding
+                // it to an input that takes `[n, 3]` would be refused until the
+                // first run had happened — which is exactly the wait these
+                // handles exist to avoid.
+                let shape = shape.to_vec();
+                let asset = arrays.add(DataArray::numeric(dtype, shape.clone(), Vec::new()));
+                store.insert(
+                    handle,
+                    BufferMeta {
+                        name: spec.id.to_string(),
+                        dtype,
+                        shape,
+                    },
+                    asset,
+                );
+            }
+            OutputKind::Geometry => {
+                // An empty triangle list, for the same reason: an actor can be
+                // bound to it and placed in the scene before the filter has run,
+                // and draws nothing until it has. Nothing has to be declared in
+                // advance the way a shape is — a geometry input takes any mesh.
+                let asset = meshes.add(empty_mesh());
+                store.insert_geometry(
+                    handle,
+                    GeometryMeta {
+                        name: spec.id.to_string(),
+                        ..default()
+                    },
+                    asset,
+                );
+            }
+        }
         allocated.insert(spec.id, handle);
         listed.push((spec.id.to_string(), handle));
     }
@@ -375,14 +414,12 @@ fn check_bindings(
     store: &DataStore,
 ) -> Result<(), SceneError> {
     for spec in kind.inputs() {
-        let crate::scene::registry::ParamKind::Array { required, .. } = spec.kind else {
-            continue;
-        };
+        let required = spec.kind.is_required();
         match crate::scene::registry::data(params, spec.id) {
             Some(id) => {
-                let array = store.get(id).ok_or(SceneError::NoSuchData(id))?;
+                let held = store.held(id).ok_or(SceneError::NoSuchData(id))?;
                 spec.kind
-                    .accepts(&array.meta)
+                    .accepts(held)
                     .map_err(|reason| SceneError::BadBinding {
                         kind: kind.id.to_string(),
                         input: spec.id,

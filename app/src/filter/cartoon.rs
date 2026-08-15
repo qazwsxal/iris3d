@@ -63,7 +63,7 @@ use crate::scene::DataArray;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, flag, float};
 
-use super::{FilterKind, FilterRegistry, OutputSpec, Products, Request};
+use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Request};
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -216,24 +216,40 @@ const PARAMS: &[ParamSpec] = &[
     },
 ];
 
+/// Arrays, not one assembled mesh.
+///
+/// Deliberate, though this filter could build a [`Mesh`](bevy::prelude::Mesh)
+/// itself. A ribbon is coloured by sending `residue_index` through `colormap`,
+/// and those colours have to reach the *vertex buffer* — so the assembly has to
+/// happen after the colouring, which means after this. See
+/// [`geometry`](super::geometry), which is where the arrays become one mesh.
+///
+/// A filter whose output nothing needs to colour, such as a contour of a field
+/// it has already sampled, can and should produce geometry directly.
 const OUTPUTS: &[OutputSpec] = &[
     OutputSpec {
         id: "positions",
         label: "positions",
-        dtype: Dtype::Float32,
-        shape: &[0, 3],
+        kind: OutputKind::Array {
+            dtype: Dtype::Float32,
+            shape: &[0, 3],
+        },
     },
     OutputSpec {
         id: "indices",
         label: "triangles",
-        dtype: Dtype::Uint32,
-        shape: &[0, 3],
+        kind: OutputKind::Array {
+            dtype: Dtype::Uint32,
+            shape: &[0, 3],
+        },
     },
     OutputSpec {
         id: "normals",
         label: "normals",
-        dtype: Dtype::Float32,
-        shape: &[0, 3],
+        kind: OutputKind::Array {
+            dtype: Dtype::Float32,
+            shape: &[0, 3],
+        },
     },
     // Per *vertex*, not per residue. This is what makes the ribbon colourable
     // without a cartoon-specific colour path: send it through `colormap` for the
@@ -245,8 +261,10 @@ const OUTPUTS: &[OutputSpec] = &[
     OutputSpec {
         id: "residue_index",
         label: "residue per vertex",
-        dtype: Dtype::Uint32,
-        shape: &[0],
+        kind: OutputKind::Array {
+            dtype: Dtype::Uint32,
+            shape: &[0],
+        },
     },
 ];
 
@@ -288,11 +306,11 @@ fn run(request: &Request) -> Products {
     let vertices = ribbon.positions.len() as u64;
     products.insert(
         "positions",
-        DataArray::numeric(Dtype::Float32, vec![vertices, 3], floats(&ribbon.positions)),
+        DataArray::numeric(Dtype::Float32, vec![vertices, 3], floats(&ribbon.positions)).into(),
     );
     products.insert(
         "normals",
-        DataArray::numeric(Dtype::Float32, vec![vertices, 3], floats(&ribbon.normals)),
+        DataArray::numeric(Dtype::Float32, vec![vertices, 3], floats(&ribbon.normals)).into(),
     );
     products.insert(
         "indices",
@@ -300,7 +318,8 @@ fn run(request: &Request) -> Products {
             Dtype::Uint32,
             vec![ribbon.indices.len() as u64 / 3, 3],
             ribbon.indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
-        ),
+        )
+        .into(),
     );
     products.insert(
         "residue_index",
@@ -308,7 +327,8 @@ fn run(request: &Request) -> Products {
             Dtype::Uint32,
             vec![vertices],
             ribbon.residue.iter().flat_map(|r| r.to_le_bytes()).collect(),
-        ),
+        )
+        .into(),
     );
     products
 }

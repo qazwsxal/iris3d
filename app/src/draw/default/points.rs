@@ -170,7 +170,7 @@ pub fn draw_points(
         // object is a place in the tree now; the data is whatever was bound.
         let Some(array) = bound
             .get("positions")
-            .and_then(|id| store.get(id))
+            .and_then(|id| store.array(id))
             .and_then(|held| arrays.get(&held.handle))
         else {
             // `check_bindings` refuses an actor with no positions, so reaching
@@ -359,6 +359,10 @@ mod tests {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
+        // Geometry is an asset like any other, and `mark_dirty` watches it: a
+        // filter rewriting a mesh has to reach the actors drawing it.
+        app.add_message::<AssetEvent<Mesh>>();
+        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<DataStore>();
         app.init_resource::<Assets<Mesh>>();
         app.init_resource::<Assets<PointQuadMaterial>>();

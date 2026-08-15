@@ -245,15 +245,17 @@ fn controls(
                     ));
                 }
             }
-            ParamKind::Array { required, .. } => {
+            ParamKind::Array { required, .. } | ParamKind::Geometry { required } => {
                 // Generated from the same declaration as every other control,
-                // which is the point of arrays being parameters: the picker only
-                // offers arrays the input will actually accept, because the
-                // input says what it accepts.
+                // which is the point of bindings being parameters: the picker
+                // only offers what the input will actually accept, because the
+                // input says what it accepts. Arrays and meshes go through the
+                // one control for the same reason — they are one handle space,
+                // and `accepts` is what separates them.
                 let bound = registry_data(&current.params, spec.id);
                 let label = bound
                     .and_then(|id| scene.bindable.iter().find(|(held, _)| *held == id))
-                    .map(|(id, meta)| format!("d{id} {}", meta.name))
+                    .map(|(id, meta)| format!("d{id} {}", meta.name()))
                     .unwrap_or_else(|| {
                         if required {
                             "REQUIRED".into()
@@ -268,13 +270,13 @@ fn controls(
                         .show_ui(ui, |ui| {
                             let mut any = false;
                             for (id, meta) in &scene.bindable {
-                                if spec.kind.accepts(meta).is_err() {
+                                if spec.kind.accepts(meta.as_held()).is_err() {
                                     continue;
                                 }
                                 any = true;
                                 let picked = bound == Some(*id);
                                 let text =
-                                    format!("d{id} {} · {}{:?}", meta.name, meta.dtype, meta.shape);
+                                    format!("d{id} {} · {}", meta.name(), meta.describe());
                                 if ui.selectable_label(picked, text).clicked() && !picked {
                                     actions.0.push(UiAction::SetParam(
                                         current.entity,
@@ -284,7 +286,7 @@ fn controls(
                                 }
                             }
                             if !any {
-                                ui.weak("no uploaded array fits this input");
+                                ui.weak("nothing held fits this input");
                             }
                         });
                 });

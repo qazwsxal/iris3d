@@ -173,7 +173,7 @@ pub(crate) fn bound<'a>(
     store: &DataStore,
     arrays: &'a Assets<DataArray>,
 ) -> Option<&'a DataArray> {
-    arrays.get(&store.get(bindings.get(input)?)?.handle)
+    arrays.get(&store.array(bindings.get(input)?)?.handle)
 }
 
 /// Ordering label for the systems that decide what is out of date, so every one
@@ -252,6 +252,7 @@ fn mark_dirty(
     resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
     rebound: Query<Entity, (With<ActorKindId>, Changed<Bindings>)>,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
+    mut mesh_events: MessageReader<AssetEvent<Mesh>>,
     store: Res<DataStore>,
     bindings: Query<(Entity, &ActorKindId, &Bindings)>,
 ) {
@@ -278,6 +279,32 @@ fn mark_dirty(
         mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 
+    // A geometry filter finishing rewrites a `Mesh` an actor already holds, and
+    // Bevy re-uploads it with nothing here involved — so this is *not* how the
+    // new vertices reach the screen. What it is for is the one thing about an
+    // actor that depends on the mesh's contents rather than its identity:
+    // whether it carries colours, which decides whether `mesh` uses its flat
+    // tint. A rebuild would be wrong; there is nothing to rebuild.
+    let remeshed: Vec<_> = mesh_events
+        .read()
+        .filter_map(|event| match event {
+            AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if !remeshed.is_empty() {
+        for (actor, _, bound) in &bindings {
+            let touched = bound.0.values().any(|handle| {
+                store
+                    .geometry(*handle)
+                    .is_some_and(|held| remeshed.contains(&held.handle.id()))
+            });
+            if touched {
+                mark(&mut commands, actor, Dirty::MATERIAL);
+            }
+        }
+    }
+
     // Array contents can be rewritten without any binding changing, so watch the
     // assets directly. This is the path a filter finishing takes.
     let modified: Vec<_> = array_events
@@ -296,7 +323,7 @@ fn mark_dirty(
     for (actor, kind, bound) in &bindings {
         let changed = |handle: u64| {
             store
-                .get(handle)
+                .array(handle)
                 .is_some_and(|held| modified.contains(&held.handle.id()))
         };
         let what = invalidated(&registry, kind, bound, changed);
@@ -513,6 +540,10 @@ mod tests {
         let mut app = App::new();
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
+        // Geometry is an asset like any other, and `mark_dirty` watches it: a
+        // filter rewriting a mesh has to reach the actors drawing it.
+        app.add_message::<AssetEvent<Mesh>>();
+        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<DataStore>();
         app.init_resource::<ActorRegistry>();
         // `mark_dirty` asks the registry what a changed array invalidates, so a
@@ -597,7 +628,7 @@ mod tests {
         let existing = app
             .world()
             .resource::<DataStore>()
-            .get(1)
+            .array(1)
             .map(|held| held.handle.id());
         let id = match existing {
             Some(id) => id,
@@ -697,7 +728,7 @@ mod tests {
         let id = app
             .world()
             .resource::<DataStore>()
-            .get(0)
+            .array(0)
             .unwrap()
             .handle
             .id();
@@ -801,7 +832,7 @@ mod tests {
         let id = app
             .world()
             .resource::<DataStore>()
-            .get(0)
+            .array(0)
             .unwrap()
             .handle
             .id();

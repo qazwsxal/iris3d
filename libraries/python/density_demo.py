@@ -131,13 +131,23 @@ def main():
                 if name in held
             },
         )
-        client.add_actor(
-            "mesh",
-            parent=ribbon,
+        # The loose arrays become one mesh, and that is what an actor binds.
+        # Every actor bound to it shares the vertex buffers rather than
+        # assembling its own copy.
+        shape = client.add_filter(
+            "geometry",
             params={
                 "positions": iris3d.Bind(curve["positions"]),
                 "indices": iris3d.Bind(curve["indices"]),
                 "normals": iris3d.Bind(curve["normals"]),
+            },
+        )
+        client.add_actor(
+            "mesh",
+            parent=ribbon,
+            params={
+                "geometry": iris3d.Bind(shape["geometry"]),
+                # No colours in the geometry, so the flat tint is what shows.
                 "tint": (0.95, 0.75, 0.35),
             },
         )

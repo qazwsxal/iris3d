@@ -33,7 +33,7 @@ use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, text, vector};
 use crate::scene::DataArray;
 
-use super::{FilterKind, FilterRegistry, OutputSpec, Products, Request};
+use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Request};
 
 /// Which ramp to read a value through.
 ///
@@ -129,8 +129,10 @@ const PARAMS: &[ParamSpec] = &[
 const OUTPUTS: &[OutputSpec] = &[OutputSpec {
     id: "colour",
     label: "colour",
-    dtype: Dtype::Float32,
-    shape: &[0, 3],
+    kind: OutputKind::Array {
+        dtype: Dtype::Float32,
+        shape: &[0, 3],
+    },
 }];
 
 pub fn register(registry: &mut FilterRegistry) {
@@ -176,7 +178,7 @@ fn run(request: &Request) -> Products {
 
     products.insert(
         "colour",
-        DataArray::numeric(Dtype::Float32, vec![scalars.len() as u64, 3], bytes),
+        DataArray::numeric(Dtype::Float32, vec![scalars.len() as u64, 3], bytes).into(),
     );
     products
 }
@@ -301,8 +303,12 @@ mod tests {
         Request { params: map, inputs }
     }
 
+    fn produced(products: &Products) -> &DataArray {
+        products["colour"].array().expect("colour is an array")
+    }
+
     fn colours(products: &Products) -> Vec<[f32; 3]> {
-        products["colour"]
+        produced(products)
             .to_f32()
             .chunks(3)
             .map(|rgb| [rgb[0], rgb[1], rgb[2]])
@@ -312,8 +318,8 @@ mod tests {
     #[test]
     fn produces_one_linear_rgb_triple_per_element() {
         let products = run(&request(vec![0.0, 0.5, 1.0], &[]));
-        assert_eq!(products["colour"].shape, vec![3, 3], "[n, 3]");
-        assert_eq!(products["colour"].dtype, Dtype::Float32);
+        assert_eq!(produced(&products).shape, vec![3, 3], "[n, 3]");
+        assert_eq!(produced(&products).dtype, Dtype::Float32);
         assert_eq!(colours(&products).len(), 3);
     }
 

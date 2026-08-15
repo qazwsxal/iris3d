@@ -39,7 +39,7 @@ pub mod subset;
 
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
-pub use data::{BufferMeta, DataArray, DataStore, Dtype, NamedBuffer};
+pub use data::{BufferMeta, DataArray, DataStore, Dtype, HeldMeta, NamedBuffer};
 pub use link::{Parents, Placement, Shown};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
 pub use subset::{Subset, SubsetEncoding};
@@ -84,11 +84,11 @@ pub struct SceneObject {
     pub name: String,
 }
 
-/// A held array, described without its contents.
+/// One held handle, described without its contents.
 #[derive(Debug, Clone)]
 pub struct DataSummary {
     pub id: u64,
-    pub meta: BufferMeta,
+    pub meta: HeldMeta,
 }
 
 /// A description of an object in the scene.
@@ -427,6 +427,20 @@ type ActorQuery<'w, 's> = Query<
     With<ActorKindId>,
 >;
 
+/// Everything a client's data lives in, as one system parameter.
+///
+/// Bundled because [`apply_scene_commands`] was already at Bevy's ceiling of
+/// sixteen system parameters, and adding `Assets<Mesh>` for geometry outputs
+/// pushed it over. Grouped rather than split up because these three are always
+/// wanted together: the store says which handle names what, and the two asset
+/// collections hold it.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct HeldData<'w> {
+    pub arrays: ResMut<'w, Assets<DataArray>>,
+    pub meshes: ResMut<'w, Assets<Mesh>>,
+    pub store: ResMut<'w, DataStore>,
+}
+
 /// What [`ActorQuery`] yields when read rather than written.
 type ActorItem<'a> = (
     Entity,
@@ -455,8 +469,7 @@ pub fn apply_scene_commands(
     bridge: Res<GrpcBridge>,
     mut counter: ResMut<GlobalIDCounter>,
     registry: Res<ActorRegistry>,
-    mut arrays: ResMut<Assets<DataArray>>,
-    mut store: ResMut<DataStore>,
+    held: HeldData,
     mut transforms: Query<&mut Transform>,
     objects: Objects,
     ids: Query<&UniqueID>,
@@ -472,6 +485,14 @@ pub fn apply_scene_commands(
     if batch.is_empty() {
         return;
     }
+    // Unpacked straight back into the three names the body uses. They are one
+    // system parameter only because Bevy's ceiling is sixteen of them and this
+    // system is at it — the grouping is a packing detail, not a concept.
+    let HeldData {
+        mut arrays,
+        mut meshes,
+        mut store,
+    } = held;
 
     // Who reads whose output, built once and kept current as commands are
     // applied. Two commands arriving in one tick have to see each other, or
@@ -503,7 +524,7 @@ pub fn apply_scene_commands(
                 arrays: uploaded,
                 reply,
             } => {
-                let summaries: Vec<DataSummary> = uploaded
+                let summaries: Vec<(DataSummary, String)> = uploaded
                     .into_iter()
                     .map(|buffer| {
                         let id = counter.next();
@@ -515,28 +536,42 @@ pub fn apply_scene_commands(
                             strings: buffer.strings,
                         });
                         store.insert(id, meta.clone(), handle);
-                        DataSummary { id, meta }
+                        let name = meta.name.clone();
+                        (
+                            DataSummary {
+                                id,
+                                meta: HeldMeta::Array(meta),
+                            },
+                            name,
+                        )
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
                 info!(
                     "scene: took in {} array(s): {}",
                     summaries.len(),
                     summaries
                         .iter()
-                        .map(|array| format!("{}={}", array.id, array.meta.name))
+                        .map(|(array, name)| format!("{}={name}", array.id))
                         .collect::<Vec<_>>()
                         .join(" ")
                 );
-                let _ = reply.send(summaries);
+                let _ = reply.send(summaries.into_iter().map(|(summary, _)| summary).collect());
             }
 
+            // Arrays first, then meshes, each in handle order. Both are things
+            // a client holds and can bind, so both belong in one listing rather
+            // than making geometry a call of its own.
             SceneCommand::ListData { reply } => {
                 let listing = store
                     .iter()
                     .map(|(id, array)| DataSummary {
                         id,
-                        meta: array.meta.clone(),
+                        meta: HeldMeta::Array(array.meta.clone()),
                     })
+                    .chain(store.iter_geometry().map(|(id, mesh)| DataSummary {
+                        id,
+                        meta: HeldMeta::Geometry(mesh.meta.clone()),
+                    }))
                     .collect();
                 let _ = reply.send(listing);
             }
@@ -754,6 +789,7 @@ pub fn apply_scene_commands(
                     &filters.registry,
                     &mut graph,
                     &mut arrays,
+                    &mut meshes,
                     &mut store,
                     kind,
                     params,
@@ -816,14 +852,12 @@ fn check_bindings(
     store: &DataStore,
 ) -> Result<(), SceneError> {
     for spec in kind.inputs() {
-        let registry::ParamKind::Array { required, .. } = spec.kind else {
-            continue;
-        };
+        let required = spec.kind.is_required();
         match registry::data(params, spec.id) {
             Some(id) => {
-                let array = store.get(id).ok_or(SceneError::NoSuchData(id))?;
+                let held = store.held(id).ok_or(SceneError::NoSuchData(id))?;
                 spec.kind
-                    .accepts(&array.meta)
+                    .accepts(held)
                     .map_err(|reason| SceneError::BadBinding {
                         kind: kind.id.to_string(),
                         input: spec.id,
@@ -1318,6 +1352,10 @@ mod tests {
         app.add_plugins(TransformPlugin);
         app.add_message::<AssetEvent<DataArray>>();
         app.init_resource::<Assets<DataArray>>();
+        // Geometry is an asset like any other, and `mark_dirty` watches it: a
+        // filter rewriting a mesh has to reach the actors drawing it.
+        app.add_message::<AssetEvent<Mesh>>();
+        app.init_resource::<Assets<Mesh>>();
         app.init_resource::<DataStore>();
         app.init_resource::<GlobalIDCounter>();
         app.init_resource::<ActorRegistry>();
@@ -1478,7 +1516,7 @@ mod tests {
         assert_eq!(
             summaries
                 .iter()
-                .map(|a| a.meta.name.as_str())
+                .map(|a| a.meta.name())
                 .collect::<Vec<_>>(),
             ["xyz", "t"],
             "handles come back in declaration order"
@@ -1962,14 +2000,18 @@ mod tests {
             filter::OutputSpec {
                 id: "first",
                 label: "first",
-                dtype: Dtype::Uint8,
-                shape: &[0],
+                kind: filter::OutputKind::Array {
+                    dtype: Dtype::Uint8,
+                    shape: &[0],
+                },
             },
             filter::OutputSpec {
                 id: "second",
                 label: "second",
-                dtype: Dtype::Uint8,
-                shape: &[0],
+                kind: filter::OutputKind::Array {
+                    dtype: Dtype::Uint8,
+                    shape: &[0],
+                },
             },
         ];
 
@@ -2029,7 +2071,7 @@ mod tests {
 
         let store = app.world().resource::<DataStore>();
         for (name, handle) in &summary.outputs {
-            let held = store.get(*handle).expect("registered before the first run");
+            let held = store.array(*handle).expect("registered before the first run");
             assert_eq!(&held.meta.name, name);
         }
     }
@@ -2137,7 +2179,7 @@ mod tests {
 
         assert_eq!(released.try_recv().expect("a reply"), vec![values]);
         assert!(
-            app.world().resource::<DataStore>().get(generated).is_some(),
+            app.world().resource::<DataStore>().array(generated).is_some(),
             "still held, because the filter is still writing it"
         );
     }
@@ -2162,9 +2204,9 @@ mod tests {
 
         let store = app.world().resource::<DataStore>();
         for (_, handle) in &summary.outputs {
-            assert!(store.get(*handle).is_none(), "released with the filter");
+            assert!(store.array(*handle).is_none(), "released with the filter");
         }
-        assert!(store.get(values).is_some(), "the upload is untouched");
+        assert!(store.array(values).is_some(), "the upload is untouched");
     }
 
     /// A listing is how a client rediscovers a scene it did not build, so it has

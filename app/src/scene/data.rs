@@ -1,4 +1,4 @@
-//! Arrays, and nothing about what they mean.
+//! Arrays and meshes, and nothing about what they mean.
 //!
 //! Raw bytes live in [`DataArray`], a Bevy asset, so several actors binding the
 //! same array share one copy and get change detection for free. [`DataStore`]
@@ -8,6 +8,21 @@
 //! all: it is decided when an array is bound to an actor's input. The same
 //! numbers can be positions for one actor and a colour ramp for another, so
 //! there was never one right answer to store.
+//!
+//! # Geometry is the other thing a handle can name
+//!
+//! A handle names either an array or **one mesh** — vertices, triangles and the
+//! attributes on them, as a single `Handle<Mesh>`. Two kinds of thing in one
+//! handle space, so no id ever names both and a client asking what a handle is
+//! gets one answer.
+//!
+//! Geometry exists because arrays could not express the thing that mattered.
+//! Positions, indices and normals as three arrays are three *descriptions* of a
+//! mesh, and every consumer that wanted to draw them had to assemble its own —
+//! so a ribbon drawn as a lit mesh and as an absorbing solid put the same
+//! vertices on the GPU twice. One `Handle<Mesh>` is one upload, referenced by
+//! however many actors want it. See [`crate::filter::geometry`], which is what
+//! turns arrays into one.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -117,7 +132,32 @@ pub struct NamedBuffer {
     pub strings: Vec<String>,
 }
 
-/// Every array uploaded on its own, by handle.
+/// Everything about a mesh except its vertices.
+///
+/// The counterpart of [`BufferMeta`], and thin for the same reason: enough to
+/// tell a client what a handle names and enough for an input to decide whether
+/// it can read it, without being a second copy of the mesh itself.
+///
+/// `normals` and `colours` are here rather than being looked up on the asset
+/// because both decide something outside the render world — a `solid` with no
+/// shell never asks for normals, and a `mesh` uses its flat `tint` exactly when
+/// the geometry carries no colours — and neither should have to reach into
+/// `Assets<Mesh>` to find out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GeometryMeta {
+    pub name: String,
+    pub vertices: u64,
+    pub triangles: u64,
+    /// A normal per vertex. Read by lighting and by a glass shell; never by the
+    /// absorbance accumulation, which cares where a boundary is and not which
+    /// way it faces.
+    pub normals: bool,
+    /// A **linear RGB** colour per vertex, already mapped. Which ramp and what
+    /// range produced them was the `colormap` filter's business.
+    pub colours: bool,
+}
+
+/// Every array and mesh a client holds, by handle.
 ///
 /// Data used to arrive only as part of an object, which made "get these numbers
 /// into the scene" and "put a node in the tree" the same operation. They are not
@@ -129,8 +169,15 @@ pub struct NamedBuffer {
 /// the entry and the bytes go once nothing else still refers to them — an actor
 /// holding the same handle keeps it loaded, which is why releasing is described
 /// as forgetting rather than freeing.
+///
+/// Two maps, one handle space. Ids come from the same sequence, so a handle
+/// names an array or a mesh and never both, and [`held`](Self::held) is the
+/// answer to "what is this?" for a caller that does not already know.
 #[derive(Resource, Default)]
-pub struct DataStore(HashMap<u64, StoredArray>);
+pub struct DataStore {
+    arrays: HashMap<u64, StoredArray>,
+    geometry: HashMap<u64, StoredGeometry>,
+}
 
 /// One held array: what it is, and where its bytes live.
 pub struct StoredArray {
@@ -142,29 +189,122 @@ pub struct StoredArray {
     pub handle: Handle<DataArray>,
 }
 
+/// One held mesh. As [`StoredArray`], and the handle is read here rather than
+/// merely held: an actor drawing this geometry clones it into a `Mesh3d`.
+pub struct StoredGeometry {
+    pub meta: GeometryMeta,
+    pub handle: Handle<Mesh>,
+}
+
+/// What a handle names, described but not held.
+///
+/// For the callers that have to cope with either — a binding check, a listing,
+/// an input picker — rather than for the many that want one particular sort and
+/// would rather be told `None`. The description rather than the asset, so
+/// something that has copied a listing out of the store can still ask an input
+/// whether it would accept it.
+#[derive(Debug, Clone, Copy)]
+pub enum Held<'a> {
+    Array(&'a BufferMeta),
+    Geometry(&'a GeometryMeta),
+}
+
+impl<'a> Held<'a> {
+    pub fn name(self) -> &'a str {
+        match self {
+            Held::Array(meta) => &meta.name,
+            Held::Geometry(meta) => &meta.name,
+        }
+    }
+}
+
+/// [`Held`], owned. What crosses the wire and what the interface keeps a copy
+/// of.
+#[derive(Debug, Clone)]
+pub enum HeldMeta {
+    Array(BufferMeta),
+    Geometry(GeometryMeta),
+}
+
+impl HeldMeta {
+    pub fn as_held(&self) -> Held<'_> {
+        match self {
+            HeldMeta::Array(meta) => Held::Array(meta),
+            HeldMeta::Geometry(meta) => Held::Geometry(meta),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.as_held().name()
+    }
+
+    /// One line naming what this is, for a listing or a picker: an array's type
+    /// and shape, a mesh's size.
+    pub fn describe(&self) -> String {
+        match self {
+            HeldMeta::Array(meta) => format!("{}{:?}", meta.dtype, meta.shape),
+            HeldMeta::Geometry(meta) => {
+                format!("mesh · {} verts, {} tris", meta.vertices, meta.triangles)
+            }
+        }
+    }
+}
+
 impl DataStore {
     pub fn insert(&mut self, id: u64, meta: BufferMeta, handle: Handle<DataArray>) {
-        self.0.insert(id, StoredArray { meta, handle });
+        self.arrays.insert(id, StoredArray { meta, handle });
     }
 
-    // Wanted by actor binding, which resolves a handle a client named into the
-    // asset a backend reads.
-    #[allow(dead_code)]
-    pub fn get(&self, id: u64) -> Option<&StoredArray> {
-        self.0.get(&id)
+    pub fn insert_geometry(&mut self, id: u64, meta: GeometryMeta, handle: Handle<Mesh>) {
+        self.geometry.insert(id, StoredGeometry { meta, handle });
     }
 
-    /// Forgets an array, reporting whether it was held at all.
+    /// The array under a handle, or `None` — which covers a released handle and
+    /// a handle that names geometry rather than numbers.
+    ///
+    /// Named for what it returns rather than being a bare `get`, because the
+    /// store holds two things and a caller asking the wrong one deserves to see
+    /// it in the call.
+    pub fn array(&self, id: u64) -> Option<&StoredArray> {
+        self.arrays.get(&id)
+    }
+
+    /// The mesh under a handle. See [`array`](Self::array).
+    pub fn geometry(&self, id: u64) -> Option<&StoredGeometry> {
+        self.geometry.get(&id)
+    }
+
+    /// Whatever the handle names, for a caller that accepts either.
+    pub fn held(&self, id: u64) -> Option<Held<'_>> {
+        self.arrays
+            .get(&id)
+            .map(|array| Held::Array(&array.meta))
+            .or_else(|| {
+                self.geometry
+                    .get(&id)
+                    .map(|mesh| Held::Geometry(&mesh.meta))
+            })
+    }
+
+    /// Forgets an array or a mesh, reporting whether it was held at all.
     pub fn remove(&mut self, id: u64) -> bool {
-        self.0.remove(&id).is_some()
+        self.arrays.remove(&id).is_some() | self.geometry.remove(&id).is_some()
     }
 
-    /// Everything held, in handle order so a listing is stable between calls.
+    /// Every array held, in handle order so a listing is stable between calls.
     pub fn iter(&self) -> impl Iterator<Item = (u64, &StoredArray)> {
-        let mut ids: Vec<u64> = self.0.keys().copied().collect();
+        let mut ids: Vec<u64> = self.arrays.keys().copied().collect();
         ids.sort_unstable();
         ids.into_iter()
-            .filter_map(|id| self.0.get(&id).map(|array| (id, array)))
+            .filter_map(|id| self.arrays.get(&id).map(|array| (id, array)))
+    }
+
+    /// Every mesh held. See [`iter`](Self::iter).
+    pub fn iter_geometry(&self) -> impl Iterator<Item = (u64, &StoredGeometry)> {
+        let mut ids: Vec<u64> = self.geometry.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| self.geometry.get(&id).map(|mesh| (id, mesh)))
     }
 }
 
