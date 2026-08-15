@@ -227,6 +227,16 @@ enum UiAction {
     /// Change one parameter of an actor, leaving the rest alone.
     SetParam(Entity, &'static str, ParamValue),
 
+    /// Draw an actor under one more object, or stop drawing it under one.
+    ///
+    /// The whole set is replaced rather than added to, because that is what
+    /// `SetActor` takes — an actor's parents are a set, not a list of edges, and
+    /// sending the set it should end up with is what makes adding and removing
+    /// the same operation.
+    SetActorParents(u64, Vec<u64>),
+    /// Nest an object inside another, or `None` to make it a root.
+    SetObjectParent(u64, Option<u64>),
+
     SelectFilter(u64),
     /// Change one parameter of a filter, leaving the rest alone.
     ///
@@ -613,6 +623,30 @@ fn apply_actions(
                     continue;
                 };
                 current.0.insert(id.to_string(), value);
+            }
+
+            UiAction::SetActorParents(id, parents) => {
+                let (reply, _) = tokio::sync::oneshot::channel();
+                let _ = bridge.sender().send(SceneCommand::SetActor {
+                    id,
+                    params: ParamMap::default(),
+                    visible: None,
+                    subset: None,
+                    parents: Some(parents),
+                    reply,
+                });
+            }
+            UiAction::SetObjectParent(id, parent) => {
+                let (reply, _) = tokio::sync::oneshot::channel();
+                let _ = bridge.sender().send(SceneCommand::SetParent {
+                    id,
+                    parent,
+                    // The object stays where it looks like it is. Re-parenting
+                    // by dragging a wire says nothing about wanting to move it,
+                    // and having it jump would be a surprise.
+                    keep_world_transform: true,
+                    reply,
+                });
             }
 
             UiAction::SelectFilter(id) => state.selected_filter = Some(id),

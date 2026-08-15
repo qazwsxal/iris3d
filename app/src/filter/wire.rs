@@ -321,7 +321,13 @@ pub fn set(
             warn!("filter: {id} has no parameter \"{key}\" of that type");
             continue;
         };
-        wanted.insert(key, value);
+        // Clearing is a removal, not a value. The map is what everything reads
+        // through, so an input that has been let go has to be *absent* from it —
+        // storing a marker would make every reader learn about the marker.
+        match value {
+            crate::scene::registry::ParamValue::Unset => wanted.remove(&key),
+            value => wanted.insert(key, value),
+        };
     }
     check_bindings(registered, &wanted, store)?;
 

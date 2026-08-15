@@ -477,8 +477,23 @@ message ParamValue {
     // by the same declaration, so rebinding what an actor draws is the same
     // kind of operation as moving a slider.
     DataHandle data = 4;
+
+    // Take the binding off an optional input, leaving it as though nothing was
+    // ever bound. The message carries nothing; only which case is set matters.
+    //
+    // Needed because SetActor and SetFilter take a *partial* map: leaving a
+    // parameter out means "leave it alone", so absence cannot also mean "clear
+    // it". Without this an optional input — normals, colour, colour_field —
+    // could be bound once and never released.
+    //
+    // Refused on a required input, with the same error as never having bound
+    // it: a kind that cannot draw without something cannot draw without it.
+    Unset unset = 6;
   }
 }
+
+// A value meaning "no value". Empty on purpose; see ParamValue.unset.
+message Unset {}
 
 message FloatParam {
   double default_value = 1;

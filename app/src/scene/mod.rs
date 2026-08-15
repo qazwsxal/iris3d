@@ -1045,7 +1045,13 @@ fn set_actor(
             warn!("scene: actor {id} has no parameter \"{key}\" of that type");
             continue;
         };
-        merged.insert(key, value);
+        // Clearing is a removal, not a value — see the same merge in
+        // `filter::wire::set`. An input let go has to be absent from the map,
+        // because absence is what every reader already understands as unbound.
+        match value {
+            registry::ParamValue::Unset => merged.remove(&key),
+            value => merged.insert(key, value),
+        };
     }
 
     // The same gate `add_actor` passes through. `sanitise` only says that a
@@ -1806,6 +1812,130 @@ mod tests {
         app.update();
         accepted.try_recv().expect("a reply").expect("an actor");
         assert_eq!(bound(&mut app), Some(second));
+    }
+
+    /// An optional input can be let go of, and a required one cannot.
+    ///
+    /// The merge rule makes this need a value of its own: a partial map leaves
+    /// anything absent alone, so absence already means "unchanged" and cannot
+    /// also mean "clear". Without `Unset` an optional input could be bound once
+    /// and never released, by any client.
+    #[test]
+    fn an_optional_input_can_be_unbound_and_a_required_one_cannot() {
+        const INPUTS: &[registry::ParamSpec] = &[
+            registry::ParamSpec {
+                id: "field",
+                label: "Field",
+                kind: registry::ParamKind::Array {
+                    dtypes: &[Dtype::Uint8],
+                    shape: &[0],
+                    required: true,
+                    structural: true,
+                },
+            },
+            registry::ParamSpec {
+                id: "mask",
+                label: "Mask",
+                kind: registry::ParamKind::Array {
+                    dtypes: &[Dtype::Uint8],
+                    shape: &[0],
+                    required: false,
+                    structural: true,
+                },
+            },
+        ];
+
+        let mut app = app();
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .register(registry::ActorKind {
+                id: "maskable",
+                label: "Maskable",
+                params: INPUTS,
+                apply: |_, _| {},
+            });
+
+        let mut uploaded = send(&app, |reply| SceneCommand::UploadData {
+            arrays: vec![array("field", 4), array("mask", 4)],
+            reply,
+        });
+        app.update();
+        let handles: Vec<u64> = uploaded
+            .try_recv()
+            .expect("a reply")
+            .iter()
+            .map(|array| array.id)
+            .collect();
+
+        let mut params = registry::ParamMap::default();
+        params.insert("field".into(), registry::ParamValue::Data(handles[0]));
+        params.insert("mask".into(), registry::ParamValue::Data(handles[1]));
+        let mut added = send(&app, |reply| SceneCommand::AddActor {
+            parents: vec![],
+            kind: "maskable".into(),
+            params,
+            subset: None,
+            reply,
+        });
+        app.update();
+        let actor = added.try_recv().expect("a reply").expect("an actor").id;
+
+        let clear = |input: &str| {
+            let mut params = registry::ParamMap::default();
+            params.insert(input.into(), registry::ParamValue::Unset);
+            params
+        };
+        let bound = |app: &mut App, input: &'static str| {
+            let mut listed = send(app, |reply| SceneCommand::ListActors {
+                parent: None,
+                reply,
+            });
+            app.update();
+            let listing = listed.try_recv().expect("a reply").expect("a listing");
+            registry::data(&listing[0].params, input)
+        };
+
+        let mut cleared = send(&app, |reply| SceneCommand::SetActor {
+            id: actor,
+            params: clear("mask"),
+            visible: None,
+            subset: None,
+            parents: None,
+            reply,
+        });
+        app.update();
+        cleared.try_recv().expect("a reply").expect("an actor");
+        assert_eq!(bound(&mut app, "mask"), None, "the mask should be let go");
+        assert_eq!(
+            bound(&mut app, "field"),
+            Some(handles[0]),
+            "clearing one input must leave the others alone"
+        );
+
+        // The required one is refused by the same gate that refuses never
+        // having bound it, and says the same thing.
+        let mut refused = send(&app, |reply| SceneCommand::SetActor {
+            id: actor,
+            params: clear("field"),
+            visible: None,
+            subset: None,
+            parents: None,
+            reply,
+        });
+        app.update();
+        let refusal = refused
+            .try_recv()
+            .expect("a reply")
+            .expect_err("a required input cannot be cleared");
+        assert!(
+            matches!(refusal, SceneError::MissingInput { input, .. } if input == "field"),
+            "expected a missing input, got {refusal:?}"
+        );
+        assert_eq!(
+            bound(&mut app, "field"),
+            Some(handles[0]),
+            "a refused clear must leave the actor exactly as it was"
+        );
     }
 
     /// Every kind the backend registered reaches a client, with the label and

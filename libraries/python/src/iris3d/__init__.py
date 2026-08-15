@@ -3,6 +3,7 @@
 from . import molecules, testdata
 from .client import (
     Bind,
+    Unset,
     DataSummary,
     GeometrySummary,
     DEFAULT_ADDRESS,
@@ -26,6 +27,7 @@ from .v1.scene_pb2_grpc import SceneServiceStub
 
 __all__ = [
     "Bind",
+    "Unset",
     "DataSummary",
     "GeometrySummary",
     "DEFAULT_ADDRESS",

@@ -51,6 +51,21 @@ pub enum ParamValue {
     /// positions an actor draws is the same kind of operation as moving a
     /// slider, so it would be strange for it to be a different mechanism.
     Data(u64),
+    /// Take the binding off an input, leaving it as though nothing was ever
+    /// bound.
+    ///
+    /// A value meaning "no value", which reads oddly but is what the merge rule
+    /// forces. Both `SetActor` and `SetFilter` take a **partial** map and leave
+    /// anything absent alone, so a key's absence already means "unchanged" and
+    /// cannot also mean "clear this". Without a way to say it, an optional input
+    /// — `normals`, `colour`, `colour_field`, `vertices` — could be bound once
+    /// and never let go, from any client, which was simply a missing operation
+    /// rather than a decision.
+    ///
+    /// Only valid on an input, and refused on a required one: clearing what a
+    /// kind cannot draw without leaves something that cannot draw, and
+    /// `check_bindings` says so in the same words it uses for a missing input.
+    Unset,
 }
 
 impl ParamValue {
@@ -390,6 +405,14 @@ impl ParamKind {
             // than a number somebody meant as a slider value.
             (ParamKind::Array { .. } | ParamKind::Geometry { .. }, ParamValue::Data(id)) => {
                 Some(ParamValue::Data(id))
+            }
+            // Only an input can be cleared, and *whether* it may be is not
+            // decided here: `check_bindings` refuses a required one along with
+            // every other missing input, in the same words, from the one place
+            // that knows the whole picture. Rejecting it here as well would
+            // report the same mistake two different ways.
+            (ParamKind::Array { .. } | ParamKind::Geometry { .. }, ParamValue::Unset) => {
+                Some(ParamValue::Unset)
             }
             _ => None,
         }

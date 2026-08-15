@@ -392,7 +392,7 @@ class SceneServiceServicer(object):
 
         That separation is the point. Generating geometry and displaying it are
         different jobs, so one generated result can feed several actors — drawn as
-        a lit mesh and as an absorbing medium at once, built once — and adding a
+        a lit surface and as an absorbing medium at once, built once — and adding a
         way to display something does not multiply the ways of generating it.
 
         The reply carries a handle for each declared output, allocated by this

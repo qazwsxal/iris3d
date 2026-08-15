@@ -238,6 +238,23 @@ impl Gathered {
         self.filters.iter().find(|row| row.id == id)
     }
 
+    /// The handles of every object an actor is drawn under.
+    ///
+    /// Rebuilt from the rows rather than read off `Parents`, because the node
+    /// canvas needs the *set* in order to send it back one member longer or
+    /// shorter — `SetActor` replaces the whole thing, so adding one edge means
+    /// knowing all of them.
+    pub fn objects_of(&self, actor: Entity) -> Vec<u64> {
+        let mut objects: Vec<u64> = self
+            .rows
+            .values()
+            .filter(|row| row.actors.iter().any(|drawn| drawn.entity == actor))
+            .map(|row| row.id)
+            .collect();
+        objects.sort_unstable();
+        objects
+    }
+
     /// How to name a bound handle on an input row.
     ///
     /// `d12 colour · from [3] colour map` when a filter writes it, `d4 positions`

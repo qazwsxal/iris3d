@@ -57,6 +57,7 @@ from .v1.scene_pb2 import (
     SetParentRequest,
     SetTransformRequest,
     Subset,
+    Unset as ProtoUnset,
     UploadDataRequest,
     Vector3,
     VectorValue,
@@ -267,9 +268,29 @@ class Bind:
 
     The same wrapper binds geometry, because a mesh is named by a handle from
     the same sequence an array is.
+
+    Its opposite is :data:`Unset`, which lets an optional input go again.
     """
 
     handle: int
+
+
+@dataclass(frozen=True)
+class _Unset:
+    """The type of :data:`Unset`."""
+
+
+#: Takes the binding off an optional input, leaving it as though nothing had
+#: ever been bound::
+#:
+#:     client.set_actor(actor, params={"colour": iris3d.Unset})
+#:
+#: Needed as a value rather than as an omission because ``set_actor`` and
+#: ``set_filter`` take a *partial* map: leaving a parameter out means "leave it
+#: alone", so absence cannot also mean "clear it".
+#:
+#: A required input is refused, with the same error as never having bound it.
+Unset = _Unset()
 
 
 @dataclass(frozen=True)
@@ -380,6 +401,8 @@ def _param_value(value: RawParamValue) -> ParamValue:
     """
     if isinstance(value, Bind):
         return ParamValue(data=DataHandle(id=value.handle))
+    if isinstance(value, _Unset):
+        return ParamValue(unset=ProtoUnset())
     if isinstance(value, bool):
         return ParamValue(flag=value)
     if isinstance(value, (int, float)):
@@ -396,7 +419,7 @@ def _param_value(value: RawParamValue) -> ParamValue:
         f"numbers or a Bind, not {type(value).__name__}"
     )
 
-RawParamValue = float | bool | str | tuple[float, ...] | Bind
+RawParamValue = float | bool | str | tuple[float, ...] | Bind | _Unset
 
 def _read_param(value: ParamValue) -> RawParamValue:
     """Unwraps a value from the wire, keeping its type."""
@@ -411,6 +434,12 @@ def _read_param(value: ParamValue) -> RawParamValue:
             return Bind(value.data.id)
         case "vector":
             return tuple(value.vector.components)
+        case "unset":
+            # Only ever travels inbound, as an instruction. A map coming back
+            # says what things are set to, and cleared is spelled there by the
+            # key being absent — so this is the server contradicting itself
+            # rather than a value to hand on as a number.
+            raise ValueError("the server reported a parameter as unset")
         case _:
             return value.number
 

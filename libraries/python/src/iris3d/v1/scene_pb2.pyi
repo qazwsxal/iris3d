@@ -157,18 +157,24 @@ class ActorHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class ParamValue(_message.Message):
-    __slots__ = ("number", "flag", "text", "vector", "data")
+    __slots__ = ("number", "flag", "text", "vector", "data", "unset")
     NUMBER_FIELD_NUMBER: _ClassVar[int]
     FLAG_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
     VECTOR_FIELD_NUMBER: _ClassVar[int]
     DATA_FIELD_NUMBER: _ClassVar[int]
+    UNSET_FIELD_NUMBER: _ClassVar[int]
     number: float
     flag: bool
     text: str
     vector: VectorValue
     data: DataHandle
-    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ..., vector: _Optional[_Union[VectorValue, _Mapping]] = ..., data: _Optional[_Union[DataHandle, _Mapping]] = ...) -> None: ...
+    unset: Unset
+    def __init__(self, number: _Optional[float] = ..., flag: _Optional[bool] = ..., text: _Optional[str] = ..., vector: _Optional[_Union[VectorValue, _Mapping]] = ..., data: _Optional[_Union[DataHandle, _Mapping]] = ..., unset: _Optional[_Union[Unset, _Mapping]] = ...) -> None: ...
+
+class Unset(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
 
 class FloatParam(_message.Message):
     __slots__ = ("default_value", "min", "max", "logarithmic")

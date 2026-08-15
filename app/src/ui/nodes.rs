@@ -59,6 +59,10 @@ pub struct NodeGraph {
     placed: HashMap<Node, NodeId>,
 }
 
+/// An object's two input pins: what is drawn under it, and what is nested in it.
+const PLACED_HERE: usize = 0;
+const NESTED_HERE: usize = 1;
+
 /// Colour by relation, so the three kinds of wire never read as one.
 const DATA: Color32 = Color32::from_rgb(120, 170, 255);
 const PLACEMENT: Color32 = Color32::from_rgb(235, 170, 80);
@@ -75,20 +79,81 @@ const NESTING: Color32 = Color32::from_rgb(150, 150, 150);
 /// The spacing has to clear the widest node rather than look tidy on paper: a
 /// filter's rows are its parameter labels, and `geometry`'s "vertices to keep"
 /// is wider than the 280 this first used, so the columns overlapped.
-fn column(node: &Node, scene: &Gathered) -> f32 {
-    match node {
-        // An upload starts a chain; a filter's output continues one. Putting
-        // both in the leftmost column drew every produced handle to the left of
-        // the filter that writes it, so those wires ran backwards against the
-        // direction everything else flows.
-        Node::Data(handle) => match scene.producers.contains_key(handle) {
-            false => 40.0,
-            true => 880.0,
-        },
-        Node::Filter(_) => 460.0,
-        Node::Actor(_) => 1300.0,
-        Node::Object(_) => 1720.0,
+const COLUMN: f32 = 420.0;
+
+/// How far from the left each node sits, by how far it is *along* the graph.
+///
+/// A column per kind was the first attempt and could not order a filter that
+/// reads another filter's output: both are filters, so both landed in the same
+/// column and the wire between them ran backwards. Depth is the property that
+/// actually matters, and it is not a property of the kind.
+///
+/// The layer is the **longest** path from a source, not the shortest. A node is
+/// placed after everything it reads, so an input arriving from two chains of
+/// different lengths still lands to the left of it. Relaxed to a fixpoint rather
+/// than sorted topologically — the same answer, and it does not care if the
+/// graph is disconnected or, despite the backend's cycle check, somehow not a
+/// DAG: the iteration cap ends it either way.
+fn layers(scene: &Gathered) -> HashMap<Node, f32> {
+    let mut edges: Vec<(Node, Node)> = Vec::new();
+    for filter in &scene.filters {
+        let node = Node::Filter(filter.id);
+        for spec in inputs_of(filter.specs) {
+            if let Some(handle) = bound_handle(&filter.params, spec.id) {
+                edges.push((Node::Data(handle), node));
+            }
+        }
+        for (_, handle) in &filter.outputs {
+            edges.push((node, Node::Data(*handle)));
+        }
     }
+    for (entity, actor) in scene.every_actor() {
+        for spec in inputs_of(actor.specs) {
+            if let Some(handle) = bound_handle(&actor.params, spec.id) {
+                edges.push((Node::Data(handle), Node::Actor(entity)));
+            }
+        }
+    }
+    for row in scene.rows.values() {
+        for actor in &row.actors {
+            edges.push((Node::Actor(actor.entity), Node::Object(row.entity)));
+        }
+        for child in &row.children {
+            edges.push((Node::Object(*child), Node::Object(row.entity)));
+        }
+    }
+
+    let mut depth: HashMap<Node, f32> = HashMap::new();
+    for (from, to) in &edges {
+        depth.entry(*from).or_insert(0.0);
+        depth.entry(*to).or_insert(0.0);
+    }
+    // One pass per node is enough to settle the longest path; the cap is what
+    // makes an unexpected cycle terminate instead of spinning.
+    for _ in 0..depth.len().min(64) {
+        let mut moved = false;
+        for (from, to) in &edges {
+            let after = depth.get(from).copied().unwrap_or(0.0) + 1.0;
+            let slot = depth.entry(*to).or_insert(0.0);
+            if after > *slot {
+                *slot = after;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    depth
+}
+
+/// Where a node sits, given the depths worked out for the whole graph.
+///
+/// A node in no edge at all — an upload nothing reads, an object with nothing
+/// under it — has no depth and starts at the left, which is where an unused
+/// thing belongs.
+fn column(node: &Node, depth: &HashMap<Node, f32>) -> f32 {
+    40.0 + COLUMN * depth.get(node).copied().unwrap_or(0.0)
 }
 
 /// Roughly how tall a node will be, in pin rows.
@@ -153,16 +218,22 @@ impl NodeGraph {
         // that already has some. Starting each column at the top every time
         // stacked every later arrival on top of the first, and the result read
         // as nodes *missing* rather than as nodes overlapping.
+        //
+        // Keyed on where a node actually *is* rather than where it would be put
+        // now: depths shift as the graph grows, and a node the user has dragged
+        // has no column at all. What matters is only that a new node does not
+        // land on something already occupying that strip.
+        let depth = layers(scene);
         let mut next_row: HashMap<u32, f32> = HashMap::new();
         for (pos, node) in self.snarl.nodes_pos() {
-            let slot = next_row.entry(column(node, scene) as u32).or_insert(40.0);
+            let slot = next_row.entry(pos.x as u32).or_insert(40.0);
             *slot = slot.max(pos.y + 72.0 + 26.0 * rows(node, scene) as f32);
         }
         for node in wanted {
             if self.placed.contains_key(&node) {
                 continue;
             }
-            let x = column(&node, scene);
+            let x = column(&node, &depth);
             let top = next_row.entry(x as u32).or_insert(40.0);
             let id = self.snarl.insert_node(egui::pos2(x, *top), node);
             *top += 72.0 + 26.0 * rows(&node, scene) as f32;
@@ -242,7 +313,7 @@ impl NodeGraph {
                     },
                     egui_snarl::InPinId {
                         node: object,
-                        input: 0,
+                        input: PLACED_HERE,
                     },
                 );
             }
@@ -258,7 +329,7 @@ impl NodeGraph {
                     },
                     egui_snarl::InPinId {
                         node: object,
-                        input: 0,
+                        input: NESTED_HERE,
                     },
                 );
             }
@@ -343,9 +414,11 @@ impl SnarlViewer<Node> for Viewer<'_> {
                 .scene
                 .actor(*entity)
                 .map_or(0, |(_, row)| inputs_of(row.specs).count()),
-            // Everything drawn under it, and every object nested in it, arrive
-            // on one pin: they are the same relation from the object's side.
-            Node::Object(_) => 1,
+            // Two, not one. Being drawn under an object and being nested inside
+            // it are different relations — one is a placement, the other a
+            // transform parent — and sharing a pin made them share a colour,
+            // which is exactly the distinction the canvas is supposed to draw.
+            Node::Object(_) => 2,
         }
     }
 
@@ -388,9 +461,13 @@ impl SnarlViewer<Node> for Viewer<'_> {
                 label_for(ui, spec, pin);
                 PinInfo::circle().with_fill(DATA)
             }
-            Some(Node::Object(_)) => {
-                ui.weak("contains");
+            Some(Node::Object(_)) if pin.id.input == PLACED_HERE => {
+                ui.weak("drawn here");
                 PinInfo::square().with_fill(PLACEMENT)
+            }
+            Some(Node::Object(_)) => {
+                ui.weak("nested here");
+                PinInfo::square().with_fill(NESTING)
             }
             None => PinInfo::circle(),
         }
@@ -452,9 +529,45 @@ impl SnarlViewer<Node> for Viewer<'_> {
         ) else {
             return;
         };
-        // Only a data handle can feed a parameter. Placement and nesting are not
-        // editable here yet, so a wire between those pins is simply refused
-        // rather than silently doing nothing else.
+        // Placement and nesting, which join the object pin rather than a
+        // parameter. Both replace a whole set, so they are read out of the scene
+        // and sent back with one more member.
+        if let Node::Object(object) = sink {
+            let Some(row) = self.scene.rows.get(&object) else {
+                return;
+            };
+            // Which pin it lands on decides what it means, so a wire cannot be
+            // dropped on "drawn here" and quietly become a nesting.
+            match (to.id.input, source) {
+                (PLACED_HERE, Node::Actor(entity)) => {
+                    let Some((_, actor)) = self.scene.actor(entity) else {
+                        return;
+                    };
+                    let mut parents = self.scene.objects_of(entity);
+                    if !parents.contains(&row.id) {
+                        parents.push(row.id);
+                    }
+                    self.actions
+                        .0
+                        .push(UiAction::SetActorParents(actor.id, parents));
+                }
+                (NESTED_HERE, Node::Object(child)) => {
+                    // An object cannot be nested in itself, and the backend
+                    // refuses a cycle beyond that with `WouldCycle`.
+                    if child != object
+                        && let Some(child) = self.scene.rows.get(&child)
+                    {
+                        self.actions
+                            .0
+                            .push(UiAction::SetObjectParent(child.id, Some(row.id)));
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Everything else is data, and only a data handle can feed a parameter.
         let Node::Data(handle) = source else {
             return;
         };
@@ -489,15 +602,94 @@ impl SnarlViewer<Node> for Viewer<'_> {
         }
     }
 
-    /// Likewise: dropping a wire is a scene change, not a canvas one.
-    ///
-    /// Unbinding is not expressible yet — every setter takes a value, and there
-    /// is no `ParamValue` meaning "nothing". Refusing is honest until there is.
-    fn disconnect(&mut self, _from: &OutPin, _to: &InPin, _snarl: &mut Snarl<Node>) {}
+    /// Likewise: cutting a wire is a scene change, not a canvas one.
+    fn disconnect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<Node>) {
+        let (Some(source), Some(sink)) = (
+            snarl.get_node(from.id.node).copied(),
+            snarl.get_node(to.id.node).copied(),
+        ) else {
+            return;
+        };
+        // Taking an actor off an object, or an object out of its parent. The
+        // mirror of `connect`: the set is read out and sent back one shorter.
+        if let Node::Object(object) = sink {
+            let Some(row) = self.scene.rows.get(&object) else {
+                return;
+            };
+            match (to.id.input, source) {
+                (PLACED_HERE, Node::Actor(entity)) => {
+                    let Some((_, actor)) = self.scene.actor(entity) else {
+                        return;
+                    };
+                    let mut parents = self.scene.objects_of(entity);
+                    parents.retain(|id| *id != row.id);
+                    self.actions
+                        .0
+                        .push(UiAction::SetActorParents(actor.id, parents));
+                }
+                (NESTED_HERE, Node::Object(child)) => {
+                    if let Some(child) = self.scene.rows.get(&child) {
+                        self.actions
+                            .0
+                            .push(UiAction::SetObjectParent(child.id, None));
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
 
-    fn drop_inputs(&mut self, _pin: &InPin, _snarl: &mut Snarl<Node>) {}
+        // Unbinding a parameter. Only worth asking for where the input is
+        // optional — clearing a required one leaves something that cannot draw,
+        // which the backend refuses anyway, so refusing here keeps the wire on
+        // screen rather than having it vanish and come back.
+        let spec = match sink {
+            Node::Filter(id) => self
+                .scene
+                .filter(id)
+                .and_then(|row| inputs_of(row.specs).nth(to.id.input)),
+            Node::Actor(entity) => self
+                .scene
+                .actor(entity)
+                .and_then(|(_, row)| inputs_of(row.specs).nth(to.id.input)),
+            Node::Data(_) | Node::Object(_) => None,
+        };
+        let Some(spec) = spec.filter(|spec| !spec.kind.is_required()) else {
+            return;
+        };
+        match sink {
+            Node::Filter(id) => self
+                .actions
+                .0
+                .push(UiAction::SetFilterParam(id, spec.id, ParamValue::Unset)),
+            Node::Actor(entity) => self
+                .actions
+                .0
+                .push(UiAction::SetParam(entity, spec.id, ParamValue::Unset)),
+            Node::Data(_) | Node::Object(_) => {}
+        }
+    }
 
-    fn drop_outputs(&mut self, _pin: &OutPin, _snarl: &mut Snarl<Node>) {}
+    /// Right-clicking a pin drops everything on it, one wire at a time.
+    fn drop_inputs(&mut self, pin: &InPin, snarl: &mut Snarl<Node>) {
+        for from in pin.remotes.clone() {
+            let from = OutPin {
+                id: from,
+                remotes: Vec::new(),
+            };
+            self.disconnect(&from, pin, snarl);
+        }
+    }
+
+    fn drop_outputs(&mut self, pin: &OutPin, snarl: &mut Snarl<Node>) {
+        for to in pin.remotes.clone() {
+            let to = InPin {
+                id: to,
+                remotes: Vec::new(),
+            };
+            self.disconnect(pin, &to, snarl);
+        }
+    }
 }
 
 /// An input row's label, and whether anything is bound to it.

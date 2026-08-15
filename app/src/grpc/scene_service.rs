@@ -558,6 +558,7 @@ fn params_from_proto(
                 Some(Value::Text(text)) => ParamValue::Text(text),
                 Some(Value::Data(handle)) => ParamValue::Data(handle.id),
                 Some(Value::Vector(vector)) => ParamValue::Vector(vector.components),
+                Some(Value::Unset(_)) => ParamValue::Unset,
                 // An empty `oneof` says nothing at all, and guessing which
                 // parameter was meant is worse than saying so.
                 None => {
@@ -583,6 +584,11 @@ fn params_to_proto(params: &ParamMap) -> std::collections::HashMap<String, Proto
                 ParamValue::Vector(values) => Value::Vector(VectorValue {
                     components: values.clone(),
                 }),
+                // Only ever travels *inbound*, as an instruction. A stored map
+                // says what a thing is set to, and "cleared" is spelled there by
+                // the key being absent — so this is unreachable from a real map
+                // and would be a lie if it were not.
+                ParamValue::Unset => Value::Unset(crate::grpc::proto::Unset {}),
             };
             (key.clone(), ProtoParam { value: Some(value) })
         })
