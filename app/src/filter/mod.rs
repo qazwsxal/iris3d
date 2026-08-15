@@ -66,6 +66,7 @@ use crate::scene::{DataArray, DataStore};
 
 pub(crate) mod cartoon;
 pub(crate) mod colormap;
+pub(crate) mod contour;
 pub(crate) mod geometry;
 mod wire;
 
@@ -342,6 +343,7 @@ impl Plugin for FilterPlugin {
             let mut registry = app.world_mut().resource_mut::<FilterRegistry>();
             cartoon::register(&mut registry);
             colormap::register(&mut registry);
+            contour::register(&mut registry);
             geometry::register(&mut registry);
         }
 
