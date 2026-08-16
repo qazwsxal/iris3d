@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::redraw::KeepAwake;
 
 pub mod overlays;
+pub mod pick;
 
 pub use overlays::OverlaySettings;
 
@@ -20,7 +21,8 @@ pub struct ViewportPlugin;
 
 impl Plugin for ViewportPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ScreenshotRequest>()
+        app.add_plugins(pick::PickPlugin)
+            .init_resource::<ScreenshotRequest>()
             .init_resource::<FrameRequest>()
             .init_resource::<PointerCaptured>()
             .init_resource::<OverlaySettings>()

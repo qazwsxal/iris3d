@@ -59,7 +59,13 @@ impl Plugin for UiPlugin {
             // `collect_replies` before `apply_actions`, so a reply that lands
             // this tick queues its binding and that binding is applied in the
             // same tick rather than the next one.
-            .add_systems(Update, (collect_replies, apply_actions).chain());
+            // `take_picks` first: a click in the 3D view becomes the same
+            // `UiAction` a tree click emits, and is applied in the tick it
+            // happened rather than the one after.
+            .add_systems(
+                Update,
+                (take_picks, collect_replies, apply_actions).chain(),
+            );
     }
 }
 
@@ -527,6 +533,32 @@ fn draw_ui(
 /// the UI takes exactly the same path a scripted client does — including the
 /// detaching of child objects rather than destroying them.
 #[allow(clippy::too_many_arguments)]
+/// Turns a click in the 3D view into the same action a tree click emits.
+///
+/// The viewport reports *what was hit* and nothing about selection: what being
+/// selected means belongs here, and picking should not stop working because the
+/// interface was not built. So this is the one place the two meet, and it goes
+/// through `UiAction` like everything else rather than writing `UiState`
+/// directly — an interaction that bypassed the queue would be the one the rest
+/// of the interface could not account for.
+///
+/// Ignored while egui owns the mouse. A click on a panel that happens to lie
+/// over geometry is a click on the panel.
+fn take_picks(
+    mut picks: MessageReader<crate::viewport::pick::Picked>,
+    captured: Res<PointerCaptured>,
+    mut actions: ResMut<PendingActions>,
+) {
+    for pick in picks.read() {
+        if captured.0 {
+            continue;
+        }
+        actions
+            .0
+            .push(UiAction::SelectActor(pick.actor, Some(pick.object)));
+    }
+}
+
 fn apply_actions(
     mut commands: Commands,
     mut actions: ResMut<PendingActions>,

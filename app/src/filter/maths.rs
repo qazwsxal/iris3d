@@ -41,7 +41,9 @@ use crate::scene::DataArray;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, float, text};
 
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 /// A scalar array, as every input here takes one.
 const SCALAR: ParamKind = ParamKind::Array {
@@ -155,6 +157,8 @@ const MASK: &[OutputSpec] = &[OutputSpec {
         dtype: Some(Dtype::Uint8),
         shape: &[0],
     },
+    // One value out per value in, in the same order.
+    provenance: Provenance::Identity("a"),
 }];
 
 const RESULT: &[OutputSpec] = &[OutputSpec {
@@ -164,6 +168,7 @@ const RESULT: &[OutputSpec] = &[OutputSpec {
         dtype: Some(Dtype::Float32),
         shape: &[0],
     },
+    provenance: Provenance::Identity("a"),
 }];
 
 pub fn register(registry: &mut FilterRegistry) {

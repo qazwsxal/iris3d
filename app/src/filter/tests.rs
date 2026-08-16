@@ -35,6 +35,7 @@ const DOUBLED: &[OutputSpec] = &[OutputSpec {
         dtype: Some(Dtype::Float32),
         shape: &[0],
     },
+    provenance: super::Provenance::Identity("values"),
 }];
 
 fn double(request: &Request) -> Outcome {

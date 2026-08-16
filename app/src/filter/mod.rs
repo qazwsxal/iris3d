@@ -70,6 +70,7 @@ pub(crate) mod contour;
 pub(crate) mod geometry;
 pub(crate) mod index;
 pub(crate) mod maths;
+pub(crate) mod provenance;
 pub(crate) mod select;
 mod wire;
 
@@ -87,6 +88,45 @@ pub struct OutputSpec {
     pub id: &'static str,
     pub label: &'static str,
     pub kind: OutputKind,
+    /// Where this output's elements came from. See [`Provenance`].
+    pub provenance: Provenance,
+}
+
+/// How an output's elements correspond to an input's.
+///
+/// # Why this has to be declared
+///
+/// Subsetting is filters now, so an actor draws arrays that were narrowed,
+/// gathered and renumbered several steps upstream. A click therefore lands on a
+/// *drawn* element — vertex 40 122 of a ribbon — and the thing a client cares
+/// about is several filters back: which atom, which residue, which chain.
+///
+/// Walking that back needs each filter to say how its output lines up with its
+/// input. It needs no new computation, because **the correspondence is almost
+/// always an array the filter already emits**: `cartoon` has emitted
+/// `residue_index` per vertex since the day it was written, for colouring, and
+/// that is exactly the vertex → residue map. `gather` is handed its own inverse.
+/// `subset` *is* a correspondence. So this is a declaration in the style of
+/// [`OutputKind`], not a feature.
+///
+/// It is declared beside the output rather than in a table somewhere central so
+/// that adding a filter means answering the question, rather than forgetting to.
+#[derive(Debug, Clone, Copy)]
+pub enum Provenance {
+    /// Element *i* out came from element *i* of this input.
+    Identity(&'static str),
+    /// Element *i* out came from element `via[i]` of `of`, where `via` is one of
+    /// this filter's own outputs.
+    Map {
+        /// The output holding the indices, by [`OutputSpec::id`].
+        via: &'static str,
+        /// The input they index into, by [`ParamSpec::id`].
+        of: &'static str,
+    },
+    /// No correspondence. The honest answer for an output whose elements are not
+    /// derived from any one input's — a mask over a dictionary, or geometry
+    /// whose vertices belong to cells rather than to elements.
+    Opaque,
 }
 
 /// What sort of thing an output is.

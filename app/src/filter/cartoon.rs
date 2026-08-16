@@ -63,7 +63,9 @@ use crate::scene::DataArray;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, flag, float};
 
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -234,6 +236,13 @@ const OUTPUTS: &[OutputSpec] = &[
             dtype: Some(Dtype::Float32),
             shape: &[0, 3],
         },
+        // A vertex belongs to a residue, and `residue_index` below is the map
+        // saying which. That array exists for colouring; it is also exactly
+        // what a pick walks back along to name an atom.
+        provenance: Provenance::Map {
+            via: "residue_index",
+            of: "residue_index",
+        },
     },
     OutputSpec {
         id: "indices",
@@ -242,6 +251,8 @@ const OUTPUTS: &[OutputSpec] = &[
             dtype: Some(Dtype::Uint32),
             shape: &[0, 3],
         },
+        // Triangles, not elements of anything upstream.
+        provenance: Provenance::Opaque,
     },
     OutputSpec {
         id: "normals",
@@ -249,6 +260,10 @@ const OUTPUTS: &[OutputSpec] = &[
         kind: OutputKind::Array {
             dtype: Some(Dtype::Float32),
             shape: &[0, 3],
+        },
+        provenance: Provenance::Map {
+            via: "residue_index",
+            of: "residue_index",
         },
     },
     // Per *vertex*, not per residue. This is what makes the ribbon colourable
@@ -264,6 +279,11 @@ const OUTPUTS: &[OutputSpec] = &[
         kind: OutputKind::Array {
             dtype: Some(Dtype::Uint32),
             shape: &[0],
+        },
+        // The map itself, so it is its own provenance.
+        provenance: Provenance::Map {
+            via: "residue_index",
+            of: "residue_index",
         },
     },
 ];

@@ -46,7 +46,9 @@ use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec};
 use crate::scene::subset::Remap;
 
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 /// An index array: integers, one per element.
 const INDICES_IN: ParamKind = ParamKind::Array {
@@ -86,6 +88,12 @@ const GATHERED: &[OutputSpec] = &[OutputSpec {
         dtype: None,
         shape: &[],
     },
+    // The whole point of the filter, stated: element i out is element
+    // `indices[i]` of `values`. This is the link a pick walks back along.
+    provenance: Provenance::Map {
+        via: "result",
+        of: "values",
+    },
 }];
 
 const RENUMBER_PARAMS: &[ParamSpec] = &[
@@ -115,6 +123,10 @@ const RENUMBERED: &[OutputSpec] = &[OutputSpec {
         dtype: Some(Dtype::Uint32),
         shape: &[0, 0],
     },
+    // Entries are dropped, not reordered, and nothing records which survived —
+    // so entry i out is not entry i in, and there is no array saying what it
+    // is. Honest rather than convenient.
+    provenance: Provenance::Opaque,
 }];
 
 const REINDEX_PARAMS: &[ParamSpec] = &[ParamSpec {
@@ -131,6 +143,9 @@ const REINDEXED: &[OutputSpec] = &[
             dtype: Some(Dtype::Uint32),
             shape: &[0],
         },
+        // Renumbered in place: one value out per value in, same order. Only
+        // what the numbers *say* changed.
+        provenance: Provenance::Identity("values"),
     },
     // The other half, and the one easy to leave out: re-densifying
     // `residue_index` is useless on its own, because every array keyed on the
@@ -144,6 +159,10 @@ const REINDEXED: &[OutputSpec] = &[
             dtype: Some(Dtype::Uint32),
             shape: &[0],
         },
+        // A list of the old numbers, so it indexes the space `values` pointed
+        // *into* — the residues — not `values` itself, which is per atom. There
+        // is no input here naming that space, so it cannot be stated.
+        provenance: Provenance::Opaque,
     },
 ];
 

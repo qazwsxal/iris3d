@@ -44,7 +44,9 @@ use crate::scene::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec};
 use crate::scene::subset::Remap;
 
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -119,6 +121,10 @@ const OUTPUTS: &[OutputSpec] = &[OutputSpec {
     id: "geometry",
     label: "geometry",
     kind: OutputKind::Geometry,
+    // Vertices pass through untouched when nothing is cut, and are narrowed by
+    // `vertices` when something is — but the mesh is one object, not a list of
+    // elements, so the correspondence has nowhere to be read from.
+    provenance: Provenance::Opaque,
 }];
 
 pub fn register(registry: &mut FilterRegistry) {

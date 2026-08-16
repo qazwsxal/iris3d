@@ -33,7 +33,9 @@ use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, text, vector};
 use crate::scene::DataArray;
 
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 /// Which ramp to read a value through.
 ///
@@ -170,6 +172,8 @@ const OUTPUTS: &[OutputSpec] = &[OutputSpec {
         dtype: Some(Dtype::Float32),
         shape: &[0, 3],
     },
+    // One colour per value, in order.
+    provenance: Provenance::Identity("values"),
 }];
 
 pub fn register(registry: &mut FilterRegistry) {

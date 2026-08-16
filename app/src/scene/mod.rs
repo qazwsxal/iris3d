@@ -2067,6 +2067,7 @@ mod tests {
                     dtype: Some(Dtype::Uint8),
                     shape: &[0],
                 },
+                provenance: filter::Provenance::Opaque,
             },
             filter::OutputSpec {
                 id: "second",
@@ -2075,6 +2076,7 @@ mod tests {
                     dtype: Some(Dtype::Uint8),
                     shape: &[0],
                 },
+                provenance: filter::Provenance::Opaque,
             },
         ];
 

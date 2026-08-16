@@ -31,7 +31,9 @@ use crate::scene::DataArray;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, flag, text};
 
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 const SUBSET_PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -57,6 +59,12 @@ const INDICES: &[OutputSpec] = &[OutputSpec {
     kind: OutputKind::Array {
         dtype: Some(Dtype::Uint32),
         shape: &[0],
+    },
+    // The indices *are* the correspondence: entry i of the output names
+    // element `indices[i]` of whatever the mask was over.
+    provenance: Provenance::Map {
+        via: "indices",
+        of: "mask",
     },
 }];
 
@@ -97,6 +105,9 @@ const MASK: &[OutputSpec] = &[OutputSpec {
         dtype: Some(Dtype::Uint8),
         shape: &[0],
     },
+    // One value per element of the index array, in order. Not of `values`:
+    // that is the dictionary, and it has a different length entirely.
+    provenance: Provenance::Identity("index"),
 }];
 
 pub fn register(registry: &mut FilterRegistry) {

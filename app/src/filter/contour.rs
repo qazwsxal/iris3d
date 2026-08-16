@@ -52,7 +52,9 @@ use crate::scene::DataArray;
 use crate::scene::registry::{ParamKind, ParamSpec, float, text, uvec3, vec3, vector};
 
 use super::colormap::{ColorMap, sample};
-use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
+use super::{
+    FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
+};
 
 /// Ceiling on the samples one run will walk.
 ///
@@ -188,6 +190,11 @@ const OUTPUTS: &[OutputSpec] = &[OutputSpec {
     id: "geometry",
     label: "surface",
     kind: OutputKind::Geometry,
+    // A vertex belongs to a cell of the field, not to an element of it, and
+    // nothing records which. Surface Nets puts one vertex per crossed cell —
+    // recoverable, but only by emitting the cell index, which nothing asks for
+    // yet.
+    provenance: Provenance::Opaque,
 }];
 
 pub fn register(registry: &mut FilterRegistry) {
