@@ -196,6 +196,30 @@ service SceneService {
   // Lists the ways of deriving data this build supports, and what each takes
   // and produces. As with ListActorKinds, ask rather than assume.
   rpc ListFilterKinds(ListFilterKindsRequest) returns (ListFilterKindsResponse);
+
+  // Watches what the user does, and says what to watch.
+  //
+  // The only bidirectional call, and the only one where the *server* speaks
+  // first-hand. Everything else here is a client asking a question or issuing
+  // an order; this is the app reporting that somebody clicked something.
+  //
+  // **Why a stream in both directions rather than polling, or two streams.**
+  // Picking is a conversation. A client says what it wants reported, the app
+  // reports hits as they happen, and the client changes its mind — starts
+  // watching hovers, stops watching a particular actor — without tearing the
+  // subscription down and losing whatever arrived in between. Two half-duplex
+  // streams would need their own scheme for pairing a change with the stream it
+  // applies to; this is that scheme, for free.
+  //
+  // The first message SHOULD carry a Subscribe. Until one arrives nothing is
+  // reported, so a client that opens the stream and says nothing receives
+  // nothing rather than everything.
+  //
+  // Ordering is per-stream and events are dropped rather than queued without
+  // bound: a client that stops reading is slow, and a slow client must not be
+  // able to make the app hold frames' worth of clicks. What it misses it can
+  // ask for — the selection is data in the graph like anything else.
+  rpc Watch(stream WatchRequest) returns (stream WatchResponse);
 }
 
 // Dtype is the element type of a buffer's raw bytes. Encoding is always
@@ -1056,4 +1080,81 @@ message DeleteObjectResponse {
   // empty. RemoveActor is what destroys an actor.
   reserved 3;
   reserved "removed_actors";
+}
+
+// WatchRequest changes what a Watch stream reports.
+//
+// One message type rather than a oneof of several, because there is exactly one
+// thing to say so far: here is the new subscription, replacing the old. Sending
+// a second one narrows or widens what arrives with no gap in between.
+message WatchRequest {
+  Subscribe subscribe = 1;
+}
+
+// Subscribe says what a client wants to hear about.
+//
+// Empty means nothing. That is deliberate: a stream that reported everything by
+// default would make the cheapest possible client — one that opens a connection
+// and forgets — the most expensive one to serve.
+message Subscribe {
+  // Which kinds of event to report.
+  repeated EventKind kinds = 1;
+
+  // Restrict to these objects. Empty means every object.
+  //
+  // By object rather than by actor because an object is what a person points
+  // at: "tell me when someone clicks the protein" is one handle, however many
+  // ways it is being drawn.
+  repeated ObjectHandle objects = 2;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+
+  // A pointer press landed on something drawn.
+  EVENT_KIND_PICK = 1;
+}
+
+// WatchResponse carries one event.
+//
+// Wrapped rather than streaming Event directly, which buf's naming rule wants
+// and which leaves somewhere to put anything that is not an event — a
+// subscription acknowledgement, a dropped-event count — without changing what an
+// Event is.
+message WatchResponse {
+  Event event = 1;
+}
+
+// Event is something the user did.
+message Event {
+  EventKind kind = 1;
+
+  // What was hit.
+  //
+  // Both handles, not one. The object says *what* was pointed at and the actor
+  // says *which drawing of it* — an object shown as both a cartoon and a
+  // surface is two actors, and clicking the surface is a different fact from
+  // clicking the cartoon.
+  ObjectHandle object = 2;
+  ActorHandle actor = 3;
+
+  // Where the hit landed, in world coordinates.
+  //
+  // Present because it is free — the ray gave it up on the way to finding the
+  // entity — and because it is what a client needs to place a label or measure
+  // a distance without knowing anything about the geometry it hit.
+  Vector3 position = 4;
+
+  // Which element of the source data was hit, if that could be worked out.
+  //
+  // Absent for now, always. Bevy's mesh picking computes a triangle index while
+  // raycasting and discards it, so identifying an element needs a second ray
+  // cast; and once there is one, the index is into whatever the *actor* was
+  // bound to, which after a subset is several filters downstream of the array a
+  // client uploaded. Walking that back is implemented — see the provenance
+  // declarations on every filter output — and is not yet wired to this.
+  //
+  // Declared now rather than added later so the shape of an event does not
+  // change when it arrives.
+  optional uint64 element = 5;
 }

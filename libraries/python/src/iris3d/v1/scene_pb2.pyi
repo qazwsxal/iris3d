@@ -21,6 +21,11 @@ class Dtype(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     DTYPE_FLOAT32: _ClassVar[Dtype]
     DTYPE_FLOAT64: _ClassVar[Dtype]
     DTYPE_STRING: _ClassVar[Dtype]
+
+class EventKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    EVENT_KIND_UNSPECIFIED: _ClassVar[EventKind]
+    EVENT_KIND_PICK: _ClassVar[EventKind]
 DTYPE_UNSPECIFIED: Dtype
 DTYPE_UINT8: Dtype
 DTYPE_INT8: Dtype
@@ -33,6 +38,8 @@ DTYPE_INT64: Dtype
 DTYPE_FLOAT32: Dtype
 DTYPE_FLOAT64: Dtype
 DTYPE_STRING: Dtype
+EVENT_KIND_UNSPECIFIED: EventKind
+EVENT_KIND_PICK: EventKind
 
 class BufferSpec(_message.Message):
     __slots__ = ("name", "dtype", "shape", "byte_length", "values")
@@ -631,3 +638,37 @@ class DeleteObjectResponse(_message.Message):
     deleted: bool
     removed: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
     def __init__(self, deleted: _Optional[bool] = ..., removed: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
+
+class WatchRequest(_message.Message):
+    __slots__ = ("subscribe",)
+    SUBSCRIBE_FIELD_NUMBER: _ClassVar[int]
+    subscribe: Subscribe
+    def __init__(self, subscribe: _Optional[_Union[Subscribe, _Mapping]] = ...) -> None: ...
+
+class Subscribe(_message.Message):
+    __slots__ = ("kinds", "objects")
+    KINDS_FIELD_NUMBER: _ClassVar[int]
+    OBJECTS_FIELD_NUMBER: _ClassVar[int]
+    kinds: _containers.RepeatedScalarFieldContainer[EventKind]
+    objects: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
+    def __init__(self, kinds: _Optional[_Iterable[_Union[EventKind, str]]] = ..., objects: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
+
+class WatchResponse(_message.Message):
+    __slots__ = ("event",)
+    EVENT_FIELD_NUMBER: _ClassVar[int]
+    event: Event
+    def __init__(self, event: _Optional[_Union[Event, _Mapping]] = ...) -> None: ...
+
+class Event(_message.Message):
+    __slots__ = ("kind", "object", "actor", "position", "element")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    OBJECT_FIELD_NUMBER: _ClassVar[int]
+    ACTOR_FIELD_NUMBER: _ClassVar[int]
+    POSITION_FIELD_NUMBER: _ClassVar[int]
+    ELEMENT_FIELD_NUMBER: _ClassVar[int]
+    kind: EventKind
+    object: ObjectHandle
+    actor: ActorHandle
+    position: Vector3
+    element: int
+    def __init__(self, kind: _Optional[_Union[EventKind, str]] = ..., object: _Optional[_Union[ObjectHandle, _Mapping]] = ..., actor: _Optional[_Union[ActorHandle, _Mapping]] = ..., position: _Optional[_Union[Vector3, _Mapping]] = ..., element: _Optional[int] = ...) -> None: ...

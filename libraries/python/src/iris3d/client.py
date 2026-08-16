@@ -14,7 +14,10 @@ beside it.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+import queue
+import threading
+import traceback
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Self, cast
 
@@ -35,6 +38,8 @@ from .v1.scene_pb2 import (
     DataInfo,
     DeleteObjectRequest,
     Dtype,
+    Event,
+    EventKind,
     FilterHandle,
     FilterInfo,
     FilterKindInfo,
@@ -56,10 +61,12 @@ from .v1.scene_pb2 import (
     SetFilterRequest,
     SetParentRequest,
     SetTransformRequest,
+    Subscribe,
     Unset as ProtoUnset,
     UploadDataRequest,
     Vector3,
     VectorValue,
+    WatchRequest,
 )
 from .v1.scene_pb2_grpc import SceneServiceStub
 
@@ -210,6 +217,31 @@ class ActorSummary:
     #: above it does not show here, and neither does being detached — a
     #: detached actor is not drawn whatever this says.
     visible: bool
+
+
+@dataclass(frozen=True)
+class PickEvent:
+    """Somebody clicked something in the 3D view."""
+
+    #: The object that was hit — what was pointed at.
+    object: int
+    #: Which drawing of it was hit. An object shown as both a cartoon and a
+    #: surface is two actors, and clicking one is a different fact from
+    #: clicking the other.
+    actor: int
+    #: Where the ray met the geometry, in world coordinates. Enough to place a
+    #: label or measure a distance without knowing what was hit.
+    position: tuple[float, float, float] | None
+    #: Which element of the source data was hit.
+    #:
+    #: Always ``None`` so far. Two things stand in the way, and both are
+    #: understood: Bevy's mesh picking computes a triangle index while
+    #: raycasting and then discards it, so identifying an element needs a second
+    #: ray cast; and the index that comes back is into whatever the *actor* was
+    #: bound to, which after a subset is several filters downstream of the array
+    #: you uploaded. Walking that back is implemented — every filter output
+    #: declares where its elements came from — and is not yet joined to this.
+    element: int | None = None
 
 
 @dataclass(frozen=True)
@@ -611,6 +643,132 @@ def _filter(info: FilterInfo) -> FilterSummary:
         params={key: _read_param(value) for key, value in info.params.items()},
         outputs={output.id: output.handle.id for output in info.outputs},
         problem=info.problem if info.HasField("problem") else None,
+    )
+
+
+class Watcher:
+    """One open Watch stream, and the handle for changing or ending it.
+
+    Rarely built directly — :meth:`Client.watch` and
+    :meth:`Client.watch_in_background` are the two ways in, and they differ only
+    in whether events come back to you or go to a handler.
+
+    The subscription is a *queue* of requests rather than a single one, which is
+    what makes the stream genuinely bidirectional rather than a server push with
+    extra steps: :meth:`update` sends a new subscription down the same stream,
+    and the change lands between events with nothing lost in the gap.
+    """
+
+    #: Pushed onto the request queue to end the stream. A sentinel rather than a
+    #: flag because the sending generator is parked on `get()`, and the only way
+    #: to wake it is to give it something.
+    _STOP = object()
+
+    def __init__(
+        self,
+        stub: SceneServiceStub,
+        *,
+        picks: bool = True,
+        objects: Sequence[int] | None = None,
+    ) -> None:
+        self._requests: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._stopped = False
+        self.update(picks=picks, objects=objects)
+        self._call = stub.Watch(self._outgoing())
+
+    def update(
+        self,
+        *,
+        picks: bool = True,
+        objects: Sequence[int] | None = None,
+    ) -> None:
+        """Replaces what this stream reports, without interrupting it.
+
+        Narrowing to the object under the pointer, or widening back out, is one
+        message rather than a new subscription — so nothing that happens during
+        the change is lost.
+
+        ``objects`` empty means every object; ``picks=False`` subscribes to
+        nothing at all. The asymmetry is deliberate: naming no objects says "I
+        do not care which", naming no kinds says "not yet".
+        """
+        self._requests.put(
+            WatchRequest(
+                subscribe=Subscribe(
+                    kinds=[EventKind.EVENT_KIND_PICK] if picks else [],
+                    objects=[ObjectHandle(id=handle) for handle in (objects or ())],
+                )
+            )
+        )
+
+    def _outgoing(self) -> Iterator[WatchRequest]:
+        """The client half of the stream.
+
+        Blocks on the queue rather than returning, because a generator that
+        finishes closes this side and the server reads that as a hang-up. The
+        sentinel is what lets it end deliberately.
+        """
+        while True:
+            request = self._requests.get()
+            if request is Watcher._STOP:
+                return
+            yield request
+
+    def __iter__(self) -> Iterator[PickEvent]:
+        for message in self._call:
+            if message.HasField("event"):
+                yield _event(message.event)
+
+    def start(self, on_pick: Callable[[PickEvent], None]) -> None:
+        """Reads the stream on a daemon thread, calling `on_pick` per event."""
+
+        def pump() -> None:
+            try:
+                for event in self:
+                    try:
+                        on_pick(event)
+                    except Exception:
+                        # One bad handler call must not take the subscription
+                        # with it — the app would look like it had stopped
+                        # reporting, which is a much harder thing to diagnose
+                        # than a traceback.
+                        traceback.print_exc()
+            except grpc.RpcError:
+                # Cancelled, or the app went away. Both are ordinary ends.
+                pass
+
+        # Daemon so a script that forgets to stop watching still exits.
+        self._thread = threading.Thread(target=pump, name="iris3d-watch", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Ends the subscription. Safe to call twice."""
+        if self._stopped:
+            return
+        self._stopped = True
+        self._requests.put(Watcher._STOP)
+        self._call.cancel()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.stop()
+
+
+def _event(info: Event) -> PickEvent:
+    return PickEvent(
+        object=info.object.id,
+        actor=info.actor.id,
+        position=(
+            (info.position.x, info.position.y, info.position.z)
+            if info.HasField("position")
+            else None
+        ),
+        element=info.element if info.HasField("element") else None,
     )
 
 
@@ -1140,3 +1298,80 @@ class Client:
         """
         response = self._scene.ListFilterKinds(ListFilterKindsRequest())
         return {key: _filter_kind(info) for key, info in response.kinds.items()}
+
+    def watch(
+        self,
+        *,
+        picks: bool = True,
+        objects: Sequence[int] | None = None,
+    ) -> Iterator[PickEvent]:
+        """Yields what the user does, as they do it.
+
+        The only call that streams in both directions, and the only one where
+        the *app* speaks first. Everything else here asks a question; this
+        listens::
+
+            for event in client.watch():
+                print("clicked", event.object, "at", event.position)
+
+        Blocks until something happens, and does not return on its own — break
+        out of the loop, or close the client from another thread. Iterating is
+        the whole API: the subscription is sent once when the loop starts and
+        the stream stays open until you stop reading it.
+
+        ``objects`` restricts to particular objects; omitting it reports every
+        one. ``picks`` is on by default because it is the only kind of event so
+        far, and turning it off subscribes to nothing at all.
+
+        **What you get, and what you do not.** An event names the object *and*
+        the actor — an object drawn as both a cartoon and a surface is two
+        actors, and which one was clicked is a different fact. It carries the
+        world-space position of the hit. It does **not** carry which element was
+        hit; see :attr:`PickEvent.element`.
+
+        A client that stops reading is dropped from rather than queued for, so a
+        slow consumer misses events instead of making the app hold them. What
+        you miss you can ask for: the scene is still there to be listed.
+        """
+        watcher = Watcher(self._scene, picks=picks, objects=objects)
+        try:
+            yield from watcher
+        finally:
+            watcher.stop()
+
+    def watch_in_background(
+        self,
+        on_pick: Callable[[PickEvent], None],
+        *,
+        picks: bool = True,
+        objects: Sequence[int] | None = None,
+    ) -> Watcher:
+        """Calls ``on_pick`` for each event, on a thread of its own.
+
+        The form to use when the response to an event is itself a call::
+
+            def highlight(event):
+                client.set_filter(chosen, params={"value": float(event.object)})
+
+            with client.watch_in_background(highlight):
+                input("click things, then press enter")
+
+        **Your handler may call this same client.** A gRPC channel is
+        thread-safe and multiplexes over one connection, so a request made from
+        inside a handler is another stream on the connection the events are
+        arriving on — not a second connection, and not blocked behind them.
+
+        **Do not answer high-rate events this way.** A click is fine. A *hover*
+        is not: event out to Python, decision, call back in, once per pointer
+        move, is a round trip through a language boundary at pointer rate.
+        Feedback that is a pure function of what was picked belongs in the
+        graph — a `pick` node's output is an ordinary array, so a selection can
+        drive a subset with no client in the loop at all.
+
+        Exceptions raised by the handler are printed and swallowed: one bad
+        event should not silently kill the subscription and leave the app
+        looking broken.
+        """
+        watcher = Watcher(self._scene, picks=picks, objects=objects)
+        watcher.start(on_pick)
+        return watcher

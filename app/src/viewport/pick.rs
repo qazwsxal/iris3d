@@ -58,6 +58,13 @@ pub struct Picked {
     /// The object it was drawn under. An actor appears once per object, so this
     /// is the one thing a hit can say that the actor alone cannot.
     pub object: Entity,
+    /// Where the ray met the geometry, in world space.
+    ///
+    /// Free — the ray gave it up on the way to finding the entity — and it is
+    /// what a client needs to place a label or measure a distance without
+    /// knowing anything about what it hit. `None` if the backend did not report
+    /// one.
+    pub position: Option<Vec3>,
 }
 
 pub struct PickPlugin;
@@ -123,5 +130,6 @@ fn on_click(
     picked.write(Picked {
         actor: placement.0,
         object: parent.parent(),
+        position: click.event.hit.position,
     });
 }

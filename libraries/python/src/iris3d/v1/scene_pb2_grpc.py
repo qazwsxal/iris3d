@@ -167,6 +167,11 @@ class SceneServiceStub(object):
                 request_serializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsRequest.SerializeToString,
                 response_deserializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsResponse.FromString,
                 _registered_method=True)
+        self.Watch = channel.stream_stream(
+                '/iris3d.v1.SceneService/Watch',
+                request_serializer=iris3d_dot_v1_dot_scene__pb2.WatchRequest.SerializeToString,
+                response_deserializer=iris3d_dot_v1_dot_scene__pb2.WatchResponse.FromString,
+                _registered_method=True)
 
 
 class SceneServiceServicer(object):
@@ -438,6 +443,34 @@ class SceneServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Watch(self, request_iterator, context):
+        """Watches what the user does, and says what to watch.
+
+        The only bidirectional call, and the only one where the *server* speaks
+        first-hand. Everything else here is a client asking a question or issuing
+        an order; this is the app reporting that somebody clicked something.
+
+        **Why a stream in both directions rather than polling, or two streams.**
+        Picking is a conversation. A client says what it wants reported, the app
+        reports hits as they happen, and the client changes its mind — starts
+        watching hovers, stops watching a particular actor — without tearing the
+        subscription down and losing whatever arrived in between. Two half-duplex
+        streams would need their own scheme for pairing a change with the stream it
+        applies to; this is that scheme, for free.
+
+        The first message SHOULD carry a Subscribe. Until one arrives nothing is
+        reported, so a client that opens the stream and says nothing receives
+        nothing rather than everything.
+
+        Ordering is per-stream and events are dropped rather than queued without
+        bound: a client that stops reading is slow, and a slow client must not be
+        able to make the app hold frames' worth of clicks. What it misses it can
+        ask for — the selection is data in the graph like anything else.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SceneServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -530,6 +563,11 @@ def add_SceneServiceServicer_to_server(servicer, server):
                     servicer.ListFilterKinds,
                     request_deserializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsRequest.FromString,
                     response_serializer=iris3d_dot_v1_dot_scene__pb2.ListFilterKindsResponse.SerializeToString,
+            ),
+            'Watch': grpc.stream_stream_rpc_method_handler(
+                    servicer.Watch,
+                    request_deserializer=iris3d_dot_v1_dot_scene__pb2.WatchRequest.FromString,
+                    response_serializer=iris3d_dot_v1_dot_scene__pb2.WatchResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1081,6 +1119,33 @@ class SceneService(object):
             '/iris3d.v1.SceneService/ListFilterKinds',
             iris3d_dot_v1_dot_scene__pb2.ListFilterKindsRequest.SerializeToString,
             iris3d_dot_v1_dot_scene__pb2.ListFilterKindsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Watch(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/iris3d.v1.SceneService/Watch',
+            iris3d_dot_v1_dot_scene__pb2.WatchRequest.SerializeToString,
+            iris3d_dot_v1_dot_scene__pb2.WatchResponse.FromString,
             options,
             channel_credentials,
             insecure,

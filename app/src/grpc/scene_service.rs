@@ -3,7 +3,7 @@
 //! Uploads are assembled here, on the tokio side, and only handed to the ECS
 //! once complete and validated. A rejected stream never reaches the scene.
 
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -29,12 +29,14 @@ use super::proto::{
     ReleaseDataResponse, RemoveActorRequest, RemoveActorResponse, RemoveFilterRequest,
     RemoveFilterResponse, SetActorRequest, SetActorResponse, SetFilterRequest, SetFilterResponse,
     SetParentRequest, SetParentResponse, SetTransformRequest, SetTransformResponse,
-    TextParam, UploadDataRequest, UploadDataResponse, VectorParam,
+    Subscribe, TextParam, UploadDataRequest, UploadDataResponse, VectorParam, WatchRequest,
+    WatchResponse,
     VectorValue, data_info, output_spec, param_spec, param_value::Value,
     scene_service_server::SceneService,
     upload_data_request::Payload as DataPayload,
 };
 use bevy::math::{Quat, Vec3};
+use bevy::prelude::warn;
 
 /// Ceiling on the total declared size of a single object. Generous enough for
 /// a large point cloud, small enough that a malformed or malicious header
@@ -66,11 +68,14 @@ const MAX_EAGER_RESERVE: u64 = 64 * 1024 * 1024;
 /// Adapts the `SceneService` wire contract onto the scene command channel.
 pub struct SceneBridgeService {
     commands: SceneSender,
+    /// Where events come from, for `Watch`. Cloning it is how each stream gets
+    /// its own receiver.
+    events: super::watch::Events,
 }
 
 impl SceneBridgeService {
-    pub fn new(commands: SceneSender) -> Self {
-        Self { commands }
+    pub fn new(commands: SceneSender, events: super::watch::Events) -> Self {
+        Self { commands, events }
     }
 
     /// Submits a command and waits for the scene to apply it on its next tick.
@@ -500,6 +505,71 @@ impl SceneService for SceneBridgeService {
                 .map(|kind| (kind.id.clone(), filter_kind_info(kind)))
                 .collect(),
         }))
+    }
+
+    type WatchStream = std::pin::Pin<
+        Box<dyn tokio_stream::Stream<Item = Result<WatchResponse, Status>> + Send + 'static>,
+    >;
+
+    /// Reports what the user does, and takes changes of mind while doing it.
+    ///
+    /// Two loops in one task: one draining the client's requests to update the
+    /// subscription, one draining events to send. `tokio::select!` runs them
+    /// against each other so a subscription change lands between events rather
+    /// than behind however many are queued.
+    ///
+    /// The subscription lives *here*, per stream, rather than in the scene. The
+    /// ECS reports what happened and knows nothing about who is listening —
+    /// which is the same separation the command channel has in the other
+    /// direction, and what keeps a registry of live gRPC clients out of the
+    /// scene.
+    async fn watch(
+        &self,
+        request: Request<Streaming<WatchRequest>>,
+    ) -> Result<Response<Self::WatchStream>, Status> {
+        let mut requests = request.into_inner();
+        let mut events = self.events.subscribe();
+
+        let stream = async_stream::stream! {
+            // Nothing until asked. A client that opens the stream and says
+            // nothing gets nothing, so the cheapest client is not the most
+            // expensive to serve.
+            let mut wanted: Option<Subscribe> = None;
+
+            loop {
+                tokio::select! {
+                    incoming = requests.next() => match incoming {
+                        Some(Ok(message)) => wanted = message.subscribe,
+                        // The client hung up, or sent something unreadable.
+                        // Either way there is nobody to report to.
+                        Some(Err(err)) => {
+                            yield Err(err);
+                            break;
+                        }
+                        None => break,
+                    },
+                    event = events.recv() => match event {
+                        Ok(event) => {
+                            if let Some(wanted) = &wanted
+                                && reportable(wanted, &event)
+                            {
+                                yield Ok(WatchResponse { event: Some(event.to_proto()) });
+                            }
+                        }
+                        // Fell behind. Said out loud rather than pretended
+                        // away: a client that missed clicks should know it
+                        // missed them, and the alternative — an unbounded
+                        // queue — lets one slow reader hold the app's memory.
+                        Err(broadcast::error::RecvError::Lagged(missed)) => {
+                            warn!("grpc: a watcher missed {missed} events");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
@@ -1184,4 +1254,24 @@ mod tests {
         assert_eq!(spec.byte_length, 0);
         assert!(spec.values.is_empty());
     }
+}
+
+/// Whether one event matches what a stream asked for.
+///
+/// Per stream rather than centrally — see `watch::Events`. Both filters are
+/// "empty means everything except when it means nothing": an empty `kinds`
+/// reports nothing, because subscribing to no kinds is how you say you are not
+/// interested yet; an empty `objects` reports every object, because naming none
+/// is how you say you do not care which.
+///
+/// The asymmetry is deliberate and is the difference between an opt-in and a
+/// restriction.
+fn reportable(wanted: &Subscribe, event: &super::watch::SceneEvent) -> bool {
+    let kind = wanted
+        .kinds
+        .iter()
+        .any(|asked| *asked == event.kind as i32);
+    let object =
+        wanted.objects.is_empty() || wanted.objects.iter().any(|handle| handle.id == event.object);
+    kind && object
 }

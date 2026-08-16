@@ -19,6 +19,7 @@ use tonic::transport::Server;
 use crate::scene::SceneCommand;
 
 pub mod scene_service;
+pub mod watch;
 
 /// Generated types for `proto/iris3d/v1/scene.proto`.
 pub mod proto {
@@ -132,8 +133,14 @@ impl Plugin for GrpcPlugin {
         }
 
         let bridge = GrpcBridge::new(wake);
-        spawn_server(self.addr, bridge.sender());
-        app.insert_resource(bridge);
+        // Built here rather than inside the server thread: the ECS needs the
+        // sending half as a resource, and the service needs the same channel to
+        // subscribe watchers to.
+        let events = watch::Events::default();
+        spawn_server(self.addr, bridge.sender(), events.clone());
+        app.insert_resource(bridge)
+            .insert_resource(events)
+            .add_systems(Update, watch::report_picks);
     }
 }
 
@@ -141,7 +148,7 @@ impl Plugin for GrpcPlugin {
 ///
 /// The server only needs the command channel, so it can come up before the
 /// Bevy app starts ticking; requests simply queue until the scene drains them.
-fn spawn_server(addr: SocketAddr, commands: SceneSender) {
+fn spawn_server(addr: SocketAddr, commands: SceneSender, events: watch::Events) {
     let spawned = std::thread::Builder::new()
         .name("iris3d-grpc".to_string())
         .spawn(move || {
@@ -158,7 +165,7 @@ fn spawn_server(addr: SocketAddr, commands: SceneSender) {
             };
 
             runtime.block_on(async move {
-                let scene = scene_service::SceneBridgeService::new(commands);
+                let scene = scene_service::SceneBridgeService::new(commands, events);
                 let service = SceneServiceServer::new(scene)
                     .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
 
