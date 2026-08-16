@@ -33,6 +33,7 @@ use crate::filter::FilterSummary;
 
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamValue};
 use crate::scene::{DataArray, SceneCommand, SceneError};
+use crate::viewport::manipulate::GizmoMode;
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
 
 
@@ -193,6 +194,12 @@ pub struct UiState {
     /// The actor or filter being built, if a create form is open. One at a
     /// time, which is what keeps an offer from nesting a draft inside a draft.
     pub draft: Option<Draft>,
+    /// What the transform handles do to the selected object.
+    ///
+    /// Here rather than in a resource of its own, so the viewport reads it from
+    /// the same place it already reads the selection — and so `draw_ui` needs no
+    /// seventeenth system parameter. See `viewport::manipulate`.
+    pub gizmo: crate::viewport::manipulate::GizmoMode,
 }
 
 impl Default for UiState {
@@ -206,6 +213,7 @@ impl Default for UiState {
             selected_array: None,
             selected_filter: None,
             draft: None,
+            gizmo: crate::viewport::manipulate::GizmoMode::default(),
         }
     }
 }
@@ -364,6 +372,25 @@ fn draw_ui(
                         ui.close();
                     }
                 });
+                // What the drag handles do, beside the view toggle rather than
+                // in a menu: it is a mode, and a mode that is two clicks away
+                // reads as a setting. Only shown in the Scene view, since the
+                // node canvas has no handles to switch between.
+                if state.view == View::Scene {
+                    ui.separator();
+                    for (mode, label) in [
+                        (GizmoMode::Translate, "Move"),
+                        (GizmoMode::Rotate, "Turn"),
+                        (GizmoMode::Scale, "Size"),
+                    ] {
+                        if ui
+                            .selectable_label(state.gizmo == mode, label)
+                            .clicked()
+                        {
+                            state.gizmo = mode;
+                        }
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Right-to-left, so this is the rightmost thing in the bar.
                     let (label, to) = match state.view {

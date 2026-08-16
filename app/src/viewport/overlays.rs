@@ -116,7 +116,7 @@ pub fn draw_overlays(
 /// belongs in an object's box is what is *drawn at* its placement. A actor
 /// sourced from elsewhere and parented here counts; one sourced from here but
 /// parented elsewhere does not, because that is where it appears.
-fn subtree_bounds(
+pub(super) fn subtree_bounds(
     entity: Entity,
     children: Option<&Children>,
     bounds: &Query<(&Aabb, &GlobalTransform)>,

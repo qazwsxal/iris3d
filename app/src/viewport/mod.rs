@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::redraw::KeepAwake;
 
+pub mod manipulate;
 pub mod overlays;
 pub mod pick;
 
@@ -22,6 +23,7 @@ pub struct ViewportPlugin;
 impl Plugin for ViewportPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(pick::PickPlugin)
+            .add_plugins(manipulate::ManipulatePlugin)
             .init_resource::<ScreenshotRequest>()
             .init_resource::<FrameRequest>()
             .init_resource::<PointerCaptured>()
@@ -121,11 +123,15 @@ fn orbit_controls(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     captured: Res<PointerCaptured>,
+    // A grabbed gizmo handle owns the gesture. Checked here rather than in the
+    // gizmo, because the camera is what has to yield: both want the left button
+    // and only one of them can have it.
+    gizmo: Res<manipulate::GizmoDrag>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut camera: Query<(&mut OrbitCamera, &mut Transform, &Camera)>,
     mut started_in_view: Local<bool>,
 ) {
-    if captured.0 {
+    if captured.0 || gizmo.0.is_some() {
         return;
     }
     let Ok((mut orbit, mut transform, view)) = camera.single_mut() else {
