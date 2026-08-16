@@ -16,12 +16,14 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::counter::UniqueID;
-use crate::filter::{FilterKindId, FilterParams, FilterRegistry, OutputSpec, Outputs, Running, Stale};
+use crate::filter::{
+    FilterKindId, FilterParams, FilterProblem, FilterRegistry, OutputSpec, Outputs, Running, Stale,
+};
 use crate::scene::registry::{
     ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamSpec, data as bound_handle,
 };
 use crate::scene::{BufferMeta, DataStore, HeldMeta, Parents, Placement};
-use crate::scene::{DataArray, SceneObject, Subset};
+use crate::scene::{DataArray, SceneObject};
 
 /// A flattened view of one object.
 pub struct Row {
@@ -52,7 +54,6 @@ pub struct ActorRow {
     /// `&'static` so nothing here has to be cloned or borrowed from the world.
     pub specs: &'static [ParamSpec],
     pub params: ParamMap,
-    pub subset: Subset,
     /// How many objects draw it. More than one means editing it here changes
     /// every copy, which is worth saying where the controls are.
     pub places: usize,
@@ -85,6 +86,13 @@ pub struct FilterRow {
     /// costs a frame per link, so a filter three deep sits stale-but-not-yet-busy
     /// for a moment after every edit, and that is normal rather than stuck.
     pub stale: bool,
+    /// Why the last run did not do what was asked, if it did not.
+    ///
+    /// Distinct from the refusal a *creation* can carry: that one is about a
+    /// call, is reported once and goes at the foot of the panel. This is a
+    /// standing property of the filter itself, so it travels on the row and
+    /// shows wherever the filter does.
+    pub problem: Option<String>,
 }
 
 /// Who holds an array, and what reads it.
@@ -128,7 +136,6 @@ pub type ActorData<'w, 's> = Query<
         &'static UniqueID,
         &'static ActorKindId,
         &'static ActorParams,
-        &'static Subset,
         &'static Parents,
     ),
 >;
@@ -154,6 +161,7 @@ pub type FilterData<'w, 's> = Query<
         &'static Outputs,
         Has<Stale>,
         Has<Running>,
+        Option<&'static FilterProblem>,
     ),
     With<FilterKindId>,
 >;
@@ -287,7 +295,7 @@ impl Gathered {
 /// A kind with no registration cannot be drawn or configured, so there is
 /// nothing useful to show for it either.
 fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Option<ActorRow> {
-    let (entity, id, kind, params, subset, parents) = actors.get(entity).ok()?;
+    let (entity, id, kind, params, parents) = actors.get(entity).ok()?;
     let registered = registry.get(kind.0)?;
     Some(ActorRow {
         entity,
@@ -295,7 +303,6 @@ fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Op
         label: registered.label,
         specs: registered.params,
         params: params.0.clone(),
-        subset: subset.clone(),
         places: parents.0.len(),
     })
 }
@@ -330,7 +337,7 @@ pub fn gather(read: &SceneRead) -> Gathered {
     } = read;
     let mut rows: HashMap<Entity, Row> = HashMap::new();
     let mut roots: Vec<Entity> = Vec::new();
-    let mut owners: HashMap<AssetId<DataArray>, Owner> = HashMap::new();
+    let owners: HashMap<AssetId<DataArray>, Owner> = HashMap::new();
     let held: HashMap<AssetId<DataArray>, (u64, BufferMeta)> = store
         .iter()
         .map(|(id, array)| (array.handle.id(), (id, array.meta.clone())))
@@ -379,20 +386,10 @@ pub fn gather(read: &SceneRead) -> Gathered {
             })
             .collect();
 
-        // An object owns no arrays now. The only thing still tied to one is an
-        // actor's selection, which the actor holds rather than the store —
-        // without this the inventory calls it unreferenced, which is backwards.
-        for actor in &drawn {
-            if let Subset::Selected { array, .. } = &actor.subset {
-                owners.insert(
-                    array.id(),
-                    Owner {
-                        object: id.0,
-                        name: "subset".into(),
-                    },
-                );
-            }
-        }
+        // An object owns no arrays at all. It used to own one — an actor's
+        // inline selection, held on the actor rather than in the store — and
+        // that is gone with the selection: every array is now a handle the
+        // store knows about, whoever made it.
 
         // A parent that is not itself an object does not make this a child.
         let parented = parent.is_some_and(|link| objects.contains(link.parent()));
@@ -433,7 +430,7 @@ pub fn gather(read: &SceneRead) -> Gathered {
     let mut producers: HashMap<u64, u64> = HashMap::new();
     let mut consumers: HashMap<u64, Vec<Consumer>> = HashMap::new();
 
-    for (entity, id, kind, params, outputs, stale, busy) in filters {
+    for (entity, id, kind, params, outputs, stale, busy, problem) in filters {
         let Some(registered) = filter_registry.get(kind.0) else {
             // A kind with no registration cannot run or be configured, so there
             // is nothing useful to show for it.
@@ -462,6 +459,7 @@ pub fn gather(read: &SceneRead) -> Gathered {
                 .collect(),
             busy,
             stale,
+            problem: problem.map(|problem| problem.0.clone()),
         });
     }
     filter_rows.sort_by_key(|row| row.id);

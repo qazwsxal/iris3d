@@ -76,6 +76,13 @@ fn controls(
             actions.0.push(UiAction::RemoveFilter(current.id));
         }
     });
+    // Above the controls, not below them. The reason a filter is producing
+    // nothing is almost always one of the settings immediately under this, so
+    // burying it past a screenful of sliders would put the complaint further
+    // from its cause than from anything else.
+    if let Some(problem) = &current.problem {
+        ui.colored_label(ui.visuals().error_fg_color, format!("{} {problem}", current.label));
+    }
     ui.separator();
 
     // `geometry`'s colour input is the one place a second filter is the obvious

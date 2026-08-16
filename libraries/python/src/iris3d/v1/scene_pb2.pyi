@@ -203,7 +203,7 @@ class ChoiceParam(_message.Message):
     def __init__(self, options: _Optional[_Iterable[str]] = ..., default_value: _Optional[str] = ...) -> None: ...
 
 class ParamSpec(_message.Message):
-    __slots__ = ("id", "label", "number", "flag", "choice", "array", "vector", "geometry")
+    __slots__ = ("id", "label", "number", "flag", "choice", "array", "vector", "geometry", "text")
     ID_FIELD_NUMBER: _ClassVar[int]
     LABEL_FIELD_NUMBER: _ClassVar[int]
     NUMBER_FIELD_NUMBER: _ClassVar[int]
@@ -212,6 +212,7 @@ class ParamSpec(_message.Message):
     ARRAY_FIELD_NUMBER: _ClassVar[int]
     VECTOR_FIELD_NUMBER: _ClassVar[int]
     GEOMETRY_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
     id: str
     label: str
     number: FloatParam
@@ -220,7 +221,14 @@ class ParamSpec(_message.Message):
     array: ArrayParam
     vector: VectorParam
     geometry: GeometryParam
-    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ..., vector: _Optional[_Union[VectorParam, _Mapping]] = ..., geometry: _Optional[_Union[GeometryParam, _Mapping]] = ...) -> None: ...
+    text: TextParam
+    def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., number: _Optional[_Union[FloatParam, _Mapping]] = ..., flag: _Optional[_Union[BoolParam, _Mapping]] = ..., choice: _Optional[_Union[ChoiceParam, _Mapping]] = ..., array: _Optional[_Union[ArrayParam, _Mapping]] = ..., vector: _Optional[_Union[VectorParam, _Mapping]] = ..., geometry: _Optional[_Union[GeometryParam, _Mapping]] = ..., text: _Optional[_Union[TextParam, _Mapping]] = ...) -> None: ...
+
+class TextParam(_message.Message):
+    __slots__ = ("default_value",)
+    DEFAULT_VALUE_FIELD_NUMBER: _ClassVar[int]
+    default_value: str
+    def __init__(self, default_value: _Optional[str] = ...) -> None: ...
 
 class VectorValue(_message.Message):
     __slots__ = ("components",)
@@ -258,36 +266,8 @@ class GeometryParam(_message.Message):
     required: bool
     def __init__(self, required: _Optional[bool] = ...) -> None: ...
 
-class Subset(_message.Message):
-    __slots__ = ("data", "dtype", "encoding", "association")
-    class Encoding(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-        __slots__ = ()
-        ENCODING_UNSPECIFIED: _ClassVar[Subset.Encoding]
-        ENCODING_INDICES: _ClassVar[Subset.Encoding]
-        ENCODING_MASK: _ClassVar[Subset.Encoding]
-    ENCODING_UNSPECIFIED: Subset.Encoding
-    ENCODING_INDICES: Subset.Encoding
-    ENCODING_MASK: Subset.Encoding
-    class Association(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
-        __slots__ = ()
-        ASSOCIATION_UNSPECIFIED: _ClassVar[Subset.Association]
-        ASSOCIATION_PER_POINT: _ClassVar[Subset.Association]
-        ASSOCIATION_PER_CELL: _ClassVar[Subset.Association]
-    ASSOCIATION_UNSPECIFIED: Subset.Association
-    ASSOCIATION_PER_POINT: Subset.Association
-    ASSOCIATION_PER_CELL: Subset.Association
-    DATA_FIELD_NUMBER: _ClassVar[int]
-    DTYPE_FIELD_NUMBER: _ClassVar[int]
-    ENCODING_FIELD_NUMBER: _ClassVar[int]
-    ASSOCIATION_FIELD_NUMBER: _ClassVar[int]
-    data: bytes
-    dtype: Dtype
-    encoding: Subset.Encoding
-    association: Subset.Association
-    def __init__(self, data: _Optional[bytes] = ..., dtype: _Optional[_Union[Dtype, str]] = ..., encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ...) -> None: ...
-
 class ActorInfo(_message.Message):
-    __slots__ = ("handle", "kind", "params", "visible", "subset", "parents")
+    __slots__ = ("handle", "kind", "params", "visible", "parents")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -299,25 +279,13 @@ class ActorInfo(_message.Message):
     KIND_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
-    SUBSET_FIELD_NUMBER: _ClassVar[int]
     PARENTS_FIELD_NUMBER: _ClassVar[int]
     handle: ActorHandle
     kind: str
     params: _containers.MessageMap[str, ParamValue]
     visible: bool
-    subset: SubsetInfo
     parents: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
-    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[SubsetInfo, _Mapping]] = ..., parents: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
-
-class SubsetInfo(_message.Message):
-    __slots__ = ("encoding", "association", "selected")
-    ENCODING_FIELD_NUMBER: _ClassVar[int]
-    ASSOCIATION_FIELD_NUMBER: _ClassVar[int]
-    SELECTED_FIELD_NUMBER: _ClassVar[int]
-    encoding: Subset.Encoding
-    association: Subset.Association
-    selected: int
-    def __init__(self, encoding: _Optional[_Union[Subset.Encoding, str]] = ..., association: _Optional[_Union[Subset.Association, str]] = ..., selected: _Optional[int] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., visible: _Optional[bool] = ..., parents: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
 
 class ActorKindInfo(_message.Message):
     __slots__ = ("id", "label", "params")
@@ -330,7 +298,7 @@ class ActorKindInfo(_message.Message):
     def __init__(self, id: _Optional[str] = ..., label: _Optional[str] = ..., params: _Optional[_Iterable[_Union[ParamSpec, _Mapping]]] = ...) -> None: ...
 
 class AddActorRequest(_message.Message):
-    __slots__ = ("kind", "params", "subset", "parents")
+    __slots__ = ("kind", "params", "parents")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -340,13 +308,11 @@ class AddActorRequest(_message.Message):
         def __init__(self, key: _Optional[str] = ..., value: _Optional[_Union[ParamValue, _Mapping]] = ...) -> None: ...
     KIND_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
-    SUBSET_FIELD_NUMBER: _ClassVar[int]
     PARENTS_FIELD_NUMBER: _ClassVar[int]
     kind: str
     params: _containers.MessageMap[str, ParamValue]
-    subset: Subset
     parents: _containers.RepeatedCompositeFieldContainer[ObjectHandle]
-    def __init__(self, kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., parents: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
+    def __init__(self, kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., parents: _Optional[_Iterable[_Union[ObjectHandle, _Mapping]]] = ...) -> None: ...
 
 class AddActorResponse(_message.Message):
     __slots__ = ("actor",)
@@ -355,7 +321,7 @@ class AddActorResponse(_message.Message):
     def __init__(self, actor: _Optional[_Union[ActorInfo, _Mapping]] = ...) -> None: ...
 
 class SetActorRequest(_message.Message):
-    __slots__ = ("handle", "params", "visible", "subset", "clear_subset", "parents")
+    __slots__ = ("handle", "params", "visible", "parents")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -366,16 +332,12 @@ class SetActorRequest(_message.Message):
     HANDLE_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     VISIBLE_FIELD_NUMBER: _ClassVar[int]
-    SUBSET_FIELD_NUMBER: _ClassVar[int]
-    CLEAR_SUBSET_FIELD_NUMBER: _ClassVar[int]
     PARENTS_FIELD_NUMBER: _ClassVar[int]
     handle: ActorHandle
     params: _containers.MessageMap[str, ParamValue]
     visible: bool
-    subset: Subset
-    clear_subset: bool
     parents: ObjectHandles
-    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., visible: _Optional[bool] = ..., subset: _Optional[_Union[Subset, _Mapping]] = ..., clear_subset: _Optional[bool] = ..., parents: _Optional[_Union[ObjectHandles, _Mapping]] = ...) -> None: ...
+    def __init__(self, handle: _Optional[_Union[ActorHandle, _Mapping]] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., visible: _Optional[bool] = ..., parents: _Optional[_Union[ObjectHandles, _Mapping]] = ...) -> None: ...
 
 class ObjectHandles(_message.Message):
     __slots__ = ("handles",)
@@ -420,7 +382,7 @@ class FilterHandle(_message.Message):
     def __init__(self, id: _Optional[int] = ...) -> None: ...
 
 class FilterInfo(_message.Message):
-    __slots__ = ("handle", "kind", "params", "outputs")
+    __slots__ = ("handle", "kind", "params", "outputs", "problem")
     class ParamsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -432,11 +394,13 @@ class FilterInfo(_message.Message):
     KIND_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     OUTPUTS_FIELD_NUMBER: _ClassVar[int]
+    PROBLEM_FIELD_NUMBER: _ClassVar[int]
     handle: FilterHandle
     kind: str
     params: _containers.MessageMap[str, ParamValue]
     outputs: _containers.RepeatedCompositeFieldContainer[FilterOutput]
-    def __init__(self, handle: _Optional[_Union[FilterHandle, _Mapping]] = ..., kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., outputs: _Optional[_Iterable[_Union[FilterOutput, _Mapping]]] = ...) -> None: ...
+    problem: str
+    def __init__(self, handle: _Optional[_Union[FilterHandle, _Mapping]] = ..., kind: _Optional[str] = ..., params: _Optional[_Mapping[str, ParamValue]] = ..., outputs: _Optional[_Iterable[_Union[FilterOutput, _Mapping]]] = ..., problem: _Optional[str] = ...) -> None: ...
 
 class FilterOutput(_message.Message):
     __slots__ = ("id", "handle")

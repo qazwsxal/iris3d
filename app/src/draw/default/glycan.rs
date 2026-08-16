@@ -141,11 +141,11 @@ pub fn draw_glycans(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, subset, bindings, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, bindings, dirty), mesh3d, material3d) in &dirty {
         if !dirty.geometry {
             continue;
         }
-        let Some(input) = glycan::read(bindings, subset, &store, &arrays) else {
+        let Some(input) = glycan::read(bindings, &store, &arrays) else {
             continue;
         };
         let (symbols, colours) = glycan::build(&input, &style.0);

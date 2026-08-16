@@ -50,11 +50,14 @@ use bevy::color::ColorToComponents;
 
 use crate::filter::colormap::{ColorMap, sample};
 use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings, ParamKind, ParamMap, ParamSpec};
-use crate::scene::{DataArray, DataStore, Subset};
+use crate::scene::{DataArray, DataStore};
 
 mod atoms;
 mod default;
-mod elements;
+// Visible to the filters as well as to the backends: the CPK table is what
+// `colormap`'s `element` map reads, and there is no reason for a second copy of
+// the periodic table to exist for it.
+pub(crate) mod elements;
 mod glycan;
 mod probe;
 #[cfg(test)]
@@ -159,7 +162,7 @@ pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
 /// A backend extends this with whatever *it* produced last time, which is what
 /// makes reuse rather than reallocation possible — and is precisely the part
 /// that depends on the pipeline. Each kind declares its own; see the `Drawable` alias in any of them.
-pub(crate) type Actor<'a, Style> = (Entity, &'a Style, &'a Subset, &'a Bindings, &'a Dirty);
+pub(crate) type Actor<'a, Style> = (Entity, &'a Style, &'a Bindings, &'a Dirty);
 
 /// Resolves one of an actor's bound inputs to the array behind it.
 ///
@@ -249,7 +252,6 @@ fn mark_dirty(
     mut commands: Commands,
     registry: Res<ActorRegistry>,
     new_actors: Query<Entity, Added<ActorKindId>>,
-    resubset: Query<Entity, (With<ActorKindId>, Changed<Subset>)>,
     rebound: Query<Entity, (With<ActorKindId>, Changed<Bindings>)>,
     mut array_events: MessageReader<AssetEvent<DataArray>>,
     mut mesh_events: MessageReader<AssetEvent<Mesh>>,
@@ -258,12 +260,6 @@ fn mark_dirty(
 ) {
     for entity in &new_actors {
         mark(&mut commands, entity, Dirty::ALL);
-    }
-
-    // A different selection means different vertices, so this is a rebuild
-    // rather than a repaint.
-    for entity in &resubset {
-        mark(&mut commands, entity, Dirty::GEOMETRY);
     }
 
     // Binding a different array is new data, not a new setting: the vertex count
@@ -587,7 +583,6 @@ mod tests {
             .spawn((
                 ActorKindId("points"),
                 ActorParams(params),
-                Subset::All,
                 Bindings(HashMap::from_iter([("positions", 0u64)])),
                 ChildOf(parent),
             ))

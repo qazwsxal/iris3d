@@ -42,7 +42,6 @@ pub mod subset;
 pub use data::{BufferMeta, DataArray, DataStore, Dtype, HeldMeta, NamedBuffer};
 pub use link::{Parents, Placement, Shown};
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
-pub use subset::{Subset, SubsetEncoding};
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
 /// against a pre-existing malformed hierarchy sending validation into a loop.
@@ -120,18 +119,6 @@ pub struct ActorSummary {
     pub parents: Vec<u64>,
     pub params: registry::ParamMap,
     pub visible: bool,
-    /// How much of the bound data is drawn, or `None` for all of it. The values
-    /// are not carried back — the caller sent them, and they can be large.
-    pub subset: Option<SubsetSummary>,
-}
-
-/// An actor's selection, described without returning it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SubsetSummary {
-    pub encoding: SubsetEncoding,
-    pub association: data::Association,
-    /// How many elements it keeps.
-    pub selected: u64,
 }
 
 /// A way of drawing that a backend has registered, described for a client.
@@ -327,7 +314,6 @@ pub enum SceneCommand {
         /// previous value.
         params: registry::ParamMap,
         /// `None` draws the whole dataset.
-        subset: Option<subset::SubsetRequest>,
         reply: oneshot::Sender<Result<ActorSummary, SceneError>>,
     },
     SetActor {
@@ -339,7 +325,6 @@ pub enum SceneCommand {
         /// `None` leaves the selection alone; `Some(None)` clears it back to
         /// drawing everything. Absent and cleared have to be distinguishable,
         /// which is what the nesting buys.
-        subset: Option<Option<subset::SubsetRequest>>,
         /// Replace the set of objects it is drawn under. `None` leaves them
         /// alone; `Some(vec![])` takes it off screen without removing it.
         parents: Option<Vec<u64>>,
@@ -421,7 +406,6 @@ type ActorQuery<'w, 's> = Query<
         &'static ActorKindId,
         &'static mut ActorParams,
         &'static mut Shown,
-        &'static mut Subset,
         &'static mut Parents,
     ),
     With<ActorKindId>,
@@ -448,7 +432,6 @@ type ActorItem<'a> = (
     &'a ActorKindId,
     &'a ActorParams,
     &'a Shown,
-    &'a Subset,
     &'a Parents,
 );
 
@@ -668,7 +651,7 @@ pub fn apply_scene_commands(
                             .flat_map(|list| list.iter())
                             .filter_map(|child| {
                                 let actor = placements.get(child).ok()?.0;
-                                summarise_actor(actors.get(actor).ok()?, &ids, &arrays)
+                                summarise_actor(actors.get(actor).ok()?, &ids)
                             })
                             .collect();
                         let parent = effective_parent(entity, &pending_parent, &child_of)
@@ -697,7 +680,6 @@ pub fn apply_scene_commands(
                 kind,
                 parents,
                 params,
-                subset,
                 reply,
             } => {
                 let result = add_actor(
@@ -709,8 +691,6 @@ pub fn apply_scene_commands(
                     parents,
                     kind,
                     params,
-                    subset,
-                    &mut arrays,
                     &store,
                 );
                 let _ = reply.send(result);
@@ -720,7 +700,6 @@ pub fn apply_scene_commands(
                 id,
                 params,
                 visible,
-                subset,
                 parents,
                 reply,
             } => {
@@ -730,12 +709,10 @@ pub fn apply_scene_commands(
                     &index,
                     &mut actors,
                     &ids,
-                    &mut arrays,
                     &store,
                     id,
                     params,
                     visible,
-                    subset,
                     parents,
                 );
                 let _ = reply.send(result);
@@ -771,8 +748,8 @@ pub fn apply_scene_commands(
                     // Filtered on where an actor is drawn. It used to filter on
                     // whose data it read, which is no longer a thing an actor
                     // has — it reads arrays, and any number of them.
-                    .filter(|item| filter.is_none_or(|object| item.6.0.contains(&object)))
-                    .filter_map(|item| summarise_actor(item, &ids, &arrays))
+                    .filter(|item| filter.is_none_or(|object| item.5.0.contains(&object)))
+                    .filter_map(|item| summarise_actor(item, &ids))
                     .collect();
                 listing.sort_by_key(|summary| summary.id);
                 let _ = reply.send(Ok(listing));
@@ -899,8 +876,6 @@ fn add_actor(
     parents: Vec<u64>,
     kind: String,
     params: registry::ParamMap,
-    subset: Option<subset::SubsetRequest>,
-    arrays: &mut Assets<DataArray>,
     store: &DataStore,
 ) -> Result<ActorSummary, SceneError> {
     // Resolved before anything is created, so a bad handle builds nothing.
@@ -937,20 +912,6 @@ fn add_actor(
     let params = registered.normalise(&params);
     check_bindings(registered, &params, store)?;
 
-    let subset = subset.map_or(Subset::All, |request| request.into_subset(arrays));
-    let summarised_subset = match &subset {
-        Subset::All => None,
-        Subset::Selected {
-            encoding,
-            association,
-            ..
-        } => subset::size(&subset, arrays).map(|selected| SubsetSummary {
-            encoding: *encoding,
-            association: *association,
-            selected,
-        }),
-    };
-
     // Only now, with every reason to refuse behind us. Creating the object any
     // earlier would leave an empty one behind whenever an actor is rejected.
     let placed = match named.is_empty() {
@@ -967,7 +928,6 @@ fn add_actor(
         commands,
         counter,
         entities,
-        subset,
         (
             ActorKindId(registered.id),
             ActorParams(params.clone()),
@@ -986,7 +946,6 @@ fn add_actor(
         parents,
         params,
         visible: true,
-        subset: summarised_subset,
     })
 }
 
@@ -998,12 +957,10 @@ fn set_actor(
     index: &HashMap<u64, Entity>,
     actors: &mut ActorQuery,
     ids: &Query<&UniqueID>,
-    arrays: &mut Assets<DataArray>,
     store: &DataStore,
     id: u64,
     params: registry::ParamMap,
     visible: Option<bool>,
-    subset: Option<Option<subset::SubsetRequest>>,
     parents: Option<Vec<u64>>,
 ) -> Result<ActorSummary, SceneError> {
     let entity = *drawn.get(&id).ok_or(SceneError::NoSuchActor(id))?;
@@ -1067,9 +1024,6 @@ fn set_actor(
     if let Some(visible) = visible {
         *item.4 = Shown(visible);
     }
-    if let Some(subset) = subset {
-        *item.5 = subset.map_or(Subset::All, |request| request.into_subset(arrays));
-    }
 
     if let Some(wanted) = moving_to {
         // No cycle check, unlike `set_parent`. Nothing is ever parented under
@@ -1078,13 +1032,12 @@ fn set_actor(
         // A plain write, not a queued command: `sync_placements` reads this
         // next and builds or drops placements to match, so adding a parent and
         // taking the last one away are the same operation.
-        *item.6 = Parents(wanted);
+        *item.5 = Parents(wanted);
     }
 
     summarise_actor(
         actors.get(entity).expect("the entity was just written"),
         ids,
-        arrays,
     )
     .ok_or(SceneError::NoSuchActor(id))
 }
@@ -1292,9 +1245,8 @@ fn delete_object(
 ///
 /// `Option` only so callers can filter with `?`; an actor always describes.
 fn summarise_actor(
-    (_, id, kind, params, shown, subset, parents): ActorItem<'_>,
+    (_, id, kind, params, shown, parents): ActorItem<'_>,
     ids: &Query<&UniqueID>,
-    arrays: &Assets<DataArray>,
 ) -> Option<ActorSummary> {
     // Read straight off the component, unlike an object's parent. Placements
     // are built from this by a later system rather than by a queued command, so
@@ -1316,18 +1268,6 @@ fn summarise_actor(
         // placements still hides that copy, which is `InheritedVisibility`'s
         // business and not reported here.
         visible: shown.0,
-        subset: match subset {
-            Subset::All => None,
-            Subset::Selected {
-                encoding,
-                association,
-                ..
-            } => subset::size(subset, arrays).map(|selected| SubsetSummary {
-                encoding: *encoding,
-                association: *association,
-                selected,
-            }),
-        },
     })
 }
 
@@ -1465,7 +1405,6 @@ mod tests {
             parents,
             kind: "marker".into(),
             params: registry::ParamMap::default(),
-            subset: None,
             reply,
         });
         app.update();
@@ -1634,7 +1573,6 @@ mod tests {
             parents: vec![],
             kind: "marker".into(),
             params: registry::ParamMap::default(),
-            subset: None,
             reply,
         });
         app.update();
@@ -1666,7 +1604,6 @@ mod tests {
             parents: vec![],
             kind: "no-such-kind".into(),
             params: registry::ParamMap::default(),
-            subset: None,
             reply,
         });
         app.update();
@@ -1751,7 +1688,6 @@ mod tests {
             parents: vec![],
             kind: "bound".into(),
             params: bind(first),
-            subset: None,
             reply,
         });
         app.update();
@@ -1761,7 +1697,6 @@ mod tests {
             id: actor,
             params: bind(wrong),
             visible: None,
-            subset: None,
             parents: None,
             reply,
         });
@@ -1805,7 +1740,6 @@ mod tests {
             id: actor,
             params: bind(second),
             visible: None,
-            subset: None,
             parents: None,
             reply,
         });
@@ -1874,7 +1808,6 @@ mod tests {
             parents: vec![],
             kind: "maskable".into(),
             params,
-            subset: None,
             reply,
         });
         app.update();
@@ -1899,7 +1832,6 @@ mod tests {
             id: actor,
             params: clear("mask"),
             visible: None,
-            subset: None,
             parents: None,
             reply,
         });
@@ -1918,7 +1850,6 @@ mod tests {
             id: actor,
             params: clear("field"),
             visible: None,
-            subset: None,
             parents: None,
             reply,
         });
@@ -2084,7 +2015,6 @@ mod tests {
                 id: actor,
                 params: registry::ParamMap::default(),
                 visible: None,
-                subset: None,
                 parents: Some(parents),
                 reply,
             })
@@ -2134,7 +2064,7 @@ mod tests {
                 id: "first",
                 label: "first",
                 kind: filter::OutputKind::Array {
-                    dtype: Dtype::Uint8,
+                    dtype: Some(Dtype::Uint8),
                     shape: &[0],
                 },
             },
@@ -2142,7 +2072,7 @@ mod tests {
                 id: "second",
                 label: "second",
                 kind: filter::OutputKind::Array {
-                    dtype: Dtype::Uint8,
+                    dtype: Some(Dtype::Uint8),
                     shape: &[0],
                 },
             },
@@ -2155,7 +2085,7 @@ mod tests {
                 label: "passthrough",
                 params: PARAMS,
                 outputs: OUTPUTS,
-                run: |_| filter::Products::new(),
+                run: |_| filter::Products::new().into(),
             });
     }
 

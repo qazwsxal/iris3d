@@ -33,7 +33,7 @@ use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, text, vector};
 use crate::scene::DataArray;
 
-use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Request};
+use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
 
 /// Which ramp to read a value through.
 ///
@@ -84,6 +84,43 @@ impl ColorMap {
 /// whose `values` input means something else entirely.
 pub(crate) const MAPS: &[&str] = &["viridis", "cool-warm", "grayscale"];
 
+/// What the `colormap` **filter** offers, which is more than [`MAPS`].
+///
+/// The two lists differ on purpose. `MAPS` is what can be baked into a ramp
+/// texture and read at an arbitrary point along it, which is what
+/// [`volume`](crate::draw::default::volume) and [`contour`](super::contour) do —
+/// they sample per ray step and per vertex against a normalised position in the
+/// range.
+///
+/// The two below are not ramps at all. Both are lookups on a *value*, not on a
+/// position between two ends: a chain index of 3 is not "three fifths of the way
+/// along" anything, and normalising it would make the colours shift every time
+/// the number of chains changed. So they are available where colours are
+/// computed per element and absent where a ramp is what is wanted.
+const FILTER_MAPS: &[&str] = &["viridis", "cool-warm", "grayscale", "categorical", "element"];
+
+/// A repeating qualitative palette, for colouring by an integer that names a
+/// thing rather than measures one — chain, secondary structure, entity.
+///
+/// Okabe-Ito, which is designed to stay distinguishable under the common forms
+/// of colour blindness. Eight entries and it repeats; a structure with more than
+/// eight chains reuses colours, which is honest — no eight-colour palette can do
+/// otherwise, and the alternative of generating hues on the fly gives neighbours
+/// that cannot be told apart.
+///
+/// Stated in linear RGB, like everything an actor binds. These are the sRGB
+/// values converted once here rather than at every use.
+const CATEGORICAL: &[[f32; 3]] = &[
+    [0.000, 0.180, 0.351], // blue
+    [0.902, 0.371, 0.006], // orange
+    [0.000, 0.448, 0.288], // bluish green
+    [0.871, 0.665, 0.016], // yellow
+    [0.021, 0.246, 0.523], // dark blue
+    [0.665, 0.155, 0.043], // vermillion
+    [0.556, 0.170, 0.400], // reddish purple
+    [0.339, 0.610, 0.787], // sky blue
+];
+
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
         id: "values",
@@ -101,7 +138,7 @@ const PARAMS: &[ParamSpec] = &[
         id: "map",
         label: "colour map",
         kind: ParamKind::Choice {
-            options: MAPS,
+            options: FILTER_MAPS,
             default: "viridis",
         },
     },
@@ -130,7 +167,7 @@ const OUTPUTS: &[OutputSpec] = &[OutputSpec {
     id: "colour",
     label: "colour",
     kind: OutputKind::Array {
-        dtype: Dtype::Float32,
+        dtype: Some(Dtype::Float32),
         shape: &[0, 3],
     },
 }];
@@ -145,15 +182,44 @@ pub fn register(registry: &mut FilterRegistry) {
     });
 }
 
-fn run(request: &Request) -> Products {
+fn run(request: &Request) -> Outcome {
     let mut products = Products::new();
     let Some(values) = request.input("values") else {
-        return products;
+        return Outcome::refused("has nothing bound to \"values\"");
     };
 
-    let map = ColorMap::from_str(text(&request.params, "map", "viridis")).unwrap_or_default();
+    let chosen = text(&request.params, "map", "viridis");
     let range = vector(&request.params, "range", 2);
     let scalars = reduce(values);
+
+    // The two lookups-on-a-value, taken before the ramp path: neither has a
+    // range to normalise against. See `FILTER_MAPS`.
+    if chosen == "categorical" || chosen == "element" {
+        let mut bytes = Vec::with_capacity(scalars.len() * 3 * 4);
+        for value in &scalars {
+            // Rounded rather than truncated: these arrive as integers widened
+            // to f32, and 2.9999998 is a 3 that survived a conversion.
+            let key = value.round().max(0.0) as u32;
+            let rgb = match chosen {
+                "element" => {
+                    let rgba = crate::draw::elements::colour(key);
+                    [rgba[0], rgba[1], rgba[2]]
+                }
+                _ => CATEGORICAL[key as usize % CATEGORICAL.len()],
+            };
+            for channel in &rgb {
+                bytes.extend_from_slice(&channel.to_le_bytes());
+            }
+        }
+        let mut products = Products::new();
+        products.insert(
+            "colour",
+            DataArray::numeric(Dtype::Float32, vec![scalars.len() as u64, 3], bytes).into(),
+        );
+        return products.into();
+    }
+
+    let map = ColorMap::from_str(chosen).unwrap_or_default();
 
     // Equal ends mean "work it out". A constant field autoscales to a range of
     // zero width, which would divide by zero; it takes the bottom of the map
@@ -180,7 +246,7 @@ fn run(request: &Request) -> Products {
         "colour",
         DataArray::numeric(Dtype::Float32, vec![scalars.len() as u64, 3], bytes).into(),
     );
-    products
+    products.into()
 }
 
 /// One number per element.
@@ -303,11 +369,11 @@ mod tests {
         Request { params: map, inputs }
     }
 
-    fn produced(products: &Products) -> &DataArray {
-        products["colour"].array().expect("colour is an array")
+    fn produced(products: &Outcome) -> &DataArray {
+        products.products["colour"].array().expect("colour is an array")
     }
 
-    fn colours(products: &Products) -> Vec<[f32; 3]> {
+    fn colours(products: &Outcome) -> Vec<[f32; 3]> {
         produced(products)
             .to_f32()
             .chunks(3)
@@ -449,6 +515,6 @@ mod tests {
             params: ParamMap::new(),
             inputs: HashMap::new(),
         });
-        assert!(products.is_empty());
+        assert!(products.is_refusal());
     }
 }

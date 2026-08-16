@@ -433,15 +433,16 @@ impl DataArray {
 
 /// What a selection's indices are attached to.
 ///
-/// The distinction the raw arrays cannot express: identical bytes mean
-/// different things depending on whether each value belongs to a point or to a
-/// cell. The only thing still asking is a [`Subset`](super::Subset), which has
-/// to know whether it is keeping vertices or whole cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Association {
-    PerPoint,
-    PerCell,
-}
+// `Association` — PerPoint against PerCell — was declared here and read by
+// exactly one thing: an actor's inline `Subset`, which had to know whether it
+// was keeping vertices or whole cells. Subsetting is filters now, and each of
+// them answers the question by construction rather than by asking: `gather`
+// takes elements, `renumber` takes entries of a connectivity array.
+//
+// The distinction is real and will come back when a per-cell array can actually
+// be *drawn* — no actor kind reads one today. It is left out rather than kept
+// unused, so that when it returns it does so attached to something that needs
+// it.
 
 #[cfg(test)]
 mod tests {

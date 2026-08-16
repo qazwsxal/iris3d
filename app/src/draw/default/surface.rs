@@ -111,7 +111,7 @@ pub fn draw_surfaces(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, _subset, bound, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }

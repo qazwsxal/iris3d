@@ -247,7 +247,7 @@ def crop(
 
 
 def _to_wire(values: np.ndarray, floor: float | None) -> np.ndarray:
-    """A ``(z, y, x)`` stack as the wire wants it, optionally with noise cut.
+    """A ``(z, y, x)`` stack as ``(nx, ny, nz)``, optionally with noise cut.
 
     The axis reversal is :mod:`iris3d.scans`'s and is load-bearing in the same
     way: getting it wrong does not fail, it renders a convincing picture of a
@@ -268,7 +268,11 @@ def _to_wire(values: np.ndarray, floor: float | None) -> np.ndarray:
     peak = float(values.max())
     if peak > 0.0:
         values = values / peak
-    return np.ascontiguousarray(values.transpose(2, 1, 0)).ravel()
+    # Kept three-dimensional. A grid's shape is something the array already
+    # knows, so `volume` and `contour` both declare `[0, 0, 0]` and read it off
+    # the binding; ravelling it threw that away and left `dims` to state it
+    # separately, which is the parameter that could disagree with its own data.
+    return np.ascontiguousarray(values.transpose(2, 1, 0))
 
 
 def load_map(
@@ -281,9 +285,11 @@ def load_map(
 ) -> tuple[dict[str, np.ndarray], Grid]:
     """Reads a map file for upload, returning ``(arrays, grid)``.
 
-    Bind ``density`` to a volume actor's ``density``, and the grid's ``dims``,
-    ``origin`` and ``spacing`` to the matching inputs. Coordinates stay in
-    ångströms, so a structure uploaded from the same entry lands inside it.
+    Bind ``density`` to a volume actor's ``density``, and the grid's ``origin``
+    and ``spacing`` to the matching inputs. There is no ``dims`` to bind: the
+    array is ``(nx, ny, nz)`` and the grid's shape is read off it. Coordinates
+    stay in ångströms, so a structure uploaded from the same entry lands inside
+    it.
 
     `factor` averages blocks together; see :func:`downsample`. `sigma` sets the
     contour level as a multiple of the map's own standard deviation, which is

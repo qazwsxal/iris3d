@@ -55,9 +55,30 @@ pub fn controls(
     salt: impl Hash + Copy + std::fmt::Debug,
     offer: impl Fn(&ParamSpec) -> Option<&'static str>,
 ) -> Edits {
+    controls_where(ui, scene, specs, params, salt, offer, |_| true)
+}
+
+/// [`controls`], over the declared parameters `include` accepts.
+///
+/// Exists for the node canvas, which draws a kind's *settings* in the node body
+/// and its *inputs* as pins — the same declaration split across two places
+/// rather than shown twice. Panels take the whole set and so call [`controls`].
+///
+/// The predicate rather than a filtered slice: `specs` is `&'static`, so
+/// narrowing it would mean allocating a new one every frame to say something the
+/// caller already knows how to test.
+pub fn controls_where(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    specs: &'static [ParamSpec],
+    params: &ParamMap,
+    salt: impl Hash + Copy + std::fmt::Debug,
+    offer: impl Fn(&ParamSpec) -> Option<&'static str>,
+    include: impl Fn(&ParamSpec) -> bool,
+) -> Edits {
     let mut edits = Edits::default();
 
-    for spec in specs {
+    for spec in specs.iter().filter(|spec| include(spec)) {
         match spec.kind {
             ParamKind::Float {
                 default,
@@ -186,6 +207,21 @@ pub fn controls(
                 if ui.checkbox(&mut value, spec.label).changed() {
                     edits.set.push((spec.id, ParamValue::Bool(value)));
                 }
+            }
+            ParamKind::Text { default } => {
+                let mut value = text(params, spec.id, default).to_string();
+                ui.horizontal(|ui| {
+                    ui.label(spec.label);
+                    // On losing focus or pressing enter rather than per
+                    // keystroke: every edit is a `SetFilter` that marks the
+                    // filter stale, and re-running a match on each letter of
+                    // "HOH" would spend three runs to answer the first two
+                    // typos.
+                    let box_ = egui::TextEdit::singleline(&mut value).desired_width(120.0);
+                    if ui.add(box_).lost_focus() {
+                        edits.set.push((spec.id, ParamValue::Text(value.clone())));
+                    }
+                });
             }
         }
     }

@@ -27,9 +27,12 @@ use bevy::mesh::PrimitiveTopology;
 use crate::counter::{GlobalIDCounter, UniqueID};
 use crate::scene::data::{BufferMeta, GeometryMeta};
 use crate::scene::registry::{ParamMap, ParamSpec};
-use crate::scene::{DataArray, DataStore, SceneError};
+use crate::scene::{DataArray, DataStore, Dtype, SceneError};
 
-use super::{FilterKindId, FilterParams, FilterRegistry, Generation, OutputKind, OutputSpec, Outputs};
+use super::{
+    FilterKindId, FilterParams, FilterProblem, FilterRegistry, Generation, OutputKind, OutputSpec,
+    Outputs,
+};
 
 /// The mesh a geometry output starts as: **one degenerate triangle**, which
 /// draws nothing.
@@ -70,6 +73,7 @@ pub type FilterQuery<'w, 's> = Query<
         &'static FilterKindId,
         &'static mut FilterParams,
         &'static Outputs,
+        Option<&'static FilterProblem>,
     ),
     With<FilterKindId>,
 >;
@@ -97,6 +101,14 @@ pub struct FilterSummary {
     /// Where each declared output can be found, in declaration order so a
     /// listing is stable between calls. **This is what a caller binds.**
     pub outputs: Vec<(String, u64)>,
+    /// Why the last run did not do what was asked.
+    ///
+    /// `None` means the last run was fine — or, for a filter that has just been
+    /// created, that it has not run yet. The two are deliberately not
+    /// distinguished: a filter with no complaint and no output is a filter whose
+    /// answer has not arrived, and a client waiting on one polls the data rather
+    /// than this.
+    pub problem: Option<String>,
 }
 
 /// A way of deriving data, described for a client.
@@ -127,7 +139,7 @@ impl Graph {
             producer: HashMap::new(),
             reads: HashMap::new(),
         };
-        for (_, id, kind, params, outputs) in filters.iter() {
+        for (_, id, kind, params, outputs, _) in filters.iter() {
             for handle in outputs.0.values() {
                 graph.producer.insert(*handle, id.0);
             }
@@ -234,12 +246,17 @@ pub fn add(
                 // first run had happened — which is exactly the wait these
                 // handles exist to avoid.
                 let shape = shape.to_vec();
-                let asset = arrays.add(DataArray::numeric(dtype, shape.clone(), Vec::new()));
+                // A run-time dtype has to be *called* something until the run
+                // says otherwise. `Float32` is the placeholder, and it is only a
+                // placeholder: the array is empty, and `ParamKind::accepts`
+                // does not hold an empty array's dtype against it.
+                let declared = dtype.unwrap_or(Dtype::Float32);
+                let asset = arrays.add(DataArray::numeric(declared, shape.clone(), Vec::new()));
                 store.insert(
                     handle,
                     BufferMeta {
                         name: spec.id.to_string(),
-                        dtype,
+                        dtype: declared,
                         shape,
                     },
                     asset,
@@ -283,6 +300,10 @@ pub fn add(
         kind,
         params,
         outputs: listed,
+        // Just created or just reconfigured, so it has not run under these
+        // settings yet. Whatever it last complained of describes settings that
+        // no longer apply.
+        problem: None,
     })
 }
 
@@ -301,7 +322,7 @@ pub fn set(
         .map(|(entity, ..)| entity)
         .ok_or(SceneError::NoSuchFilter(id))?;
 
-    let (_, _, kind, current, outputs) = filters.get(entity).expect("just found");
+    let (_, _, kind, current, outputs, _) = filters.get(entity).expect("just found");
     let registered = registry
         .get(kind.0)
         .ok_or_else(|| SceneError::UnknownFilterKind {
@@ -346,7 +367,7 @@ pub fn set(
     let listed = listed_outputs(registered, outputs);
     graph.record_reads(registry, id, registered.id, &wanted);
 
-    let (_, _, _, mut current, _) = filters.get_mut(entity).expect("just found");
+    let (_, _, _, mut current, _, _) = filters.get_mut(entity).expect("just found");
     current.0 = wanted.clone();
 
     Ok(FilterSummary {
@@ -354,6 +375,10 @@ pub fn set(
         kind: registered.id.to_string(),
         params: wanted,
         outputs: listed,
+        // Just created or just reconfigured, so it has not run under these
+        // settings yet. Whatever it last complained of describes settings that
+        // no longer apply.
+        problem: None,
     })
 }
 
@@ -369,7 +394,7 @@ pub fn remove(
     filters: &FilterQuery,
     id: u64,
 ) -> bool {
-    let Some((entity, _, _, _, outputs)) = filters.iter().find(|(_, unique, ..)| unique.0 == id)
+    let Some((entity, _, _, _, outputs, _)) = filters.iter().find(|(_, unique, ..)| unique.0 == id)
     else {
         return false;
     };
@@ -386,13 +411,14 @@ pub fn remove(
 pub fn list(registry: &FilterRegistry, filters: &FilterQuery) -> Vec<FilterSummary> {
     let mut summaries: Vec<FilterSummary> = filters
         .iter()
-        .filter_map(|(_, id, kind, params, outputs)| {
+        .filter_map(|(_, id, kind, params, outputs, problem)| {
             let registered = registry.get(kind.0)?;
             Some(FilterSummary {
                 id: id.0,
                 kind: kind.0.to_string(),
                 params: params.0.clone(),
                 outputs: listed_outputs(registered, outputs),
+                problem: problem.map(|problem| problem.0.clone()),
             })
         })
         .collect();

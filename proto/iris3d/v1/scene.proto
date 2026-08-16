@@ -19,10 +19,10 @@ package iris3d.v1;
 // An **actor** is one way of drawing something, a thing in its own right with
 // its own handle. It is a child of the object it appears under, and it binds the
 // arrays it reads to the inputs its kind declares. Showing one array in two
-// places is two actors binding it under two parents. A **subset** narrows an
-// actor to part of what it binds, which is what makes several worth having —
-// one structure drawn as cartoon over its protein and as sticks over its
-// ligand.
+// places is two actors binding it under two parents. Drawing *part* of
+// something — chain A as cartoon and the ligand as sticks — is two actors bound
+// to arrays that a **filter** narrowed first; an actor draws what it is handed
+// and chooses nothing.
 //
 // Data is described in the style of a numpy array — a raw little-endian byte
 // buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -305,9 +305,8 @@ message BufferSpec {
   // it afterwards.
   //
   // Never echoed back. A BufferSpec returned by UploadData or ListData leaves
-  // this empty, for the reason SubsetInfo leaves a selection's values empty: a
-  // description of an array is not the array, the client is the side that sent
-  // the text, and `shape` already says how much of it there is.
+  // this empty: a description of an array is not the array, the client is the
+  // side that sent the text, and `shape` already says how much of it there is.
   repeated string values = 5;
 }
 
@@ -537,7 +536,21 @@ message ParamSpec {
     ArrayParam array = 7;
     VectorParam vector = 8;
     GeometryParam geometry = 9;
+    TextParam text = 10;
   }
+}
+
+// TextParam is free text, where no fixed set of options exists.
+//
+// Distinct from ChoiceParam, which is text out of a list the kind knows in
+// advance. This is for a value only the data can supply — the `match` filter's
+// residue names are the case that needed it, since which names a structure
+// contains is not knowable when the filter is declared.
+//
+// Nothing parses the string. What it means is the receiving kind's business,
+// and a kind that wants a grammar wants a graph instead.
+message TextParam {
+  string default_value = 1;
 }
 
 // VectorValue carries a fixed-length vector of numbers.
@@ -619,56 +632,23 @@ message GeometryParam {
 // the `colormap` kind — and set the flat colour through the `tint` parameter.
 // The field numbers that used them stay reserved where they were.
 
-// Subset restricts an actor to part of what it binds.
+// Subsetting is a filter, not a message here. `Subset` and `SubsetInfo` carried
+// a selection inline on an actor, and three kinds narrowed their own arrays with
+// it while drawing.
 //
-// This is what several actors under one object are for: chain A as cartoon and
-// the ligand as ball-and-stick is one structure drawn twice over different
-// parts of it.
+// That made an actor decide *what* to draw. An actor is a dumb consumer of
+// arrays — it draws what it is handed — and choosing which elements to hand it
+// is a question about data, which belongs to a filter. Carried inline it was
+// also not a handle, so it appeared nowhere in the graph, could not be shared
+// between two actors, and could not be computed from the data it selected over.
 //
-// The selection is carried inline rather than as a bound array. It could be one
-// now — UploadData would take it — but it is a property of this actor rather
-// than data anyone else would bind, and selections are small: a mask over 250k
-// points is 250 KB.
+// Build a selection instead: `compare`, `logic` and `match` make a mask,
+// `subset` turns the mask into indices, and `gather` / `renumber` / `reindex`
+// narrow the arrays before the actor binds them. See AddFilter and
+// ListFilterKinds. There is still no selection language — the graph is the
+// grammar.
 //
-// There is no selection language. iris3d's position throughout is that clients
-// parse their own formats and push arrays, and a client already holds the
-// residue and chain structure needed to express "chain A" far more naturally
-// than a grammar invented here would.
-//
-// A selection that does not fit the data — the wrong length for a mask, or
-// nothing left after dropping out-of-range indices — draws everything and logs
-// a warning rather than drawing nothing, which would be indistinguishable from
-// a broken renderer.
-message Subset {
-  enum Encoding {
-    ENCODING_UNSPECIFIED = 0;
-
-    // `data` is element indices, in any order. Out-of-range entries are
-    // dropped.
-    ENCODING_INDICES = 1;
-
-    // `data` is one value per element, non-zero to keep. Must have exactly as
-    // many entries as there are elements.
-    ENCODING_MASK = 2;
-  }
-
-  // What the values index into. Points and atoms, or cells and bonds.
-  enum Association {
-    ASSOCIATION_UNSPECIFIED = 0;
-    ASSOCIATION_PER_POINT = 1;
-    ASSOCIATION_PER_CELL = 2;
-  }
-
-  // Raw little-endian values, packed as for BufferSpec.
-  bytes data = 1;
-
-  Dtype dtype = 2;
-
-  Encoding encoding = 3;
-
-  // Defaults to per-point when unspecified.
-  Association association = 4;
-}
+// The field numbers that carried them stay reserved where they were.
 
 // ActorInfo describes one way something is being drawn.
 message ActorInfo {
@@ -702,12 +682,10 @@ message ActorInfo {
   // goes back to once it has an object again.
   bool visible = 7;
 
-  // How much of the bound data is drawn. Absent means all of it.
-  //
-  // The selection values themselves are not echoed back — they can be large and
-  // the client sent them — so `data` is empty here and only the encoding,
-  // dtype and element count are reported.
-  optional SubsetInfo subset = 8;
+  // Field 8 was `subset`. An actor no longer narrows what it draws; the arrays
+  // bound to it are narrowed before they get here. See the note above Subset.
+  reserved 8;
+  reserved "subset";
 
   // Every object this actor is drawn under, in handle order.
   //
@@ -720,15 +698,6 @@ message ActorInfo {
   // leaves it. The actor is untouched and still has its arrays and settings;
   // give it a parent to put it back on screen.
   repeated ObjectHandle parents = 9;
-}
-
-// SubsetInfo describes an actor's selection without returning it.
-message SubsetInfo {
-  Subset.Encoding encoding = 1;
-  Subset.Association association = 2;
-
-  // Number of elements the selection keeps.
-  uint64 selected = 3;
 }
 
 // ActorKindInfo describes a way of drawing that this build supports.
@@ -773,8 +742,9 @@ message AddActorRequest {
   // Field 5 was `color`. See ActorInfo.
   reserved 5;
 
-  // Absent draws the whole dataset.
-  optional Subset subset = 6;
+  // Field 6 was `subset`. Narrow the arrays with filters and bind the result;
+  // see the note above ActorInfo.
+  reserved 6;
 
   // The objects to draw under: whose transforms it inherits, and where it sits.
   //
@@ -804,13 +774,10 @@ message SetActorRequest {
   // Hide or show this actor alone, without touching its object.
   optional bool visible = 4;
 
-  // Absent leaves the selection alone; present replaces it.
-  optional Subset subset = 5;
-
-  // Go back to drawing the whole dataset. Needed as its own field because an
-  // absent `subset` already means "leave it alone", so there is otherwise no
-  // way to say "clear it".
-  bool clear_subset = 6;
+  // Fields 5 and 6 were `subset` and `clear_subset`. Rebind the inputs to
+  // narrower arrays instead; see the note above ActorInfo.
+  reserved 5, 6;
+  reserved "subset", "clear_subset";
 
   // Replace the set of objects this actor is drawn under.
   //
@@ -879,6 +846,19 @@ message FilterInfo {
   // replacing them, so a binding made once stays valid however many times the
   // filter re-runs.
   repeated FilterOutput outputs = 4;
+
+  // Why the last run did not do what was asked, if it did not.
+  //
+  // Absent means the last run was fine. This is a *run-time* failure and is
+  // therefore not an RPC error: AddFilter and SetFilter already refuse a
+  // binding that cannot work, but a filter whose bindings are all valid can
+  // still be handed data it cannot use — indices past the end of an array, a
+  // level that crosses nothing, a grid too large to walk.
+  //
+  // Without this such a run is indistinguishable from one that has not
+  // happened yet: the output handles stay valid and keep whatever they last
+  // held, so a client sees stale data with nothing to say it is stale.
+  optional string problem = 5;
 }
 
 message FilterOutput {
@@ -918,6 +898,10 @@ message OutputSpec {
 
 // ArrayOutput is an array of numbers, described the way an uploaded one is.
 message ArrayOutput {
+  // DTYPE_UNSPECIFIED means the run decides — the same escape hatch `0` is in
+  // `shape`, one level across. A filter that hands back elements of whatever it
+  // was given cannot state their type in advance any more than it can state how
+  // many there will be.
   Dtype dtype = 1;
 
   // Shape, where 0 is an axis decided at run time: [0, 3] is three components

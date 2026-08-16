@@ -8,7 +8,6 @@
 
 use bevy_egui::egui;
 
-use crate::scene::Subset;
 use crate::scene::registry::ParamKind;
 
 use super::gather::{ActorRow, Gathered, Row};
@@ -94,9 +93,6 @@ fn entry(
         // Worth saying outright: two identical-looking rows over one object are
         // otherwise indistinguishable when what differs is which part of the
         // data each draws.
-        if matches!(actor.subset, Subset::Selected { .. }) {
-            ui.label(egui::RichText::new("subset").weak());
-        }
     });
 }
 
@@ -198,9 +194,6 @@ fn controls(
         ui.weak(format!("drawn under {} objects", current.places));
     }
     ui.horizontal(|ui| {
-        if matches!(current.subset, Subset::Selected { .. }) {
-            ui.label(egui::RichText::new("subset").weak());
-        }
         if ui.small_button("remove").clicked() {
             actions.0.push(UiAction::RemoveActor(current.entity));
         }

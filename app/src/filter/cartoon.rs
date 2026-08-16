@@ -63,7 +63,7 @@ use crate::scene::DataArray;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, flag, float};
 
-use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Request};
+use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -231,7 +231,7 @@ const OUTPUTS: &[OutputSpec] = &[
         id: "positions",
         label: "positions",
         kind: OutputKind::Array {
-            dtype: Dtype::Float32,
+            dtype: Some(Dtype::Float32),
             shape: &[0, 3],
         },
     },
@@ -239,7 +239,7 @@ const OUTPUTS: &[OutputSpec] = &[
         id: "indices",
         label: "triangles",
         kind: OutputKind::Array {
-            dtype: Dtype::Uint32,
+            dtype: Some(Dtype::Uint32),
             shape: &[0, 3],
         },
     },
@@ -247,7 +247,7 @@ const OUTPUTS: &[OutputSpec] = &[
         id: "normals",
         label: "normals",
         kind: OutputKind::Array {
-            dtype: Dtype::Float32,
+            dtype: Some(Dtype::Float32),
             shape: &[0, 3],
         },
     },
@@ -262,7 +262,7 @@ const OUTPUTS: &[OutputSpec] = &[
         id: "residue_index",
         label: "residue per vertex",
         kind: OutputKind::Array {
-            dtype: Dtype::Uint32,
+            dtype: Some(Dtype::Uint32),
             shape: &[0],
         },
     },
@@ -278,10 +278,13 @@ pub fn register(registry: &mut FilterRegistry) {
     });
 }
 
-fn run(request: &Request) -> Products {
+fn run(request: &Request) -> Outcome {
     let mut products = Products::new();
     let Some(input) = read(request) else {
-        return products;
+        return Outcome::refused(
+            "could not read its atoms: one of positions, residue_index, \
+             atom_name_index or atom_name is unbound or the wrong length",
+        );
     };
 
     let style = Style {
@@ -299,8 +302,13 @@ fn run(request: &Request) -> Products {
     if ribbon.is_empty() {
         // No backbone to follow. Producing nothing leaves whatever was there
         // before, which is right: an input that says nothing teaches nothing.
-        debug!("filter: a cartoon had no backbone to follow");
-        return products;
+        // Worth *saying*, though — a ribbon that draws nothing for a ligand-only
+        // selection is correct, and a ribbon that draws nothing because the
+        // atom names were bound to the wrong array is not, and they look
+        // identical on screen.
+        return Outcome::refused(
+            "found no protein or nucleic backbone in the atoms it was given",
+        );
     }
 
     let vertices = ribbon.positions.len() as u64;
@@ -330,7 +338,7 @@ fn run(request: &Request) -> Products {
         )
         .into(),
     );
-    products
+    products.into()
 }
 
 /// Triples of `f32` as little-endian bytes, which is what the wire format is.

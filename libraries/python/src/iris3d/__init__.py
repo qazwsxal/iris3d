@@ -18,7 +18,6 @@ from .client import (
     ObjectSummary,
     OutputInfo,
     ParamInfo,
-    SubsetSummary,
     from_proto_dtype,
     to_proto_dtype,
 )
@@ -47,7 +46,6 @@ __all__ = [
     "OutputInfo",
     "ParamInfo",
     "SceneServiceStub",
-    "SubsetSummary",
     "from_proto_dtype",
     "molecules",
     "testdata",

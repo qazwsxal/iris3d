@@ -23,10 +23,10 @@ class SceneServiceStub(object):
     An **actor** is one way of drawing something, a thing in its own right with
     its own handle. It is a child of the object it appears under, and it binds the
     arrays it reads to the inputs its kind declares. Showing one array in two
-    places is two actors binding it under two parents. A **subset** narrows an
-    actor to part of what it binds, which is what makes several worth having —
-    one structure drawn as cartoon over its protein and as sticks over its
-    ligand.
+    places is two actors binding it under two parents. Drawing *part* of
+    something — chain A as cartoon and the ligand as sticks — is two actors bound
+    to arrays that a **filter** narrowed first; an actor draws what it is handed
+    and chooses nothing.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -187,10 +187,10 @@ class SceneServiceServicer(object):
     An **actor** is one way of drawing something, a thing in its own right with
     its own handle. It is a child of the object it appears under, and it binds the
     arrays it reads to the inputs its kind declares. Showing one array in two
-    places is two actors binding it under two parents. A **subset** narrows an
-    actor to part of what it binds, which is what makes several worth having —
-    one structure drawn as cartoon over its protein and as sticks over its
-    ligand.
+    places is two actors binding it under two parents. Drawing *part* of
+    something — chain A as cartoon and the ligand as sticks — is two actors bound
+    to arrays that a **filter** narrowed first; an actor draws what it is handed
+    and chooses nothing.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.
@@ -557,10 +557,10 @@ class SceneService(object):
     An **actor** is one way of drawing something, a thing in its own right with
     its own handle. It is a child of the object it appears under, and it binds the
     arrays it reads to the inputs its kind declares. Showing one array in two
-    places is two actors binding it under two parents. A **subset** narrows an
-    actor to part of what it binds, which is what makes several worth having —
-    one structure drawn as cartoon over its protein and as sticks over its
-    ligand.
+    places is two actors binding it under two parents. Drawing *part* of
+    something — chain A as cartoon and the ligand as sticks — is two actors bound
+    to arrays that a **filter** narrowed first; an actor draws what it is handed
+    and chooses nothing.
 
     Data is described in the style of a numpy array — a raw little-endian byte
     buffer plus a dtype and a shape — rather than as `repeated` scalar fields.

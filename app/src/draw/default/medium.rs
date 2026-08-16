@@ -263,7 +263,7 @@ pub fn draw_media(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, _subset, bindings, dirty), mesh3d, _volume) in &dirty {
+    for ((entity, style, bindings, dirty), mesh3d, _volume) in &dirty {
         if !dirty.any() {
             continue;
         }

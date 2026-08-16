@@ -68,6 +68,9 @@ pub(crate) mod cartoon;
 pub(crate) mod colormap;
 pub(crate) mod contour;
 pub(crate) mod geometry;
+pub(crate) mod index;
+pub(crate) mod maths;
+pub(crate) mod select;
 mod wire;
 
 pub use wire::{FilterKindSummary, FilterSummary, Filters, Graph};
@@ -94,7 +97,19 @@ pub struct OutputSpec {
 #[derive(Debug, Clone, Copy)]
 pub enum OutputKind {
     Array {
-        dtype: Dtype,
+        /// Element type, or `None` when the run decides it.
+        ///
+        /// `None` is the same escape hatch `0` already is in `shape`, one level
+        /// across: some filters cannot know their output's *type* in advance any
+        /// more than they can know its length. `gather` is the case that forced
+        /// it — it hands back elements of whatever it was given, and an
+        /// `elements` array gathered into `ball-and-stick` has to still be
+        /// `Uint8` or the binding is refused.
+        ///
+        /// Declaring a concrete type where one is known is still worth doing: it
+        /// is what lets an output be bound *before* the first run, which is the
+        /// whole reason handles are minted at creation.
+        dtype: Option<Dtype>,
         /// Shape, where `0` is an axis decided at run time — `[0, 3]` for a
         /// colour per element. A contour's vertex count is not knowable before
         /// it runs, so this describes the *form* of the output and never its
@@ -185,6 +200,67 @@ impl From<Mesh> for Product {
 /// learned, so nothing changes.
 pub type Products = HashMap<&'static str, Product>;
 
+/// What a run produced, and what went wrong if something did.
+///
+/// A run used to return [`Products`] alone, so the only way to report failure
+/// was to return none — and "produced nothing" is not one fact but several.
+/// A `cartoon` with no backbone, a `gather` handed indices past the end of its
+/// values, and a `contour` whose level sits outside the field all looked
+/// identical from outside: an output that quietly kept its previous contents.
+///
+/// That was survivable while every filter was hand-tuned and had one caller.
+/// It stops being survivable with arithmetic in the graph, where a length
+/// mismatch between two arrays is the *routine* mistake and the user needs to be
+/// told which two lengths rather than left to guess why a wire went dead.
+///
+/// A problem does **not** mean nothing was produced, and products do not mean
+/// there was no problem: a filter may emit what it can and still say that an
+/// input it wanted was unusable.
+#[derive(Default)]
+pub struct Outcome {
+    pub products: Products,
+    /// One sentence, addressed to whoever wired this up. `None` is success.
+    pub problem: Option<String>,
+}
+
+impl Outcome {
+    /// A run that produced nothing, for the stated reason.
+    pub fn refused(why: impl Into<String>) -> Self {
+        Self {
+            products: Products::new(),
+            problem: Some(why.into()),
+        }
+    }
+
+    /// Products, plus a reason they are not the whole story.
+    pub fn but(mut self, why: impl Into<String>) -> Self {
+        self.problem = Some(why.into());
+        self
+    }
+
+    /// Produced nothing, **and said why**.
+    ///
+    /// The conjunction is the point, and it is what a test should assert rather
+    /// than emptiness alone. A run that produces nothing without a reason is the
+    /// silent failure this type exists to abolish, so it must not satisfy the
+    /// same assertion as a run that refused properly.
+    #[cfg(test)]
+    pub fn is_refusal(&self) -> bool {
+        self.products.is_empty() && self.problem.is_some()
+    }
+}
+
+/// So a filter that cannot fail — or has not yet been taught to say why — reads
+/// as `products.into()` rather than naming a field.
+impl From<Products> for Outcome {
+    fn from(products: Products) -> Self {
+        Self {
+            products,
+            problem: None,
+        }
+    }
+}
+
 /// A way of deriving data, as declared by whatever implements it.
 ///
 /// The shape deliberately mirrors
@@ -200,7 +276,7 @@ pub struct FilterKind {
     pub outputs: &'static [OutputSpec],
     /// Does the work. Runs on a worker thread, so it may take as long as it
     /// needs and must not touch the world.
-    pub run: fn(&Request) -> Products,
+    pub run: fn(&Request) -> Outcome,
 }
 
 impl FilterKind {
@@ -302,9 +378,22 @@ pub struct Generation(pub u64);
 /// A run in flight.
 #[derive(Component)]
 pub struct Running {
-    task: Task<Products>,
+    task: Task<Outcome>,
     started_at: Generation,
 }
+
+/// Why this filter's last run did not do what was asked.
+///
+/// **Present means broken.** A marker carrying its reason, in the style of
+/// [`Stale`] and [`Running`], rather than a status field that has to spell
+/// "fine" — the healthy case is the absence of the component and costs nothing
+/// to store or to check.
+///
+/// Removed on the first run that succeeds, so it never outlives the fault. It
+/// survives a *discarded* run, though: a result thrown away for being stale
+/// says nothing about whether the previous complaint still stands.
+#[derive(Component, Debug, Clone)]
+pub struct FilterProblem(pub String);
 
 /// A filter whose settings or bindings moved this tick.
 ///
@@ -345,6 +434,9 @@ impl Plugin for FilterPlugin {
             colormap::register(&mut registry);
             contour::register(&mut registry);
             geometry::register(&mut registry);
+            index::register(&mut registry);
+            maths::register(&mut registry);
+            select::register(&mut registry);
         }
 
         app.configure_sets(
@@ -503,19 +595,32 @@ fn collect(
     mut running: Query<(Entity, &mut Running, &Generation, &Outputs, &FilterKindId)>,
 ) {
     for (entity, mut run, generation, outputs, kind) in &mut running {
-        let Some(products) = block_on(future::poll_once(&mut run.task)) else {
+        let Some(outcome) = block_on(future::poll_once(&mut run.task)) else {
             continue;
         };
         commands.entity(entity).remove::<Running>();
 
         // Stale before it finished. Marking it again would be wrong — it is
         // already marked, which is why the generation moved — so this only
-        // drops the answer.
+        // drops the answer. The previous problem, if any, is left standing:
+        // a discarded run learned nothing either way.
         if run.started_at != *generation {
             continue;
         }
 
-        for (output, produced) in products {
+        // Said before the products are written, so a filter that produced
+        // something *and* complained keeps both.
+        match &outcome.problem {
+            Some(why) => {
+                warn!("filter: {} {why}", kind.0);
+                commands.entity(entity).insert(FilterProblem(why.clone()));
+            }
+            None => {
+                commands.entity(entity).remove::<FilterProblem>();
+            }
+        }
+
+        for (output, produced) in outcome.products {
             let Some(handle) = outputs.get(output) else {
                 warn!("filter: {} produced undeclared output \"{output}\"", kind.0);
                 continue;

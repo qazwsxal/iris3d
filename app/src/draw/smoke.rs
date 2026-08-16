@@ -41,7 +41,7 @@ use crate::scene::link::{Parents, Shown};
 use crate::scene::registry::{
     ActorKindId, ActorParams, ActorRegistry, ParamKind, ParamSpec, ParamValue,
 };
-use crate::scene::{DataArray, DataStore, SceneObject, Subset};
+use crate::scene::{DataArray, DataStore, SceneObject};
 
 use super::{BACKEND, DrawPlugin};
 
@@ -219,7 +219,6 @@ fn spawn(app: &mut App, kind: &'static str) -> Entity {
         .spawn((
             ActorKindId(kind),
             ActorParams(params),
-            Subset::All,
             Parents(vec![object]),
             Shown(true),
             Visibility::Hidden,
@@ -328,7 +327,6 @@ fn two_kinds_over_one_geometry_share_the_mesh() {
                 .spawn((
                     ActorKindId(kind),
                     ActorParams(params),
-                    Subset::All,
                     Parents(vec![object]),
                     Shown(true),
                     Visibility::Hidden,

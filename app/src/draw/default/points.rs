@@ -162,7 +162,7 @@ pub fn draw_points(
     store: Res<DataStore>,
     dirty: Query<Drawable>,
 ) {
-    for ((entity, style, subset, bound, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, bound, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
@@ -182,24 +182,12 @@ pub fn draw_points(
         if all.is_empty() {
             continue;
         }
-        // Points have no connectivity, so a subset is a plain filter — nothing
-        // refers to a point by index, so nothing needs renumbering.
-        let kept = subset.selected(all.len(), &arrays);
-        let centres: Vec<Vec3> = match &kept {
-            Some(kept) => kept.iter().map(|index| all[*index as usize]).collect(),
-            None => all,
-        };
+        let centres = all;
         let count = centres.len();
 
         if dirty.geometry || dirty.colour {
             let bound_rgb = super::bound(bound, "colour", &store, &arrays)
-                .and_then(|values| crate::draw::bound_colours(values, array.count() as usize))
-                // Read over the whole field, then narrowed to the drawn points,
-                // so a subset does not shift which colour lands on which point.
-                .map(|colours| match &kept {
-                    Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
-                    None => colours,
-                });
+                .and_then(|values| crate::draw::bound_colours(values, array.count() as usize));
             let flat = style.tint.extend(1.0).to_array();
             let colours = quad_colours(count, bound_rgb.as_ref(), flat);
 
@@ -344,7 +332,7 @@ mod tests {
     use super::*;
     use crate::scene::data::{BufferMeta, Dtype};
     use crate::scene::registry::Bindings;
-    use crate::scene::{ActorKindId, SceneObject, Subset};
+    use crate::scene::{ActorKindId, SceneObject};
     use bevy::platform::collections::HashMap;
 
     /// Runs the invalidation chain and this kind, with no renderer behind it:
@@ -411,7 +399,6 @@ mod tests {
                     size: 0.05,
                     tint: Vec3::splat(0.8),
                 },
-                Subset::All,
                 Bindings(HashMap::from_iter([("positions", 0)])),
             ))
             .id();
@@ -499,25 +486,42 @@ mod tests {
         );
     }
 
-    /// A subset reaches the vertex buffer, and changing it rebuilds rather than
-    /// repaints — the vertex count moves, so a repaint would be wrong.
+    /// Fewer points in means fewer quads out, and the assets are reused rather
+    /// than reallocated.
+    ///
+    /// This was `a_subset_draws_fewer_points`, when an actor narrowed its own
+    /// data. It narrows nothing now — a `gather` upstream does — so what it
+    /// draws is simply what it is bound to, and rebinding is the operation that
+    /// used to be "changing the subset".
     #[test]
-    fn a_subset_draws_fewer_points() {
+    fn rebinding_fewer_positions_draws_fewer_points() {
         let (mut app, _, actor) = app();
-        let indices = app
+        let narrowed = app
             .world_mut()
             .resource_mut::<Assets<DataArray>>()
             .add(DataArray::numeric(
-                Dtype::Uint32,
-                vec![2],
-                [0u32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                Dtype::Float32,
+                vec![2, 3],
+                [0.0f32, 0.0, 0.0, 2.0, 0.0, 0.0]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
             ));
-
-        *app.world_mut().get_mut::<Subset>(actor).unwrap() = Subset::Selected {
-            array: indices,
-            encoding: crate::scene::SubsetEncoding::Indices,
-            association: crate::scene::data::Association::PerPoint,
-        };
+        let handle = 77u64;
+        app.world_mut().resource_mut::<DataStore>().insert(
+            handle,
+            crate::scene::BufferMeta {
+                name: "positions".into(),
+                dtype: Dtype::Float32,
+                shape: vec![2, 3],
+            },
+            narrowed,
+        );
+        app.world_mut()
+            .get_mut::<Bindings>(actor)
+            .unwrap()
+            .0
+            .insert("positions", handle);
         app.update();
 
         assert_eq!(
@@ -526,7 +530,7 @@ mod tests {
                 .get(mesh_of(&app, actor))
                 .map(|mesh| mesh.count_vertices()),
             Some(8),
-            "two of four points, four vertices each"
+            "two points, four vertices each"
         );
         assert_eq!(counts(&app), (1, 1), "still reusing the same assets");
     }

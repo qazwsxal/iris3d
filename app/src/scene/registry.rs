@@ -195,6 +195,19 @@ pub enum ParamKind {
     Bool {
         default: bool,
     },
+    /// Free text, where no fixed set of options exists.
+    ///
+    /// Distinct from [`Choice`](ParamKind::Choice), which is text out of a list
+    /// the kind knows in advance. This is for a value only the data can supply —
+    /// `match`'s residue names are the case that needed it, since the names in a
+    /// structure are not knowable when the filter is declared.
+    ///
+    /// Deliberately *not* an expression: what a kind does with the string is its
+    /// own business, and nothing here parses one. A kind that finds itself
+    /// wanting a grammar wants a graph instead.
+    Text {
+        default: &'static str,
+    },
     /// One option out of a fixed set, such as a rendering mode.
     Choice {
         options: &'static [&'static str],
@@ -301,6 +314,7 @@ impl ParamKind {
             ParamKind::Float { default, .. } => Some(ParamValue::Float(default)),
             ParamKind::Bool { default } => Some(ParamValue::Bool(default)),
             ParamKind::Choice { default, .. } => Some(ParamValue::Text(default.to_string())),
+            ParamKind::Text { default } => Some(ParamValue::Text(default.to_string())),
             ParamKind::Vector { default, .. } => Some(ParamValue::Vector(default.to_vec())),
             ParamKind::Array { .. } | ParamKind::Geometry { .. } => None,
         }
@@ -334,7 +348,26 @@ impl ParamKind {
         let ParamKind::Array { dtypes, shape, .. } = self else {
             unreachable!("matched an array parameter above");
         };
-        if !dtypes.is_empty() && !dtypes.contains(&meta.dtype) {
+        // An array with no elements has no element type to disagree about, so
+        // its declared one is not evidence of anything.
+        //
+        // This exists for the outputs that cannot state a type in advance —
+        // `gather` hands back whatever it was given, so what it will be is not
+        // known until it has run once. Every filter output is allocated empty at
+        // creation precisely so it can be bound before the first run; refusing
+        // one here on a placeholder dtype would take that back for exactly the
+        // filters that need it most.
+        //
+        // The dtype is still checked on anything that holds data, which is every
+        // upload and every output of a filter that has run. What it does not do
+        // is re-check *after* a run — a binding is validated once, and a run may
+        // rewrite the array's dtype. That was already true before this.
+        // Rank zero counts as empty too. An output that cannot state its shape
+        // in advance declares `[]`, which is "not stated" rather than "no
+        // axes" — the same thing `None` says about a dtype. Testing only for a
+        // zero *axis* missed it, because `[]` has no axes to test.
+        let empty = meta.shape.is_empty() || meta.shape.iter().any(|axis| *axis == 0);
+        if !empty && !dtypes.is_empty() && !dtypes.contains(&meta.dtype) {
             return Err(format!(
                 "is {} but this input takes {}",
                 meta.dtype,
@@ -345,7 +378,11 @@ impl ParamKind {
                     .join(" or ")
             ));
         }
-        if shape.is_empty() {
+        // `shape.is_empty()` here is the *input* declaring it takes any shape.
+        // `empty` is the *held array* having nothing in it to judge — a filter
+        // output before its first run — and it passes for the same reason the
+        // dtype check above lets it through.
+        if shape.is_empty() || empty {
             return Ok(());
         }
         let fits = shape.len() == meta.shape.len()
@@ -377,6 +414,9 @@ impl ParamKind {
             (ParamKind::Choice { options, .. }, ParamValue::Text(value)) => options
                 .contains(&value.as_str())
                 .then_some(ParamValue::Text(value)),
+            // Nothing to validate: the kind reading it decides what it means,
+            // and an empty string is a legitimate "not set yet".
+            (ParamKind::Text { .. }, ParamValue::Text(value)) => Some(ParamValue::Text(value)),
             // Wrong length is rejected rather than padded or truncated: a
             // two-component origin is a caller mistake, and guessing the third
             // would place the data somewhere nobody asked for.

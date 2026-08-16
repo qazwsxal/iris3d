@@ -32,15 +32,15 @@ const DOUBLED: &[OutputSpec] = &[OutputSpec {
     id: "doubled",
     label: "doubled",
     kind: super::OutputKind::Array {
-        dtype: Dtype::Float32,
+        dtype: Some(Dtype::Float32),
         shape: &[0],
     },
 }];
 
-fn double(request: &Request) -> Products {
+fn double(request: &Request) -> Outcome {
     let mut products = Products::new();
     let Some(values) = request.input("values") else {
-        return products;
+        return Outcome::refused("has nothing bound to \"values\"");
     };
     let bytes: Vec<u8> = values
         .to_f32()
@@ -51,7 +51,29 @@ fn double(request: &Request) -> Products {
         "doubled",
         DataArray::numeric(Dtype::Float32, values.shape.clone(), bytes).into(),
     );
-    products
+    products.into()
+}
+
+/// A filter that refuses an empty array and doubles anything else.
+///
+/// The point is that it can be made to fail and then to recover by rewriting
+/// what it is bound to, which is what a test of [`FilterProblem`] needs: the
+/// component has to appear *and* go away again.
+fn strict(request: &Request) -> Outcome {
+    let Some(values) = request.input("values") else {
+        return Outcome::refused("has nothing bound to \"values\"");
+    };
+    let values = values.to_f32();
+    if values.is_empty() {
+        return Outcome::refused("was given an empty array");
+    }
+    let mut products = Products::new();
+    let bytes: Vec<u8> = values.iter().flat_map(|v| (v * 2.0).to_le_bytes()).collect();
+    products.insert(
+        "doubled",
+        DataArray::numeric(Dtype::Float32, vec![values.len() as u64], bytes).into(),
+    );
+    products.into()
 }
 
 fn app() -> App {
@@ -74,7 +96,24 @@ fn app() -> App {
             outputs: DOUBLED,
             run: double,
         });
+    app.world_mut()
+        .resource_mut::<FilterRegistry>()
+        .register(FilterKind {
+            id: "strict",
+            label: "strict",
+            params: DOUBLE,
+            outputs: DOUBLED,
+            run: strict,
+        });
     app
+}
+
+/// What this filter is complaining of, if anything.
+fn problem(app: &App, filter: Entity) -> Option<String> {
+    app.world()
+        .entity(filter)
+        .get::<FilterProblem>()
+        .map(|problem| problem.0.clone())
 }
 
 /// Puts an array in the store under `id`, as an upload would.
@@ -311,6 +350,92 @@ fn a_run_that_went_stale_is_discarded() {
         vec![10.0],
         "the answer for the inputs it ended with, not the ones it began with"
     );
+}
+
+/// A run that fails says so, and says it where the interface and a client can
+/// both read it.
+///
+/// Before this, the only way to report failure was to produce nothing — and
+/// producing nothing leaves the previous contents standing, so a broken filter
+/// and a filter that had not run yet were the same thing from outside.
+#[test]
+fn a_failed_run_reports_why() {
+    let mut app = app();
+    upload(&mut app, 0, &[]);
+    let filter = spawn(&mut app, "strict", 100, 0);
+
+    settle(&mut app);
+
+    assert_eq!(
+        problem(&app, filter).as_deref(),
+        Some("was given an empty array"),
+    );
+}
+
+/// And stops saying so once it works.
+///
+/// The half that is easy to leave out, and the half that matters more: a
+/// complaint that outlives its cause sends someone hunting a fault that has
+/// already been fixed.
+#[test]
+fn a_problem_clears_when_the_next_run_succeeds() {
+    let mut app = app();
+    upload(&mut app, 0, &[]);
+    let filter = spawn(&mut app, "strict", 100, 0);
+    settle(&mut app);
+    assert!(problem(&app, filter).is_some(), "should have refused");
+
+    // Rewrite the bound array to something usable. The `AssetEvent::Modified`
+    // this raises is what marks the filter stale again.
+    let source = app
+        .world()
+        .resource::<DataStore>()
+        .array(0)
+        .expect("held")
+        .handle
+        .clone();
+    let bytes: Vec<u8> = [3.0f32].iter().flat_map(|v| v.to_le_bytes()).collect();
+    *app.world_mut()
+        .resource_mut::<Assets<DataArray>>()
+        .get_mut(&source)
+        .expect("the asset") = DataArray::numeric(Dtype::Float32, vec![1], bytes);
+
+    settle(&mut app);
+
+    assert_eq!(problem(&app, filter), None, "the complaint should be gone");
+    assert_eq!(held(&app, 100), vec![6.0]);
+}
+
+/// A refusal leaves the previous output alone rather than blanking it.
+///
+/// Deliberate: the last good answer is more useful on screen than nothing while
+/// the reason it is stale is stated beside it. Blanking would also make a
+/// downstream filter re-run against an empty array and fail in turn, so one
+/// fault would cascade into a row of unrelated complaints.
+#[test]
+fn a_refusal_keeps_the_last_good_output() {
+    let mut app = app();
+    upload(&mut app, 0, &[4.0]);
+    let filter = spawn(&mut app, "strict", 100, 0);
+    settle(&mut app);
+    assert_eq!(held(&app, 100), vec![8.0]);
+
+    let source = app
+        .world()
+        .resource::<DataStore>()
+        .array(0)
+        .expect("held")
+        .handle
+        .clone();
+    *app.world_mut()
+        .resource_mut::<Assets<DataArray>>()
+        .get_mut(&source)
+        .expect("the asset") = DataArray::numeric(Dtype::Float32, vec![0], Vec::new());
+
+    settle(&mut app);
+
+    assert!(problem(&app, filter).is_some(), "it should be complaining");
+    assert_eq!(held(&app, 100), vec![8.0], "the old answer still stands");
 }
 
 /// A filter's `run` never touches the world, so it cannot be the thing that

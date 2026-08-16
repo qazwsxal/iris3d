@@ -56,7 +56,6 @@ from .v1.scene_pb2 import (
     SetFilterRequest,
     SetParentRequest,
     SetTransformRequest,
-    Subset,
     Unset as ProtoUnset,
     UploadDataRequest,
     Vector3,
@@ -193,18 +192,6 @@ class Grid:
 
 
 @dataclass(frozen=True)
-class SubsetSummary:
-    """An actor's selection, described without returning its values."""
-
-    #: "indices" or "mask".
-    encoding: str
-    #: "point" or "cell".
-    association: str
-    #: How many elements the selection keeps.
-    selected: int
-
-
-@dataclass(frozen=True)
 class ActorSummary:
     """One way something is being drawn."""
 
@@ -223,8 +210,6 @@ class ActorSummary:
     #: above it does not show here, and neither does being detached — a
     #: detached actor is not drawn whatever this says.
     visible: bool
-    #: How much of the bound data is drawn, or None for all of it.
-    subset: SubsetSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +331,11 @@ class OutputInfo:
     #: "array" or "geometry".
     type: str
     #: Element type, for array outputs only.
+    #:
+    #: ``None`` on an array output means the *run* decides — the same escape
+    #: hatch a ``0`` in :attr:`shape` already is, one level across. ``gather``
+    #: hands back elements of whatever it was given, so it can no more state
+    #: their type in advance than it can state how many there will be.
     dtype: np.dtype | None = None
     #: Declared shape, for array outputs only, where 0 is an axis decided when
     #: it runs. A colour output reads ``(0, 3)``: three components per element,
@@ -382,6 +372,22 @@ class FilterSummary:
     #: as it does: re-running rewrites the arrays behind them rather than
     #: replacing them, so a binding made once stays valid.
     outputs: dict[str, int]
+    #: Why the last run did not do what was asked, or ``None`` if it was fine.
+    #:
+    #: This is a *run-time* failure, so it is not an exception:
+    #: :meth:`Client.add_filter` and :meth:`Client.set_filter` already refuse a
+    #: binding that cannot work, but a filter whose bindings are all valid can
+    #: still be handed data it cannot use — indices past the end of an array, a
+    #: level that crosses nothing.
+    #:
+    #: Worth checking when a chain produces nothing and no call raised: the
+    #: output handles stay valid and keep whatever they last held, so without
+    #: this a failed run looks exactly like one that has not happened yet::
+    #:
+    #:     for f in client.list_filters():
+    #:         if f.problem:
+    #:             print(f"[{f.handle}] {f.kind}: {f.problem}")
+    problem: str | None = None
 
     def __getitem__(self, output: str) -> int:
         """The handle for one output, so binding reads as one expression::
@@ -448,48 +454,6 @@ def _params(params: Mapping[str, RawParamValue] | None) -> dict[str, ParamValue]
     return {key: _param_value(value) for key, value in (params or {}).items()}
 
 
-_ENCODINGS = {
-    Subset.ENCODING_INDICES: "indices",
-    Subset.ENCODING_MASK: "mask",
-}
-_ASSOCIATIONS = {
-    Subset.ASSOCIATION_PER_POINT: "point",
-    Subset.ASSOCIATION_PER_CELL: "cell",
-}
-
-
-def _subset(selection: np.ndarray, *, per_cell: bool = False) -> Subset:
-    """Packs a numpy selection for the wire.
-
-    The encoding follows the dtype, because that is what the caller already
-    expressed: a boolean array is a mask over every element, an integer array
-    names the elements to keep. Asking for both would be one more way to
-    disagree with yourself.
-    """
-    selection = np.ascontiguousarray(selection)
-    if selection.ndim != 1:
-        raise ValueError(f"a subset must be one-dimensional, got shape {selection.shape}")
-
-    if selection.dtype == np.bool_:
-        encoding = Subset.ENCODING_MASK
-        selection = selection.view(np.uint8)
-    elif np.issubdtype(selection.dtype, np.integer):
-        encoding = Subset.ENCODING_INDICES
-    else:
-        raise TypeError(
-            "a subset must be a boolean mask or an integer index array, "
-            f"not {selection.dtype}"
-        )
-
-    return Subset(
-        data=_wire_ready(selection).tobytes(),
-        dtype=to_proto_dtype(selection.dtype),
-        encoding=encoding,
-        association=(
-            Subset.ASSOCIATION_PER_CELL if per_cell else Subset.ASSOCIATION_PER_POINT
-        ),
-    )
-
 
 def _actor(info: ActorInfo) -> ActorSummary:
     return ActorSummary(
@@ -498,15 +462,6 @@ def _actor(info: ActorInfo) -> ActorSummary:
         parents=tuple(handle.id for handle in info.parents),
         params={key: _read_param(value) for key, value in info.params.items()},
         visible=info.visible,
-        subset=(
-            SubsetSummary(
-                encoding=_ENCODINGS.get(info.subset.encoding, "unknown"),
-                association=_ASSOCIATIONS.get(info.subset.association, "point"),
-                selected=info.subset.selected,
-            )
-            if info.HasField("subset")
-            else None
-        ),
     )
 
 
@@ -630,7 +585,12 @@ def _output(output) -> OutputInfo:
         id=output.id,
         label=output.label,
         type="array",
-        dtype=from_proto_dtype(output.array.dtype),
+        # DTYPE_UNSPECIFIED means the run decides; see OutputInfo.dtype.
+        dtype=(
+            from_proto_dtype(output.array.dtype)
+            if output.array.dtype != Dtype.DTYPE_UNSPECIFIED
+            else None
+        ),
         shape=tuple(output.array.shape),
     )
 
@@ -650,6 +610,7 @@ def _filter(info: FilterInfo) -> FilterSummary:
         kind=info.kind,
         params={key: _read_param(value) for key, value in info.params.items()},
         outputs={output.id: output.handle.id for output in info.outputs},
+        problem=info.problem if info.HasField("problem") else None,
     )
 
 
@@ -952,8 +913,6 @@ class Client:
         parent: int | None = None,
         parents: Sequence[int] | None = None,
         params: Mapping[str, float | bool | str] | None = None,
-        subset: np.ndarray | None = None,
-        per_cell: bool = False,
     ) -> ActorSummary:
         """Draws something, under an object or under one made for it.
 
@@ -990,19 +949,21 @@ class Client:
         Parameters left out take the kind's default, not the value some other
         actor happens to have.
 
-        ``subset`` draws only part of the bound data — a boolean mask over every
-        element, or an integer array of the elements to keep. This is what
-        makes several actors worth having: one structure shown as cartoon over
-        its protein and ball-and-stick over its ligand is two actors with two
-        subsets. Selections are computed here rather than described to the
-        server, so anything numpy can express works::
+        An actor draws *all* of what it is bound to. Showing part of something —
+        cartoon over the protein, ball-and-stick over the ligand — is two actors
+        bound to arrays that were narrowed first, by filters::
 
-            client.add_actor("surface", parent=node,
-                             subset=positions[:, 2] > 0, ...)
+            picked = client.add_filter("subset", params={"mask": Bind(mask)})
+            kept = client.add_filter("gather", params={
+                "values": Bind(positions), "indices": Bind(picked["indices"])})
+            client.add_actor("points", params={"positions": Bind(kept["result"])})
 
-        A mesh cell survives only when all of its corners do, and a bond only
-        when both its atoms do, so a cut leaves a clean boundary rather than
-        stretched or dangling geometry.
+        There used to be a ``subset`` argument here, carrying a numpy mask
+        inline. It made the actor decide what to draw, which is a question about
+        data rather than about drawing, and it was invisible in the graph: not a
+        handle, so it could not be shared, inspected or computed from the data
+        it selected over. See :meth:`add_filter` and the ``compare``, ``logic``,
+        ``match``, ``subset``, ``gather``, ``renumber`` and ``reindex`` kinds.
         """
         if parent is not None and parents is not None:
             raise ValueError("pass parent or parents, not both")
@@ -1011,8 +972,6 @@ class Client:
         # because drawing in one place is much the commoner case.
         for handle in (parents if parents is not None else _maybe(parent)):
             request.parents.append(ObjectHandle(id=handle))
-        if subset is not None:
-            request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
         return _actor(self._scene.AddActor(request).actor)
 
     def set_actor(
@@ -1021,9 +980,6 @@ class Client:
         params: Mapping[str, float | bool | str] | None = None,
         *,
         visible: bool | None = None,
-        subset: np.ndarray | None = None,
-        per_cell: bool = False,
-        clear_subset: bool = False,
         parent: int | None = None,
         parents: Sequence[int] | None = None,
     ) -> ActorSummary:
@@ -1036,10 +992,6 @@ class Client:
         Out-of-range values are clamped rather than rejected, so a slider driven
         past its limit does not raise.
 
-        Omitting ``subset`` leaves the selection alone; ``clear_subset=True``
-        goes back to drawing the whole dataset. The two are separate because
-        "unchanged" and "cleared" both have to be expressible.
-
         ``parent`` moves the actor under one object, and ``parents`` replaces
         the whole set of objects it is drawn under — which both adds an
         appearance and takes one away. ``parents=[]`` takes it off screen
@@ -1048,18 +1000,12 @@ class Client:
         This is how an actor that lost its last object is drawn again, and how
         one drawing is put in several places at once.
         """
-        if subset is not None and clear_subset:
-            raise ValueError("pass a subset or clear_subset, not both")
-
         request = SetActorRequest(
             handle=ActorHandle(id=handle),
             params=_params(params),
-            clear_subset=clear_subset,
         )
         if visible is not None:
             request.visible = visible
-        if subset is not None:
-            request.subset.CopyFrom(_subset(subset, per_cell=per_cell))
         if parent is not None and parents is not None:
             raise ValueError("pass parent or parents, not both")
         if parent is not None or parents is not None:

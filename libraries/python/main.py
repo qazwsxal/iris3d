@@ -73,8 +73,14 @@ def hydrogen(client, root, cursor, gap=3.0):
     width = grid.dims[0] * grid.spacing[0]
     client.set_transform(handle, translation=(cursor + width / 2.0, 0.0, 0.0))
 
+    # Reshaped to (nx, ny, nz) on the way up. A volume input declares
+    # `[0, 0, 0]` and takes the grid's extent from the array, so a ravelled
+    # field is refused at bind time rather than drawn wrongly.
     held = client.upload_data(
-        {"probability": arrays["probability"], "amplitude": arrays["amplitude"]}
+        {
+            "probability": arrays["probability"].reshape(grid.dims),
+            "amplitude": arrays["amplitude"].reshape(grid.dims),
+        }
     )
 
     # The arrangement of the samples travels as three vectors rather than as an
@@ -106,7 +112,8 @@ def hydrogen(client, root, cursor, gap=3.0):
         params={
             "density": iris3d.Bind(held["probability"]),
             "colour": iris3d.Bind(held["amplitude"]),
-            "dims": grid.dims,
+            # No `dims`: the array is (nx, ny, nz) and the actor reads the
+            # grid's shape off it.
             "origin": grid.origin,
             "spacing": grid.spacing,
             "opacity": 12.0,

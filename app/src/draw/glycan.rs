@@ -38,7 +38,7 @@ use bevy::prelude::*;
 
 use crate::filter::cartoon::{self, Profile, Ribbon, Sample};
 use crate::scene::registry::Bindings;
-use crate::scene::{DataArray, DataStore, Subset};
+use crate::scene::{DataArray, DataStore};
 
 /// How big a symbol is and how finely it is drawn.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -180,43 +180,31 @@ pub struct Input {
     snfg: Vec<u8>,
 }
 
-/// Reads what an actor bound, narrowed to its subset.
+/// Reads what an actor bound.
 ///
 /// Only three arrays, and none of them is the atom-name column the cartoon
 /// needs: a symbol sits at the residue's centroid, so which atom is which does
 /// not come into it.
+///
+/// Nothing is narrowed here. It used to be — an actor carried a `Subset` and cut
+/// its own atoms down with it — and that is a filter's job now: bind arrays a
+/// `gather` has already narrowed, and this reads whatever it is handed.
 pub fn read(
     bindings: &Bindings,
-    subset: &Subset,
     store: &DataStore,
     arrays: &Assets<DataArray>,
 ) -> Option<Input> {
     let positions = super::bound(bindings, "positions", store, arrays)?;
-    let all_positions = positions.to_vec3();
-    let all_residues = super::bound(bindings, "residue_index", store, arrays)?.to_u32()?;
+    let positions = positions.to_vec3();
+    let residue_of_atom = super::bound(bindings, "residue_index", store, arrays)?.to_u32()?;
     let snfg = super::bound(bindings, "residue_snfg", store, arrays)?;
-    if all_positions.is_empty() || all_residues.len() < all_positions.len() {
+    if positions.is_empty() || residue_of_atom.len() < positions.len() {
         return None;
     }
 
-    let kept = subset.selected(all_positions.len(), arrays);
     Some(Input {
-        positions: match &kept {
-            Some(kept) => kept
-                .iter()
-                .filter_map(|index| all_positions.get(*index as usize).copied())
-                .collect(),
-            None => all_positions,
-        },
-        residue_of_atom: match &kept {
-            Some(kept) => kept
-                .iter()
-                .filter_map(|index| all_residues.get(*index as usize).copied())
-                .collect(),
-            None => all_residues,
-        },
-        // Per residue, and so not narrowed: a subset renumbers atoms, not
-        // residues.
+        positions,
+        residue_of_atom,
         snfg: snfg.data.clone(),
     })
 }

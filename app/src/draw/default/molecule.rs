@@ -25,8 +25,8 @@ use crate::scene::link::Placement;
 use crate::scene::registry::{
     ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float,
 };
-use crate::scene::subset::Remap;
-use crate::scene::{DataArray, DataStore, Dtype, Subset};
+
+use crate::scene::{DataArray, DataStore, Dtype};
 
 use super::{Actor, Dirty, bound, mark};
 
@@ -156,11 +156,11 @@ pub fn draw_molecules(
     dirty: Query<Drawable>,
     layouts: Query<&Layout>,
 ) {
-    for ((entity, style, subset, bindings, dirty), mesh3d, material3d) in &dirty {
+    for ((entity, style, bindings, dirty), mesh3d, material3d) in &dirty {
         if !dirty.any() {
             continue;
         }
-        let Some(atoms) = read(bindings, subset, &store, &arrays, style.tint) else {
+        let Some(atoms) = read(bindings, &store, &arrays, style.tint) else {
             continue;
         };
 
@@ -236,60 +236,34 @@ struct Atoms {
 /// the positions and the bond list have to be rewritten rather than filtered.
 fn read(
     bindings: &Bindings,
-    subset: &Subset,
     store: &DataStore,
     arrays: &Assets<DataArray>,
     tint: Vec3,
 ) -> Option<Atoms> {
     let position_array = bound(bindings, "positions", store, arrays)?;
-    let all = position_array.to_vec3();
-    if all.is_empty() {
+    let positions = position_array.to_vec3();
+    if positions.is_empty() {
         return None;
     }
     // Carbon for everything when no elements are bound: radii and colours still
     // need a number each, and a structure with no element data is better drawn
     // uniformly than not drawn.
-    let all_elements: Vec<u32> = bound(bindings, "elements", store, arrays)
+    let elements: Vec<u32> = bound(bindings, "elements", store, arrays)
         .and_then(|array| array.to_u32())
-        .unwrap_or_else(|| vec![6; all.len()]);
+        .unwrap_or_else(|| vec![6; positions.len()]);
 
-    let kept = subset.selected(all.len(), arrays);
-    let remap = kept.as_ref().map(|kept| Remap::new(kept, all.len()));
-    let positions: Vec<Vec3> = match &kept {
-        Some(kept) => kept.iter().map(|index| all[*index as usize]).collect(),
-        None => all,
-    };
-    let elements: Vec<u32> = match &kept {
-        Some(kept) => kept
-            .iter()
-            .filter_map(|index| all_elements.get(*index as usize).copied())
-            .collect(),
-        None => all_elements,
-    };
-
+    // Bonds are taken as they are. They used to be renumbered here, because an
+    // actor narrowed its own atoms and a bond names atoms by index; narrowing
+    // is a filter's job now, and `renumber` has already done it by the time
+    // anything reaches this.
     let bonds = bound(bindings, "bonds", store, arrays)
         .and_then(|array| array.to_u32())
-        .map(|pairs| match &remap {
-            Some(remap) => pairs
-                .chunks_exact(2)
-                .filter_map(|pair| {
-                    let (a, b) = (remap.get(pair[0])?, remap.get(pair[1])?);
-                    Some([a, b])
-                })
-                .flatten()
-                .collect(),
-            None => pairs,
-        })
         .unwrap_or_default();
 
     // A bound colour array wins over CPK: an input that is bound has to
     // actually apply, or the tree claims a colouring the render does not show.
     let bound_rgb = bound(bindings, "colour", store, arrays)
-        .and_then(|values| super::super::bound_colours(values, position_array.count() as usize))
-        .map(|colours| match &kept {
-            Some(kept) => kept.iter().map(|index| colours[*index as usize]).collect(),
-            None => colours,
-        });
+        .and_then(|values| super::super::bound_colours(values, position_array.count() as usize));
     let stick = tint.extend(1.0).to_array();
     let tinted = bound_rgb.is_some();
     let colours: Vec<[f32; 4]> = (0..positions.len())

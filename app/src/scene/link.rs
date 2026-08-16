@@ -29,7 +29,7 @@ use bevy::prelude::*;
 
 use crate::counter::{GlobalIDCounter, UniqueID};
 
-use super::{SceneObject, Subset};
+use super::SceneObject;
 
 /// The objects an actor is drawn under.
 ///
@@ -96,21 +96,16 @@ impl Default for Shown {
 /// objects, not of the actor, so nothing inherits this. Their own visibility
 /// comes from [`Shown`] via [`apply_shown`].
 ///
-/// `subset` is a parameter rather than something the caller folds into `extra`
-/// because every kind queries one, so it cannot be optional — and a bundle
-/// carrying the same component twice is a panic, not a last-write-wins.
 pub fn spawn_actor(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
     parents: Vec<Entity>,
-    subset: Subset,
     extra: impl Bundle,
 ) -> (u64, Entity) {
     let id = counter.next();
     let entity = commands
         .spawn((
             UniqueID(id),
-            subset,
             Parents(parents),
             Shown(true),
             Visibility::Hidden,
@@ -225,7 +220,6 @@ mod tests {
             &mut commands,
             &mut counter,
             parents,
-            Subset::All,
             ActorKindId("surface"),
         );
         app.world_mut().flush();

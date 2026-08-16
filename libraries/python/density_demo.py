@@ -180,7 +180,8 @@ def main():
             parent=cloud,
             params={
                 "density": iris3d.Bind(map_held["density"]),
-                "dims": grid.dims,
+                # No `dims`: the array is (nx, ny, nz) and the actor reads the
+                # grid's shape off it.
                 "origin": grid.origin,
                 "spacing": grid.spacing,
                 # Absorbing well above emitting, which is the whole point here:

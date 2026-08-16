@@ -70,12 +70,14 @@ def _fit(dims: tuple[int, int, int], voxel: tuple[float, float, float], size: fl
 
 
 def _to_wire(volume: np.ndarray, clip: float | None) -> np.ndarray:
-    """A ``(z, y, x)`` stack as the wire wants it: x fastest once ravelled.
+    """A ``(z, y, x)`` stack as the wire wants it: ``(nx, ny, nz)``.
 
     scikit-image returns slices first. iris3d's grid is declared ``(nx, ny,
-    nz)`` and read with z varying fastest, so the axes are reversed rather than
-    rolled. Getting this wrong does not fail — it renders a plausible picture of
-    a transposed head.
+    nz)``, so the axes are reversed rather than rolled. Getting this wrong does
+    not fail — it renders a plausible picture of a transposed head.
+
+    The shape is kept rather than ravelled: a volume input declares
+    ``[0, 0, 0]`` and takes the grid's extent from the array itself.
 
     `clip` is an upper percentile. Measured data has a tail that a plain
     min/max normalisation wastes most of the range on: a handful of bright
@@ -89,7 +91,7 @@ def _to_wire(volume: np.ndarray, clip: float | None) -> np.ndarray:
         low = float(values.min())
         if high > low:
             values = np.clip(values, low, high)
-    return np.ascontiguousarray(values.transpose(2, 1, 0)).ravel()
+    return np.ascontiguousarray(values.transpose(2, 1, 0))
 
 
 def mri_head(size: float = 8.0, clip: float | None = 99.5) -> tuple[dict[str, np.ndarray], Grid]:

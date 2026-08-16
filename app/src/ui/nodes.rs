@@ -26,16 +26,18 @@
 //! panel's "Detached — not drawn" state, and on a canvas it is simply a node
 //! with no placement wire, which explains itself.
 
+use bevy::asset::AssetId;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy_egui::egui::{self, Color32};
 use egui_snarl::ui::{PinInfo, SnarlStyle, SnarlViewer, SnarlWidget};
 use egui_snarl::{InPin, NodeId, OutPin, Snarl};
 
+use crate::scene::DataArray;
 use crate::scene::registry::{ParamKind, ParamValue, data as bound_handle};
 
 use super::gather::Gathered;
-use super::{PendingActions, UiAction};
+use super::{PendingActions, UiAction, UiState, params};
 
 /// One thing on the canvas, named by what identifies it in the scene.
 ///
@@ -80,6 +82,20 @@ const NESTING: Color32 = Color32::from_rgb(150, 150, 150);
 /// filter's rows are its parameter labels, and `geometry`'s "vertices to keep"
 /// is wider than the 280 this first used, so the columns overlapped.
 const COLUMN: f32 = 420.0;
+
+/// How wide a node's controls are allowed to be.
+///
+/// Set here rather than left to egui, because a slider expands to fill whatever
+/// it is offered and a node body is offered the canvas. Narrow enough that a
+/// filter with six parameters is still a node rather than a panel.
+const BODY_WIDTH: f32 = 220.0;
+
+/// Above this many controls, a node's body gains a header that can fold it away.
+///
+/// Not a limit on what is shown — everything is shown — only on which kinds are
+/// worth offering the fold to. A node with two controls has nothing to gain from
+/// a row spent saying so.
+const INLINE_SETTINGS: usize = 3;
 
 /// How far from the left each node sits, by how far it is *along* the graph.
 ///
@@ -162,8 +178,11 @@ fn column(node: &Node, depth: &HashMap<Node, f32>) -> f32 {
 /// ever been drawn and egui only knows a widget's size afterwards. Guessing
 /// high is the safe direction — too much space between nodes is untidy, too
 /// little stacks them on top of each other.
+/// Counts the body's controls as well as the pins, because they are what a node
+/// is now mostly made of — a `volume` has three inputs and eight settings, and
+/// leaving room for three stacked it on top of whatever was placed below it.
 fn rows(node: &Node, scene: &Gathered) -> usize {
-    match node {
+    let pins = match node {
         Node::Data(_) => 1,
         Node::Filter(id) => scene.filter(*id).map_or(1, |row| {
             inputs_of(row.specs).count().max(row.outputs.len())
@@ -172,7 +191,15 @@ fn rows(node: &Node, scene: &Gathered) -> usize {
             .actor(*entity)
             .map_or(1, |(_, row)| inputs_of(row.specs).count().max(1)),
         Node::Object(_) => 1,
-    }
+    };
+    let settings = settings_of(scene, node).map_or(0, |specs| {
+        specs.iter().filter(|spec| is_setting(spec)).count()
+    });
+    // Bodies open by default, so the estimate assumes the whole set is showing,
+    // plus the header row the busy kinds carry. Folding one afterwards leaves a
+    // gap, which is the harmless direction to be wrong in — guessing low stacks
+    // nodes on top of each other.
+    pins + settings + usize::from(settings > INLINE_SETTINGS)
 }
 
 impl NodeGraph {
@@ -361,16 +388,45 @@ fn inputs_of(
     specs.iter().filter(|spec| spec.kind.is_input())
 }
 
+/// The complement of [`inputs_of`]: everything that is a control, not a pin.
+///
+/// Defined against `is_input` rather than by listing the control kinds, so a
+/// seventh `ParamKind` lands in exactly one of the two and cannot go missing
+/// from both.
+fn is_setting(spec: &crate::scene::registry::ParamSpec) -> bool {
+    !spec.kind.is_input()
+}
+
+/// What a node declares, if it declares anything.
+///
+/// Objects and data handles have no kind behind them — an object is a place and
+/// a handle is a name — so they have nothing to draw and say so here once.
+fn settings_of(
+    scene: &Gathered,
+    node: &Node,
+) -> Option<&'static [crate::scene::registry::ParamSpec]> {
+    match node {
+        Node::Filter(id) => scene.filter(*id).map(|row| row.specs),
+        Node::Actor(entity) => scene.actor(*entity).map(|(_, row)| row.specs),
+        Node::Data(_) | Node::Object(_) => None,
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     graph: &mut NodeGraph,
     scene: &Gathered,
     actions: &mut PendingActions,
+    state: &UiState,
 ) {
     graph.reconcile(scene);
     graph.rewire(scene);
 
-    let mut viewer = Viewer { scene, actions };
+    let mut viewer = Viewer {
+        scene,
+        actions,
+        state,
+    };
     SnarlWidget::new()
         .id(egui::Id::new("iris3d-nodes"))
         .style(SnarlStyle::new())
@@ -380,6 +436,81 @@ pub fn show(
 struct Viewer<'a> {
     scene: &'a Gathered,
     actions: &'a mut PendingActions,
+    state: &'a UiState,
+}
+
+impl Viewer<'_> {
+    /// Whether this node is what the rest of the interface is pointed at.
+    fn is_selected(&self, node: &Node) -> bool {
+        match node {
+            Node::Object(entity) => self.state.selected == Some(*entity),
+            Node::Actor(entity) => self.state.selected_actor == Some(*entity),
+            Node::Filter(id) => self.state.selected_filter == Some(*id),
+            Node::Data(handle) => {
+                self.array_of(*handle).is_some() && self.state.selected_array == self.array_of(*handle)
+            }
+        }
+    }
+
+    /// The array a handle names, if it names one rather than a mesh.
+    fn array_of(&self, handle: u64) -> Option<AssetId<DataArray>> {
+        self.scene
+            .held
+            .iter()
+            .find(|(_, (id, _))| *id == handle)
+            .map(|(asset, _)| *asset)
+    }
+
+    /// The controls themselves, drawn from the same declaration the panel uses.
+    ///
+    /// Separate from `show_body` only because it is called from two places —
+    /// folded and unfolded — and the difference between them should be the
+    /// frame around the controls, never the controls.
+    fn body_controls(&mut self, ui: &mut egui::Ui, node: Node) {
+        let edits = match node {
+            Node::Filter(id) => {
+                let Some(row) = self.scene.filter(id) else {
+                    return;
+                };
+                params::controls_where(
+                    ui,
+                    self.scene,
+                    row.specs,
+                    &row.params,
+                    ("node-filter", id),
+                    |_| None,
+                    is_setting,
+                )
+            }
+            Node::Actor(entity) => {
+                let Some((_, row)) = self.scene.actor(entity) else {
+                    return;
+                };
+                params::controls_where(
+                    ui,
+                    self.scene,
+                    row.specs,
+                    &row.params,
+                    ("node-actor", entity),
+                    |_| None,
+                    is_setting,
+                )
+            }
+            Node::Data(_) | Node::Object(_) => return,
+        };
+        for (param, value) in edits.set {
+            match node {
+                Node::Filter(id) => self
+                    .actions
+                    .0
+                    .push(UiAction::SetFilterParam(id, param, value)),
+                Node::Actor(entity) => {
+                    self.actions.0.push(UiAction::SetParam(entity, param, value))
+                }
+                Node::Data(_) | Node::Object(_) => {}
+            }
+        }
+    }
 }
 
 impl SnarlViewer<Node> for Viewer<'_> {
@@ -512,6 +643,136 @@ impl SnarlViewer<Node> for Viewer<'_> {
             }
             None => PinInfo::circle(),
         }
+    }
+
+    /// The title, and clicking it selects the thing the node stands for.
+    ///
+    /// The canvas used to be a read-only projection in this one respect: the
+    /// panel's trees could select and it could not, so switching views lost
+    /// where you were. Selection is already shared state — `viewport::overlays`
+    /// draws the outline from it, both trees highlight from it — so the canvas
+    /// joining in costs one action per kind and nothing else.
+    fn show_header(
+        &mut self,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut egui::Ui,
+        snarl: &mut Snarl<Node>,
+    ) {
+        let Some(node) = snarl.get_node(node).copied() else {
+            return;
+        };
+        let title = self.title(&node);
+        let chosen = self.is_selected(&node);
+        // A filter that ran and refused says so on the canvas, not only in the
+        // panel — the canvas is where a chain is read, and "which link went
+        // dead" is the question being asked while looking at it. The marker is
+        // in the title so it survives a folded body.
+        let problem = match node {
+            Node::Filter(id) => self
+                .scene
+                .filter(id)
+                .and_then(|row| row.problem.clone()),
+            _ => None,
+        };
+        let title = match &problem {
+            Some(_) => egui::RichText::new(format!("⚠ {title}"))
+                .color(ui.visuals().error_fg_color),
+            None => egui::RichText::new(title),
+        };
+        let mut clicked = ui.selectable_label(chosen, title);
+        // Only when there is one: an empty tooltip on every healthy node is a
+        // grey box that follows the pointer round the canvas.
+        if let Some(problem) = &problem {
+            clicked = clicked.on_hover_text(problem);
+        }
+        if clicked.clicked() {
+            match node {
+                Node::Object(entity) => self.actions.0.push(UiAction::Select(entity)),
+                // Which object it was clicked under: an actor drawn under
+                // several appears once here, so there is no row to answer it
+                // and the panel's own resolution is what fills it in.
+                Node::Actor(entity) => {
+                    let under = self
+                        .scene
+                        .rows
+                        .values()
+                        .find(|row| row.actors.iter().any(|actor| actor.entity == entity))
+                        .map(|row| row.entity);
+                    self.actions.0.push(UiAction::SelectActor(entity, under));
+                }
+                Node::Filter(id) => self.actions.0.push(UiAction::SelectFilter(id)),
+                // A handle names an array or a mesh, and only an array is
+                // selectable in the Data tab. A mesh handle selects nothing
+                // rather than selecting something else.
+                Node::Data(handle) => {
+                    if let Some(asset) = self.array_of(handle) {
+                        self.actions.0.push(UiAction::SelectArray(asset));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether the node has settings to show between its pins.
+    ///
+    /// Inputs are pins and everything else is a control, so a kind with nothing
+    /// but inputs — `geometry`, and every data node — has no body at all and
+    /// keeps the compact shape it had before bodies existed.
+    fn has_body(&mut self, node: &Node) -> bool {
+        settings_of(self.scene, node).is_some_and(|specs| specs.iter().any(is_setting))
+    }
+
+    /// The node's own controls, drawn from the same declaration the panel uses.
+    ///
+    /// This is what makes a maths node legible: a `compare` whose threshold is
+    /// only visible in another view is not a node, it is a node-shaped label.
+    /// `ui::params::controls_where` is the panel's own function, so a new kind
+    /// or a new parameter arrives here with no work, and the two views cannot
+    /// disagree about what a control does.
+    ///
+    /// Offers are declined. An offer belongs beside an empty input picker, and
+    /// inputs are pins here — the equivalent gesture is dragging a wire.
+    fn show_body(
+        &mut self,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut egui::Ui,
+        snarl: &mut Snarl<Node>,
+    ) {
+        let Some(node) = snarl.get_node(node).copied() else {
+            return;
+        };
+        // **Vertical, explicitly.** The body is drawn inside snarl's own
+        // horizontal run — pins left, body, pins right — so a control inherits
+        // that direction and every one of them lands on the same line, drawn
+        // over the last. `set_max_width` does not save it: the widgets do not
+        // wrap, they overlap.
+        let count = settings_of(self.scene, &node).map_or(0, |specs| {
+            specs.iter().filter(|spec| is_setting(spec)).count()
+        });
+        ui.vertical(|ui| {
+            // A slider fills what it is given, so it has to be told. Wider than
+            // this and one filter's controls set the width of the whole column.
+            ui.set_max_width(BODY_WIDTH);
+            ui.spacing_mut().slider_width = 90.0;
+            // Everything is open until someone shuts it. A busy kind — nine
+            // controls on `cartoon`, eight on `volume` — gets a header so it
+            // *can* be folded away when the wires behind it matter more, but
+            // hiding a control the user never asked to hide is the worse
+            // default: stage 3's whole point is that these are draggable, and a
+            // slider behind a click is not.
+            if count > INLINE_SETTINGS {
+                let open = egui::CollapsingHeader::new(format!("{count} settings"))
+                    .id_salt(("node-body", node))
+                    .default_open(true);
+                open.show(ui, |ui| self.body_controls(ui, node));
+            } else {
+                self.body_controls(ui, node);
+            }
+        });
     }
 
     /// A wire the user dragged.

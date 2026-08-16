@@ -399,7 +399,7 @@ fn draw_ui(
     // early, so `right` stays zero and the 3D camera is given nothing below —
     // there is no scene on screen to inset it into.
     if state.view == View::Nodes {
-        nodes::show(&mut root, &mut graph, &world, &mut actions);
+        nodes::show(&mut root, &mut graph, &world, &mut actions, &state);
         // Nothing of the 3D scene is on screen, so the camera is given no
         // viewport at all rather than a sliver behind the canvas.
         if let Ok(mut camera) = cameras.single_mut() {
@@ -631,7 +631,6 @@ fn apply_actions(
                     id,
                     params: ParamMap::default(),
                     visible: None,
-                    subset: None,
                     parents: Some(parents),
                     reply,
                 });
@@ -759,7 +758,6 @@ fn apply_actions(
                             // Selections are computed by a client, not clicked
                             // together here, so the tree only ever adds a
                             // whole-dataset one.
-                            subset: None,
                             reply,
                         });
                     }

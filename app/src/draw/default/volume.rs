@@ -396,7 +396,7 @@ pub fn draw_volumes(
     store: Res<DataStore>,
     actors: Query<(Actor<GridStyle>, &GridBox, Option<&GridField>)>,
 ) {
-    for ((entity, style, _subset, bindings, dirty), grid, existing) in &actors {
+    for ((entity, style, bindings, dirty), grid, existing) in &actors {
         // Colour-only changes repaint the ramp and leave the field alone; a
         // material change touches neither, because both live in the uniform.
         if !dirty.geometry && !dirty.colour {

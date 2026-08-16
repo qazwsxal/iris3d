@@ -52,7 +52,7 @@ use crate::scene::DataArray;
 use crate::scene::registry::{ParamKind, ParamSpec, float, text, uvec3, vec3, vector};
 
 use super::colormap::{ColorMap, sample};
-use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Request};
+use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
 
 /// Ceiling on the samples one run will walk.
 ///
@@ -252,30 +252,29 @@ fn grid_of(array: &DataArray) -> Option<UVec3> {
     }
 }
 
-fn run(request: &Request) -> Products {
+fn run(request: &Request) -> Outcome {
     let mut products = Products::new();
     let Some(field) = request.input("field") else {
-        return products;
+        return Outcome::refused("has nothing bound to \"field\"");
     };
     let Some(dims) = grid_of(field) else {
-        warn!(
-            "contour: the field has shape {:?}, which is not a 3D grid",
+        return Outcome::refused(format!(
+            "was given a field of shape {:?}, which is not a 3D grid",
             field.shape
-        );
-        return products;
+        ));
     };
     let expected = dims.x as usize * dims.y as usize * dims.z as usize;
     if expected == 0 || expected > MAX_SAMPLES {
-        warn!("contour: {dims} samples is not a grid this will walk");
-        return products;
+        return Outcome::refused(format!(
+            "will not walk a {dims} grid: the limit is {MAX_SAMPLES} samples"
+        ));
     }
     let values = field.to_f32();
     if values.len() < expected {
-        warn!(
-            "contour: the field has {} values but {dims} needs {expected}",
+        return Outcome::refused(format!(
+            "was given {} values but {dims} needs {expected}",
             values.len()
-        );
-        return products;
+        ));
     }
 
     let step = uvec3(&request.params, "step", UVec3::ONE).max(UVec3::ONE);
@@ -292,11 +291,10 @@ fn run(request: &Request) -> Products {
     // Checked after subsampling, because that is what can cause it now — a step
     // coarser than an axis is long leaves that axis one sample deep.
     if field.dims.min_element() < 2 {
-        debug!(
-            "contour: {dims} at step {step} leaves {}, which has no cells to walk",
+        return Outcome::refused(format!(
+            "{dims} at step {step} leaves {}, which has no cells to walk",
             field.dims
-        );
-        return products;
+        ));
     }
     // `level` is a fraction of the field's own span, so resolve it against the
     // values actually loaded. A constant field has no span to take a fraction
@@ -304,8 +302,7 @@ fn run(request: &Request) -> Products {
     // threshold — so there is nothing to answer with.
     let fraction = float(&request.params, "level", 0.5);
     let Some((low, high)) = span(&field.values) else {
-        debug!("contour: the field is constant, so no level crosses it");
-        return products;
+        return Outcome::refused("was given a constant field, so no level crosses it");
     };
     let level = low + fraction * (high - low);
 
@@ -320,9 +317,11 @@ fn run(request: &Request) -> Products {
         // The level found no sign change. Reachable at the very ends of the
         // range, where the threshold sits on the field's own extreme and only
         // touches it. Producing nothing leaves whatever was there before, which
-        // is the honest outcome for a slider dragged to the end of the data.
-        debug!("contour: level {level} ({fraction} of {low}..{high}) crosses nothing");
-        return products;
+        // is the honest outcome for a slider dragged to the end of the data —
+        // and saying so is what stops it reading as a broken filter.
+        return Outcome::refused(format!(
+            "found nothing at level {level}: {fraction} of the field's {low}..{high}"
+        ));
     }
 
     let origin = vec3(&request.params, "origin", Vec3::ZERO);
@@ -356,7 +355,7 @@ fn run(request: &Request) -> Products {
     // a person knows about their own data.
     debug!("contour: {vertices} vertices at level {level} ({fraction} of {low}..{high})");
     products.insert("geometry", mesh.into());
-    products
+    products.into()
 }
 
 /// Samples `colour_field` where each vertex landed and maps it through the ramp.
@@ -729,8 +728,8 @@ mod tests {
         (value - low) / (high - low)
     }
 
-    fn mesh(products: &Products) -> &Mesh {
-        products["geometry"].geometry().expect("a mesh")
+    fn mesh(products: &Outcome) -> &Mesh {
+        products.products["geometry"].geometry().expect("a mesh")
     }
 
     fn positions(mesh: &Mesh) -> Vec<Vec3> {
@@ -995,7 +994,7 @@ mod tests {
             ball(n, 5.0),
             &[("level", ParamValue::Float(1000.0))],
         ));
-        assert!(products.is_empty());
+        assert!(products.is_refusal());
     }
 
     /// An array of the wrong rank is refused rather than guessed at.
@@ -1008,7 +1007,7 @@ mod tests {
             vec![64],
             (0..64).flat_map(|i| (i as f32).to_le_bytes()).collect(),
         );
-        assert!(run(&request(4, flat, &[])).is_empty());
+        assert!(run(&request(4, flat, &[])).is_refusal());
     }
 
     /// A grid with no interior has no isosurface, and says so rather than
@@ -1020,7 +1019,7 @@ mod tests {
             vec![64, 1, 1],
             (0..64).flat_map(|i| (i as f32).to_le_bytes()).collect(),
         );
-        assert!(run(&request(4, sheet, &[])).is_empty());
+        assert!(run(&request(4, sheet, &[])).is_refusal());
     }
 
     /// A field shorter than the shape it declares is refused rather than read
@@ -1030,7 +1029,7 @@ mod tests {
         let n = 8u32;
         let short = ball(n, 3.0);
         let overstated = DataArray::numeric(Dtype::Float32, vec![16, 16, 16], short.data);
-        assert!(run(&request(n, overstated, &[])).is_empty());
+        assert!(run(&request(n, overstated, &[])).is_refusal());
     }
 
     /// A step coarser than an axis is long leaves that axis one sample deep,
@@ -1043,7 +1042,7 @@ mod tests {
             ball(n, 3.0),
             &[("step", ParamValue::Vector(vec![16.0, 1.0, 1.0]))],
         );
-        assert!(run(&request).is_empty());
+        assert!(run(&request).is_refusal());
     }
 
     /// Striding reads less of the grid but describes the same shape in the same

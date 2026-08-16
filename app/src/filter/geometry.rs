@@ -44,7 +44,7 @@ use crate::scene::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec};
 use crate::scene::subset::Remap;
 
-use super::{FilterKind, FilterRegistry, OutputKind, OutputSpec, Products, Request};
+use super::{FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Request};
 
 const PARAMS: &[ParamSpec] = &[
     ParamSpec {
@@ -131,27 +131,25 @@ pub fn register(registry: &mut FilterRegistry) {
     });
 }
 
-fn run(request: &Request) -> Products {
+fn run(request: &Request) -> Outcome {
     let mut products = Products::new();
     let (Some(position_array), Some(index_array)) =
         (request.input("positions"), request.input("indices"))
     else {
-        return products;
+        return Outcome::refused("has nothing bound to \"positions\" or \"indices\"");
     };
     let all = position_array.to_vec3();
     let Some(all_indices) = index_array.to_u32() else {
-        warn!("geometry: indices are not an integer type");
-        return products;
+        return Outcome::refused("was given triangles that are not an integer type");
     };
     if all.is_empty() || all_indices.is_empty() {
-        return products;
+        return Outcome::refused("was given no vertices or no triangles");
     }
     if let Some(out_of_range) = all_indices.iter().find(|i| **i as usize >= all.len()) {
-        warn!(
-            "geometry: index {out_of_range} exceeds {} vertices",
+        return Outcome::refused(format!(
+            "has triangle index {out_of_range}, past its {} vertices",
             all.len()
-        );
-        return products;
+        ));
     }
 
     // Read against the *unsubsetted* count, so a per-vertex array that does not
@@ -175,8 +173,10 @@ fn run(request: &Request) -> Products {
                 .flatten()
                 .collect();
             if indices.is_empty() {
-                info!("geometry: the selection left no whole triangles");
-                return products;
+                return Outcome::refused(
+                    "kept no whole triangles: every triangle had at least one \
+                     vertex cut by \"vertices to keep\"",
+                );
             }
             let positions = kept.iter().map(|index| all[*index as usize]).collect();
             (positions, indices)
@@ -214,7 +214,7 @@ fn run(request: &Request) -> Products {
 
     debug!("geometry: assembled {} vertices", mesh.count_vertices());
     products.insert("geometry", mesh.into());
-    products
+    products.into()
 }
 
 /// Which vertices the `vertices` input selects, or `None` for all of them.
@@ -282,8 +282,8 @@ mod tests {
         }
     }
 
-    fn mesh(products: &Products) -> &Mesh {
-        products["geometry"]
+    fn mesh(products: &Outcome) -> &Mesh {
+        products.products["geometry"]
             .geometry()
             .expect("geometry is a mesh")
     }
@@ -353,18 +353,18 @@ mod tests {
     fn out_of_range_indices_produce_nothing() {
         let mut inputs = quad();
         inputs.insert("indices", indices(&[0, 1, 9]));
-        assert!(run(&request(inputs)).is_empty());
+        assert!(run(&request(inputs)).is_refusal());
     }
 
     #[test]
     fn an_unbound_required_input_produces_nothing() {
         let mut inputs = quad();
         inputs.remove("indices");
-        assert!(run(&request(inputs)).is_empty());
+        assert!(run(&request(inputs)).is_refusal());
 
         // And the params are not consulted for any of this: a geometry filter
         // with nothing bound at all is inert rather than a panic.
-        assert!(run(&request(HashMap::new())).is_empty());
+        assert!(run(&request(HashMap::new())).is_refusal());
     }
 
     #[test]

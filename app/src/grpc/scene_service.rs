@@ -7,14 +7,11 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::scene::data::Association;
-
 use crate::scene::registry::{ParamKind, ParamMap, ParamSpec, ParamValue};
-use crate::scene::subset::SubsetRequest;
 use crate::filter::{FilterKindSummary, FilterSummary, OutputKind};
 use crate::scene::{
     ActorSummary, BufferMeta, DataSummary, Dtype, HeldMeta, KindSummary, NamedBuffer,
-    ObjectSummary, SceneCommand, SceneError, SubsetEncoding,
+    ObjectSummary, SceneCommand, SceneError,
 };
 
 use super::SceneSender;
@@ -32,9 +29,9 @@ use super::proto::{
     ReleaseDataResponse, RemoveActorRequest, RemoveActorResponse, RemoveFilterRequest,
     RemoveFilterResponse, SetActorRequest, SetActorResponse, SetFilterRequest, SetFilterResponse,
     SetParentRequest, SetParentResponse, SetTransformRequest, SetTransformResponse,
-    Subset as ProtoSubset, SubsetInfo, UploadDataRequest, UploadDataResponse, VectorParam,
+    TextParam, UploadDataRequest, UploadDataResponse, VectorParam,
     VectorValue, data_info, output_spec, param_spec, param_value::Value,
-    scene_service_server::SceneService, subset as subset_proto,
+    scene_service_server::SceneService,
     upload_data_request::Payload as DataPayload,
 };
 use bevy::math::{Quat, Vec3};
@@ -314,14 +311,12 @@ impl SceneService for SceneBridgeService {
             .map(|handle| handle.id)
             .collect();
         let params = params_from_proto(request.params)?;
-        let subset = request.subset.map(subset_from_proto).transpose()?;
 
         let summary = self
             .submit(|reply| SceneCommand::AddActor {
                 kind,
                 parents,
                 params,
-                subset,
                 reply,
             })
             .await?
@@ -343,18 +338,6 @@ impl SceneService for SceneBridgeService {
             .id;
         let params = params_from_proto(request.params)?;
         let visible = request.visible;
-        // Three states, not two: leave the selection alone, replace it, or
-        // clear it back to drawing everything.
-        let subset = match (request.subset, request.clear_subset) {
-            (Some(_), true) => {
-                return Err(Status::invalid_argument(
-                    "a subset and clear_subset were both given",
-                ));
-            }
-            (Some(subset), false) => Some(Some(subset_from_proto(subset)?)),
-            (None, true) => Some(None),
-            (None, false) => None,
-        };
         // Absent leaves the placements alone; present replaces them, and an
         // empty list takes the actor off screen without removing it.
         let parents = request
@@ -366,7 +349,6 @@ impl SceneService for SceneBridgeService {
                 id,
                 params,
                 visible,
-                subset,
                 parents,
                 reply,
             })
@@ -607,60 +589,7 @@ fn actor_info(summary: &ActorSummary) -> ActorInfo {
             .collect(),
         params: params_to_proto(&summary.params),
         visible: summary.visible,
-        subset: summary.subset.map(|subset| SubsetInfo {
-            encoding: match subset.encoding {
-                SubsetEncoding::Indices => subset_proto::Encoding::Indices,
-                SubsetEncoding::Mask => subset_proto::Encoding::Mask,
-            } as i32,
-            association: match subset.association {
-                Association::PerPoint => subset_proto::Association::PerPoint,
-                Association::PerCell => subset_proto::Association::PerCell,
-            } as i32,
-            selected: subset.selected,
-        }),
     }
-}
-
-/// Reads a selection off the wire.
-///
-/// The values stay raw here: this runs on the transport thread with no access
-/// to the world, so — exactly as an upload does — the bytes cross the channel
-/// and the scene turns them into a shared asset on its own tick.
-fn subset_from_proto(subset: ProtoSubset) -> Result<SubsetRequest, Status> {
-    let dtype = decode_dtype(subset.dtype)
-        .ok_or_else(|| Status::invalid_argument("subset dtype is required"))?;
-    let encoding = match subset_proto::Encoding::try_from(subset.encoding) {
-        Ok(subset_proto::Encoding::Indices) => SubsetEncoding::Indices,
-        Ok(subset_proto::Encoding::Mask) => SubsetEncoding::Mask,
-        _ => {
-            return Err(Status::invalid_argument(
-                "subset encoding must be indices or mask",
-            ));
-        }
-    };
-    let association = match subset_proto::Association::try_from(subset.association) {
-        Ok(subset_proto::Association::PerCell) => Association::PerCell,
-        // Per-point is the common case and the sensible reading of "unset".
-        _ => Association::PerPoint,
-    };
-
-    let width = dtype.size();
-    if !(subset.data.len() as u64).is_multiple_of(width) {
-        return Err(Status::invalid_argument(format!(
-            "subset has {} bytes, which is not a whole number of {dtype} values",
-            subset.data.len()
-        )));
-    }
-    if subset.data.is_empty() {
-        return Err(Status::invalid_argument("subset is empty"));
-    }
-
-    Ok(SubsetRequest {
-        data: subset.data,
-        dtype,
-        encoding,
-        association,
-    })
 }
 
 /// One declared parameter, for the wire.
@@ -689,6 +618,9 @@ fn spec_to_proto(spec: &ParamSpec) -> ProtoSpec {
             }),
             ParamKind::Choice { options, default } => param_spec::Kind::Choice(ChoiceParam {
                 options: options.iter().map(|option| option.to_string()).collect(),
+                default_value: default.to_string(),
+            }),
+            ParamKind::Text { default } => param_spec::Kind::Text(TextParam {
                 default_value: default.to_string(),
             }),
             ParamKind::Vector {
@@ -748,6 +680,7 @@ fn filter_info(summary: &FilterSummary) -> FilterInfo {
                 handle: Some(DataHandle { id: *handle }),
             })
             .collect(),
+        problem: summary.problem.clone(),
     }
 }
 
@@ -764,7 +697,10 @@ fn filter_kind_info(summary: &FilterKindSummary) -> FilterKindInfo {
                 label: spec.label.to_string(),
                 kind: Some(match spec.kind {
                     OutputKind::Array { dtype, shape } => output_spec::Kind::Array(ArrayOutput {
-                        dtype: proto_dtype(dtype) as i32,
+                        // `DTYPE_UNSPECIFIED` for an output whose type the run
+                        // decides — the enum's zero value already means exactly
+                        // "not stated", so nothing new is needed to say it.
+                        dtype: dtype.map_or(0, |dtype| proto_dtype(dtype) as i32),
                         shape: shape.to_vec(),
                     }),
                     OutputKind::Geometry => output_spec::Kind::Geometry(GeometryOutput {}),
@@ -1079,7 +1015,7 @@ fn buffer_spec(meta: &BufferMeta) -> BufferSpec {
         dtype: proto_dtype(meta.dtype) as i32,
         shape: meta.shape.clone(),
         byte_length: meta.byte_length().unwrap_or_default(),
-        // Left empty on the way out, as SubsetInfo leaves a selection's values
+        // Left empty on the way out: a description of an array is not the array,
         // empty. A description of an array is not the array: echoing the text
         // back would put every residue name on the wire again on every
         // ListData, and the client is the side that sent them. `shape` says how
