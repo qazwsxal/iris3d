@@ -172,21 +172,21 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "gather",
         params: GATHER_PARAMS,
         outputs: GATHERED,
-        run: run_gather,
+        run: Some(run_gather),
     });
     registry.register(FilterKind {
         id: "renumber",
         label: "renumber",
         params: RENUMBER_PARAMS,
         outputs: RENUMBERED,
-        run: run_renumber,
+        run: Some(run_renumber),
     });
     registry.register(FilterKind {
         id: "reindex",
         label: "reindex",
         params: REINDEX_PARAMS,
         outputs: REINDEXED,
-        run: run_reindex,
+        run: Some(run_reindex),
     });
 }
 

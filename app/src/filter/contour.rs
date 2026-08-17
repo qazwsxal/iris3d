@@ -203,7 +203,7 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "isosurface",
         params: PARAMS,
         outputs: OUTPUTS,
-        run,
+        run: Some(run),
     });
 }
 

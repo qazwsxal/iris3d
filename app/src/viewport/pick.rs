@@ -39,6 +39,9 @@
 //! done by filters, a drawn index has to be walked back through the graph before
 //! it means anything to a client.
 
+use bevy::math::{Dir3, Ray3d};
+use bevy::mesh::Mesh3d;
+use bevy::picking::mesh_picking::ray_cast::{MeshRayCast, MeshRayCastSettings};
 use bevy::picking::mesh_picking::{MeshPickingCamera, MeshPickingPlugin, MeshPickingSettings};
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
@@ -65,6 +68,17 @@ pub struct Picked {
     /// knowing anything about what it hit. `None` if the backend did not report
     /// one.
     pub position: Option<Vec3>,
+    /// Which vertex of the drawn mesh was hit, if it could be recovered.
+    ///
+    /// Bevy's own event does not carry this — see the module doc — so it
+    /// costs a second, entity-filtered raycast from the camera through
+    /// [`position`](Self::position). `None` when the first cast reported no
+    /// position, or the second could not resolve a triangle.
+    ///
+    /// This is a **drawn** index, into whatever mesh the actor's `geometry`
+    /// input is bound to. Recovering the element a client uploaded means
+    /// walking it back through [`provenance`](crate::filter::provenance).
+    pub element: Option<u32>,
 }
 
 pub struct PickPlugin;
@@ -117,6 +131,9 @@ fn mark_placements(
 fn on_click(
     click: On<Pointer<Click>>,
     placements: Query<(&Placement, &ChildOf)>,
+    meshes3d: Query<&Mesh3d>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    mut ray_cast: MeshRayCast,
     mut picked: MessageWriter<Picked>,
 ) {
     if click.event.button != PointerButton::Primary {
@@ -127,9 +144,51 @@ fn on_click(
     let Ok((placement, parent)) = placements.get(click.entity) else {
         return;
     };
+    let element = element_at(
+        click.entity,
+        click.event.hit.position,
+        &meshes3d,
+        &cameras,
+        &mut ray_cast,
+    );
     picked.write(Picked {
         actor: placement.0,
         object: parent.parent(),
         position: click.event.hit.position,
+        element,
     });
+}
+
+/// Recovers which vertex a click landed on, which [`Pointer<Click>`] does not
+/// carry — see the module doc.
+///
+/// Casts again, from the camera through the point the first cast already
+/// found, filtered to the one entity that was hit — so this is one more ray
+/// against one mesh, not a second scene-wide pick. `first()` rather than
+/// nearest-of-many because the filter already leaves only that entity's own
+/// triangles to choose between.
+fn element_at(
+    entity: Entity,
+    hit_position: Option<Vec3>,
+    meshes3d: &Query<&Mesh3d>,
+    cameras: &Query<&GlobalTransform, With<Camera3d>>,
+    ray_cast: &mut MeshRayCast,
+) -> Option<u32> {
+    let hit_position = hit_position?;
+    let camera = cameras.iter().next()?;
+    let direction = Dir3::new(hit_position - camera.translation()).ok()?;
+    let ray = Ray3d::new(camera.translation(), direction);
+    let filter = |candidate: Entity| candidate == entity;
+    let settings = MeshRayCastSettings::default()
+        .with_filter(&filter)
+        .always_early_exit();
+
+    let triangle = ray_cast.cast_ray(ray, &settings).first()?.1.triangle_index?;
+
+    // The triangle's first corner stands for the whole hit. Exact for a
+    // vertex clicked dead centre and approximate elsewhere — good enough for
+    // "which residue", not for sub-triangle interpolation.
+    let handle = &meshes3d.get(entity).ok()?.0;
+    let mesh = ray_cast.meshes.get(handle)?;
+    mesh.indices()?.iter().nth(triangle * 3).map(|i| i as u32)
 }

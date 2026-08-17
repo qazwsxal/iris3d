@@ -294,7 +294,7 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "cartoon ribbon",
         params: PARAMS,
         outputs: OUTPUTS,
-        run,
+        run: Some(run),
     });
 }
 
