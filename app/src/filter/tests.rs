@@ -95,7 +95,7 @@ fn app() -> App {
             label: "double",
             params: DOUBLE,
             outputs: DOUBLED,
-            run: double,
+            run: Some(double),
         });
     app.world_mut()
         .resource_mut::<FilterRegistry>()
@@ -104,7 +104,7 @@ fn app() -> App {
             label: "strict",
             params: DOUBLE,
             outputs: DOUBLED,
-            run: strict,
+            run: Some(strict),
         });
     app
 }

@@ -117,15 +117,31 @@ const PARAMS: &[ParamSpec] = &[
     },
 ];
 
-const OUTPUTS: &[OutputSpec] = &[OutputSpec {
-    id: "geometry",
-    label: "geometry",
-    kind: OutputKind::Geometry,
-    // Vertices pass through untouched when nothing is cut, and are narrowed by
-    // `vertices` when something is — but the mesh is one object, not a list of
-    // elements, so the correspondence has nowhere to be read from.
-    provenance: Provenance::Opaque,
-}];
+const OUTPUTS: &[OutputSpec] = &[
+    OutputSpec {
+        id: "geometry",
+        label: "geometry",
+        kind: OutputKind::Geometry,
+        // Vertex i of the mesh is `positions[kept[i]]` — see "kept" below,
+        // which is what makes a picked vertex traceable back through
+        // whatever produced "positions", the same way `reindex` already
+        // lets a narrowed array be traced through its own `kept`.
+        provenance: Provenance::Map {
+            via: "kept",
+            of: "positions",
+        },
+    },
+    OutputSpec {
+        id: "kept",
+        label: "kept vertices",
+        kind: OutputKind::Array {
+            dtype: Some(Dtype::Uint32),
+            shape: &[0],
+        },
+        // The map itself; nothing walks further back through it.
+        provenance: Provenance::Opaque,
+    },
+];
 
 pub fn register(registry: &mut FilterRegistry) {
     registry.register(FilterKind {
@@ -133,7 +149,7 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "geometry",
         params: PARAMS,
         outputs: OUTPUTS,
-        run,
+        run: Some(run),
     });
 }
 
@@ -218,8 +234,25 @@ fn run(request: &Request) -> Outcome {
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, rgba);
     }
 
+    // Always produced, identity when nothing was cut, so a pick can walk
+    // "geometry" back through "kept" the same way whether or not `vertices`
+    // was bound.
+    let kept_indices: Vec<u32> = match &kept {
+        Some(kept) => kept.clone(),
+        None => (0..positions.len() as u32).collect(),
+    };
+
     debug!("geometry: assembled {} vertices", mesh.count_vertices());
     products.insert("geometry", mesh.into());
+    products.insert(
+        "kept",
+        crate::scene::DataArray::numeric(
+            Dtype::Uint32,
+            vec![kept_indices.len() as u64],
+            kept_indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
+        )
+        .into(),
+    );
     products.into()
 }
 
@@ -305,6 +338,42 @@ mod tests {
             "unbound normals should be worked out from the triangles"
         );
         assert!(mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
+    }
+
+    /// `kept` is what lets a picked vertex be walked back to "positions". With
+    /// nothing cut, vertex i of the mesh is still positions[i], so `kept` has
+    /// to say so explicitly rather than being absent.
+    #[test]
+    fn kept_is_the_identity_when_nothing_is_cut() {
+        let products = run(&request(quad()));
+        let kept = products.products["kept"]
+            .array()
+            .expect("kept is an array")
+            .to_u32()
+            .expect("integers");
+        assert_eq!(kept, vec![0, 1, 2, 3]);
+    }
+
+    /// A selection renumbers the mesh, so `kept` has to name the *original*
+    /// index behind each surviving vertex, in the mesh's new order.
+    #[test]
+    fn kept_maps_a_narrowed_vertex_back_to_its_original_index() {
+        let mut inputs = quad();
+        inputs.insert(
+            "vertices",
+            DataArray::numeric(
+                Dtype::Uint32,
+                vec![3],
+                [0u32, 1, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+            ),
+        );
+        let products = run(&request(inputs));
+        let kept = products.products["kept"]
+            .array()
+            .expect("kept is an array")
+            .to_u32()
+            .expect("integers");
+        assert_eq!(kept, vec![0, 1, 2]);
     }
 
     /// The whole reason colour is bound here rather than at the actor: two

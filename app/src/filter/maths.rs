@@ -177,21 +177,21 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "compare",
         params: COMPARE_PARAMS,
         outputs: MASK,
-        run: run_compare,
+        run: Some(run_compare),
     });
     registry.register(FilterKind {
         id: "arithmetic",
         label: "arithmetic",
         params: ARITHMETIC_PARAMS,
         outputs: RESULT,
-        run: run_arithmetic,
+        run: Some(run_arithmetic),
     });
     registry.register(FilterKind {
         id: "logic",
         label: "logic",
         params: LOGIC_PARAMS,
         outputs: MASK,
-        run: run_logic,
+        run: Some(run_logic),
     });
 }
 

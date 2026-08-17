@@ -72,6 +72,7 @@ pub(crate) mod index;
 pub(crate) mod maths;
 pub(crate) mod provenance;
 pub(crate) mod select;
+pub(crate) mod source;
 mod wire;
 
 pub use wire::{FilterKindSummary, FilterSummary, Filters, Graph};
@@ -316,7 +317,15 @@ pub struct FilterKind {
     pub outputs: &'static [OutputSpec],
     /// Does the work. Runs on a worker thread, so it may take as long as it
     /// needs and must not touch the world.
-    pub run: fn(&Request) -> Outcome,
+    ///
+    /// `None` marks a **source**: a kind whose output changes when an event
+    /// happens rather than when its inputs do. [`start`] never schedules one —
+    /// something else writes its [`Outputs`] directly, the same way [`collect`]
+    /// would, which is what raises the `AssetEvent::Modified` that cascades
+    /// downstream for free. Everything else about a source — creation, binding,
+    /// rendering, staleness of what reads it — is unchanged, because a source
+    /// still has `params`/`outputs` in the same shape a computed filter does.
+    pub run: Option<fn(&Request) -> Outcome>,
 }
 
 impl FilterKind {
@@ -477,6 +486,7 @@ impl Plugin for FilterPlugin {
             index::register(&mut registry);
             maths::register(&mut registry);
             select::register(&mut registry);
+            source::register(&mut registry);
         }
 
         app.configure_sets(
@@ -489,6 +499,20 @@ impl Plugin for FilterPlugin {
                 .chain()
                 .in_set(Filter),
         );
+
+        // `on_click` is a Bevy observer, not a scheduled system, so it is not
+        // ordered against here — pointer observers run before `Update`
+        // regardless, and `Picked` persists across two frames, so this only
+        // has to land before the frame is over for `AssetEvent::Modified` to
+        // be seen next frame the way any other filter's write is.
+        //
+        // `add_message` is idempotent — `PickPlugin` also calls it in the
+        // real app — and is repeated here because this module's own test
+        // harness builds a minimal `App` with `FilterPlugin` alone, and
+        // `write_picks`'s `MessageReader<Picked>` panics on an uninitialised
+        // message type rather than silently reading nothing.
+        app.add_message::<crate::viewport::pick::Picked>()
+            .add_systems(Update, source::write_picks.before(Filter));
     }
 }
 
@@ -590,6 +614,15 @@ fn start(
         let Some(registered) = registry.get(kind.0) else {
             continue;
         };
+        // A source has nothing for a worker thread to do: whatever wrote its
+        // `Outputs` already raised the `AssetEvent::Modified` this filter would
+        // have raised itself. `Stale` is cleared here rather than left set,
+        // which would otherwise show as a permanent "pending" spinner
+        // (`ui/gather.rs` reads `Has<Stale>`) between one event and the next.
+        let Some(run) = registered.run else {
+            commands.entity(entity).remove::<Stale>();
+            continue;
+        };
 
         let mut inputs = HashMap::new();
         for spec in registered.inputs() {
@@ -606,7 +639,6 @@ fn start(
             params: params.0.clone(),
             inputs,
         };
-        let run = registered.run;
         commands
             .entity(entity)
             .remove::<Stale>()

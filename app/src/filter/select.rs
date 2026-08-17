@@ -116,14 +116,14 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "subset",
         params: SUBSET_PARAMS,
         outputs: INDICES,
-        run: run_subset,
+        run: Some(run_subset),
     });
     registry.register(FilterKind {
         id: "match",
         label: "match names",
         params: MATCH_PARAMS,
         outputs: MASK,
-        run: run_match,
+        run: Some(run_match),
     });
 }
 

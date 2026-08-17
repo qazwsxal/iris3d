@@ -182,7 +182,7 @@ pub fn register(registry: &mut FilterRegistry) {
         label: "colour map",
         params: PARAMS,
         outputs: OUTPUTS,
-        run,
+        run: Some(run),
     });
 }
 

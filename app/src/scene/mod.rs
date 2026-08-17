@@ -2087,7 +2087,7 @@ mod tests {
                 label: "passthrough",
                 params: PARAMS,
                 outputs: OUTPUTS,
-                run: |_| filter::Products::new().into(),
+                run: Some(|_| filter::Products::new().into()),
             });
     }
 
