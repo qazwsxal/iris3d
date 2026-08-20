@@ -1,0 +1,15 @@
+[package]
+name = "iris3d-view"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iris3d-core = { workspace = true }
+iris3d-model = { workspace = true }
+iris3d-scene = { workspace = true }
+iris3d-filter = { workspace = true }
+
+bevy = { workspace = true }
+bevy_egui = { workspace = true }
+egui-snarl = { workspace = true }
+tokio = { workspace = true }

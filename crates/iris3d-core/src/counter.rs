@@ -17,7 +17,7 @@ pub struct GlobalIDCounter(u64);
 
 impl GlobalIDCounter {
     /// Returns the current ID and increments the internal counter
-    pub fn next(&mut self) -> u64 {
+    pub fn next_id(&mut self) -> u64 {
         let id = self.0;
         self.0 += 1;
         id

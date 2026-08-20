@@ -1,6 +1,6 @@
 //! The numbers, and what describes them.
 //!
-//! - [`array`] — element types, an array and its metadata, and the
+//! - The `array` module — element types, an array and its metadata, and the
 //!   [`DataStore`] that holds every array and mesh a client has uploaded or a
 //!   filter has produced, flat and by handle.
 //! - [`chem`] — facts about the periodic table: an element's radius and its

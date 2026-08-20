@@ -34,6 +34,11 @@ glob = "0.3.3"
 iris3d-core = { path = "crates/iris3d-core" }
 iris3d-data = { path = "crates/iris3d-data" }
 iris3d-model = { path = "crates/iris3d-model" }
+iris3d-scene = { path = "crates/iris3d-scene" }
+iris3d-filter = { path = "crates/iris3d-filter" }
+iris3d-draw = { path = "crates/iris3d-draw" }
+iris3d-view = { path = "crates/iris3d-view" }
+iris3d-grpc = { path = "crates/iris3d-grpc" }
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]

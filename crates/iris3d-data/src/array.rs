@@ -21,7 +21,7 @@
 //! mesh, and every consumer that wanted to draw them had to assemble its own —
 //! so a ribbon drawn as a lit surface and as an absorbing medium put
 //! the same vertices on the GPU twice. One `Handle<Mesh>` is one upload, referenced by
-//! however many actors want it. See [`crate::filter::geometry`], which is what
+//! however many actors want it. See `iris3d_filter::geometry`, which is what
 //! turns arrays into one.
 
 use bevy::platform::collections::HashMap;

@@ -34,22 +34,22 @@ jobs:
           workspaces: app
 
       - name: Format
-        run: cargo fmt --manifest-path app/Cargo.toml --check
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path app/Cargo.toml --all-targets
+        run: cargo clippy --workspace --all-targets
 
       - name: Test
         # The tests never build a render app, so no GPU is needed. See
-        # app/src/draw/smoke.rs.
-        run: cargo test --manifest-path app/Cargo.toml
+        # crates/iris3d-draw/src/smoke.rs.
+        run: cargo test --workspace
 
       - name: Docs
         # Catches broken intra-doc links, which are the failure mode when
         # something is renamed and a doc comment is not.
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --manifest-path app/Cargo.toml --no-deps --document-private-items
+        run: cargo doc --workspace --no-deps --document-private-items
 
   proto:
     name: Protocol

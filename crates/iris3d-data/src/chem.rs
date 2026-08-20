@@ -7,8 +7,8 @@
 //! element wants the same answer a renderer does.
 //!
 //! So this is a leaf module that depends on nothing in the crate. It sits here
-//! rather than under [`draw`](crate::draw) because
-//! [`filter::colormap`](crate::filter::colormap) reads the same table, and a
+//! rather than under `iris3d_draw` because
+//! `iris3d_filter::colormap` reads the same table, and a
 //! periodic table under the renderer would make every filter that mentions an
 //! element depend on the renderer.
 //!

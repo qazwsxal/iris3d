@@ -69,7 +69,7 @@ impl Plugin for RedrawPlugin {
 pub struct KeepAwake(Option<Timer>);
 
 impl KeepAwake {
-    /// Asks for frames to keep coming for [`TAIL`] longer.
+    /// Asks for frames to keep coming for `TAIL` longer.
     pub fn nudge(&mut self) {
         self.0 = Some(Timer::new(TAIL, TimerMode::Once));
     }
@@ -109,7 +109,7 @@ fn keep_awake(
     // run out asks for the next one, so the loop does not get to sleep in the
     // middle of one. That matters because this is virtual time, which clamps a
     // long delta — a tail interrupted by a sleep would take far longer than
-    // [`TAIL`] to run out.
+    // `TAIL` to run out.
     if timer.tick(time.delta()).is_finished() {
         awake.0 = None;
         return;

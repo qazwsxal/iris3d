@@ -1,0 +1,12 @@
+[package]
+name = "iris3d-scene"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iris3d-core = { workspace = true }
+iris3d-data = { workspace = true }
+iris3d-model = { workspace = true }
+
+bevy = { workspace = true }
+tokio = { workspace = true }

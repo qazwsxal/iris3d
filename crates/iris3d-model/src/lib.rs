@@ -28,11 +28,11 @@ pub use param::{
 
 /// The arrays an actor has bound, by input id.
 ///
-/// Derived from [`ActorParams`], like a kind's style component, and for the
+/// Derived from `ActorParams`, like a kind's style component, and for the
 /// same reason: a kind reads a plain typed field rather than searching the
 /// map. One component for every kind rather than one per kind, because a
 /// binding means the same thing everywhere and every kind resolves it the
-/// same way — look the handle up in [`DataStore`](super::DataStore).
+/// same way — look the handle up in [`DataStore`](iris3d_data::DataStore).
 ///
 /// Written only when it actually differs, which is what keeps a slider drag from
 /// invalidating geometry: `apply_actor_params` runs on any parameter change, and

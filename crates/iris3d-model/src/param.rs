@@ -33,7 +33,7 @@ pub enum ParamValue {
     /// integers, and `f32` stops representing those exactly at 16.8 million,
     /// which a 256³ grid is not far off in total samples.
     Vector(Vec<f64>),
-    /// An uploaded array, by the handle [`DataStore`](super::DataStore) knows it
+    /// An uploaded array, by the handle [`DataStore`](iris3d_data::DataStore) knows it
     /// by.
     ///
     /// Geometry is a parameter like any other, deliberately. An actor's arrays
@@ -247,7 +247,7 @@ pub enum ParamKind {
         /// reason the shape is: a kind says what it needs, and nothing infers a
         /// role from what something is called. It is what lets dragging a
         /// colour-map slider repaint a protein instead of re-tessellating every
-        /// atom and bond — see [`Dirty`](crate::draw::Dirty), which grades the
+        /// atom and bond — see `iris3d_draw::Dirty`, which grades the
         /// two apart precisely because they differ by orders of magnitude.
         structural: bool,
     },
@@ -315,7 +315,7 @@ impl ParamKind {
     ///
     /// Deliberately not part of [`sanitise`](Self::sanitise). Sanitising judges
     /// a value on its own and is called wherever a parameter is written;
-    /// checking a binding needs the [`DataStore`](super::DataStore) to look up
+    /// checking a binding needs the [`DataStore`](iris3d_data::DataStore) to look up
     /// what the handle actually points at, and the store is not reachable from
     /// every one of those places. So the two checks stay separate: sanitise
     /// decides "is this the right *kind* of value", this decides "is that

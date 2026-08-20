@@ -1,7 +1,7 @@
 # Moment-based order-independent transparency
 
 The `default` backend. **Source of truth for the code:**
-[`app/src/draw/default/mod.rs`](../../app/src/draw/default/mod.rs). Background
+[`crates/iris3d-draw/src/default/mod.rs`](../../crates/iris3d-draw/src/default/mod.rs). Background
 reading: `ref/mboit-bevy-reference.md`.
 
 ## What it does
@@ -123,7 +123,7 @@ later needs the same pair.
 # `medium` and `surface`: why two kinds
 
 **Source of truth for the code:**
-[`app/src/draw/default/medium.rs`](../../app/src/draw/default/medium.rs).
+[`crates/iris3d-draw/src/default/medium.rs`](../../crates/iris3d-draw/src/default/medium.rs).
 
 ## Transparency is a kind here, and a property everywhere else
 

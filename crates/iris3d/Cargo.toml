@@ -3,25 +3,15 @@ name = "iris3d"
 version = "0.1.0"
 edition = "2024"
 
+# Wiring only. This crate adds the plugins in order and parses the command line;
+# everything it does is in the crates below.
 [dependencies]
 iris3d-core = { workspace = true }
-iris3d-data = { workspace = true }
-iris3d-model = { workspace = true }
+iris3d-draw = { workspace = true }
+iris3d-filter = { workspace = true }
+iris3d-grpc = { workspace = true }
+iris3d-scene = { workspace = true }
+iris3d-view = { workspace = true }
 
 bevy = { workspace = true }
-bevy_egui = { workspace = true }
 clap = { workspace = true }
-prost = { workspace = true }
-tokio = { workspace = true }
-tonic = { workspace = true }
-tonic-prost = { workspace = true }
-log = { workspace = true }
-futures = { workspace = true }
-tokio-stream = { workspace = true }
-crossbeam-channel = { workspace = true }
-egui-snarl = { workspace = true }
-async-stream = { workspace = true }
-
-[build-dependencies]
-tonic-prost-build = { workspace = true }
-glob = { workspace = true }

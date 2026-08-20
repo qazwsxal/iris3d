@@ -1,6 +1,6 @@
 # Why filters exist
 
-**Source of truth for the code:** [`app/src/filter/mod.rs`](../../app/src/filter/mod.rs).
+**Source of truth for the code:** [`crates/iris3d-filter/src/lib.rs`](../../crates/iris3d-filter/src/lib.rs).
 
 ## The line
 

@@ -4,7 +4,7 @@ A **filter** reads arrays and parameters and writes arrays. It draws nothing and
 knows nothing about a rendering pipeline. Narrowing a selection, extracting a
 contour, building a ribbon and mapping values to colours are all filters.
 
-[`app/src/filter/colormap.rs`](../app/src/filter/colormap.rs) is the smallest
+[`crates/iris3d-filter/src/colormap.rs`](../crates/iris3d-filter/src/colormap.rs) is the smallest
 complete example and the one to copy.
 
 ## The five pieces
@@ -58,7 +58,7 @@ const OUTPUTS: &[OutputSpec] = &[OutputSpec {
 ```
 
 `provenance` says how the output's elements relate to an input's — see
-[`filter/provenance.rs`](../app/src/filter/provenance.rs). `Identity` means one
+[`filter/provenance.rs`](../crates/iris3d-filter/src/provenance.rs). `Identity` means one
 element out per element in, in order. Getting this right is what lets a pick in
 the 3D view be traced back to the element it came from.
 
@@ -80,7 +80,7 @@ the world** — its inputs are owned copies, which is a real cost for large arra
 and the reason `DataArray::clone` is written to look like work.
 
 Read parameters through the accessors in
-[`scene/registry.rs`](../app/src/scene/registry.rs) — `float`, `flag`, `text`,
+[`scene/registry.rs`](../crates/iris3d-scene/src/registry.rs) — `float`, `flag`, `text`,
 `vector`, `vec3`, `uvec3` — rather than indexing the map. They fall back on a
 default when a client sends nonsense, so a bad value gives a sensible result
 instead of a panic.
@@ -103,13 +103,13 @@ pub fn register(registry: &mut FilterRegistry) {
 ```
 
 `run: None` marks a **source** — a kind whose output changes when an event
-happens rather than when its inputs do. [`filter/source.rs`](../app/src/filter/source.rs)
+happens rather than when its inputs do. [`filter/source.rs`](../crates/iris3d-filter/src/source.rs)
 is the example; nothing schedules a source, something else writes its `Outputs`
 directly.
 
 ### 5. Wire it in
 
-Add the module to [`app/src/filter/mod.rs`](../app/src/filter/mod.rs) and call
+Add the module to [`crates/iris3d-filter/src/lib.rs`](../crates/iris3d-filter/src/lib.rs) and call
 its `register` beside the others:
 
 ```rust
@@ -133,10 +133,10 @@ frame later than a one-filter chain.
 
 Filters are the easiest part of the codebase to test, because `run` is a plain
 function from `&Request` to `Outcome` with no world involved. See the `mod tests`
-blocks in [`filter/contour.rs`](../app/src/filter/contour.rs) — which counts
+blocks in [`filter/contour.rs`](../crates/iris3d-filter/src/contour.rs) — which counts
 boundary edges to assert a surface is closed — and
-[`filter/colormap.rs`](../app/src/filter/colormap.rs).
+[`filter/colormap.rs`](../crates/iris3d-filter/src/colormap.rs).
 
 ```bash
-cargo test --manifest-path app/Cargo.toml
+cargo test --workspace
 ```

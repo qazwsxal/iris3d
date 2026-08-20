@@ -3733,24 +3733,14 @@ dependencies = [
 name = "iris3d"
 version = "0.1.0"
 dependencies = [
- "async-stream",
  "bevy",
- "bevy_egui",
  "clap",
- "crossbeam-channel",
- "egui-snarl",
- "futures",
- "glob",
  "iris3d-core",
- "iris3d-data",
- "iris3d-model",
- "log",
- "prost",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
+ "iris3d-draw",
+ "iris3d-filter",
+ "iris3d-grpc",
+ "iris3d-scene",
+ "iris3d-view",
 ]
 
 [[package]]
@@ -3770,11 +3760,80 @@ dependencies = [
 ]
 
 [[package]]
+name = "iris3d-draw"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "iris3d-core",
+ "iris3d-data",
+ "iris3d-filter",
+ "iris3d-model",
+ "iris3d-scene",
+]
+
+[[package]]
+name = "iris3d-filter"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "iris3d-core",
+ "iris3d-data",
+ "iris3d-model",
+ "iris3d-scene",
+ "tokio",
+]
+
+[[package]]
+name = "iris3d-grpc"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "bevy",
+ "futures",
+ "glob",
+ "iris3d-core",
+ "iris3d-filter",
+ "iris3d-model",
+ "iris3d-scene",
+ "prost",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "iris3d-model"
 version = "0.1.0"
 dependencies = [
  "bevy",
  "iris3d-data",
+]
+
+[[package]]
+name = "iris3d-scene"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "iris3d-core",
+ "iris3d-data",
+ "iris3d-model",
+ "tokio",
+]
+
+[[package]]
+name = "iris3d-view"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "egui-snarl",
+ "iris3d-core",
+ "iris3d-filter",
+ "iris3d-model",
+ "iris3d-scene",
+ "tokio",
 ]
 
 [[package]]

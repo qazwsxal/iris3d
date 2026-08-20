@@ -1,6 +1,6 @@
 # Rendering backends
 
-**Source of truth for the code:** [`app/src/draw/mod.rs`](../../app/src/draw/mod.rs).
+**Source of truth for the code:** [`crates/iris3d-draw/src/lib.rs`](../../crates/iris3d-draw/src/lib.rs).
 
 ## A backend is a whole pathway
 

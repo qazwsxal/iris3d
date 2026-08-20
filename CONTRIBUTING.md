@@ -6,11 +6,11 @@ Read [README.md](README.md) first, then the header of
 [`proto/iris3d/v1/scene.proto`](proto/iris3d/v1/scene.proto) — it explains the
 data model, and the wire contract is the real interface.
 
-The crate-level documentation in [`app/src/main.rs`](app/src/main.rs) maps the
+The crate-level documentation in [`crates/iris3d/src/main.rs`](crates/iris3d/src/main.rs) maps the
 Rust side. Generate and browse it:
 
 ```bash
-cargo doc --manifest-path app/Cargo.toml --no-deps --document-private-items --open
+cargo doc --workspace --no-deps --document-private-items --open
 ```
 
 The two most likely first changes have walkthroughs:
@@ -22,9 +22,9 @@ The two most likely first changes have walkthroughs:
 CI runs these; run them first.
 
 ```bash
-cargo fmt --check --manifest-path app/Cargo.toml
-cargo clippy --manifest-path app/Cargo.toml -- -D warnings
-cargo test --manifest-path app/Cargo.toml
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 buf lint
 ```
 
@@ -32,14 +32,14 @@ Documentation links are checked too, so a rename that breaks an intra-doc link
 fails the build:
 
 ```bash
-RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path app/Cargo.toml --no-deps --document-private-items
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
 ```
 
 Rendering is not covered by the tests. If you changed anything that reaches the
 screen, look at it:
 
 ```bash
-cargo run --manifest-path app/Cargo.toml -- --screenshot out.png --screenshot-after 240
+cargo run -- --screenshot out.png --screenshot-after 240
 ```
 
 And run the Python demos against a started app, which exercise the gRPC surface,
