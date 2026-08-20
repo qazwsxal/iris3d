@@ -63,6 +63,7 @@
 use bevy::prelude::*;
 use clap::Parser;
 
+mod bus;
 mod capture;
 mod chem;
 mod cli;
@@ -96,14 +97,14 @@ fn main() {
         // After `DefaultPlugins`: both of these need what `WinitPlugin` sets up.
         .add_plugins(RedrawPlugin)
         .add_plugins(CounterPlugin)
-        // Before `GrpcPlugin`: the scene owns the command bus, and gRPC takes a
-        // sender from it like every other producer.
+        // Both before `GrpcPlugin`: each owns a command bus, and gRPC takes a
+        // sender from each like every other producer.
         .add_plugins(ScenePlugin)
-        .add_plugins(GrpcPlugin { addr: cli.listen })
-        .add_plugins(ViewportPlugin)
         // Above the backend: filters derive arrays, and know nothing about how
         // anything is drawn.
         .add_plugins(FilterPlugin)
+        .add_plugins(GrpcPlugin { addr: cli.listen })
+        .add_plugins(ViewportPlugin)
         // Exactly one rendering pathway. See `draw`.
         .add_plugins(DrawPlugin)
         .add_plugins(UiPlugin);

@@ -49,8 +49,7 @@ pub(crate) mod select;
 pub(crate) mod source;
 mod wire;
 
-pub use wire::{FilterKindSummary, FilterSummary, Filters, Graph};
-pub(crate) use wire::{add, list, list_kinds, remove, set};
+pub use wire::{FilterBus, FilterCommand, FilterKindSummary, FilterSummary};
 
 /// One thing a filter writes.
 ///
@@ -467,7 +466,8 @@ pub struct FilterPlugin;
 
 impl Plugin for FilterPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<FilterRegistry>();
+        let bus = FilterBus::from_world(app.world());
+        app.insert_resource(bus).init_resource::<FilterRegistry>();
         {
             let mut registry = app.world_mut().resource_mut::<FilterRegistry>();
             cartoon::register(&mut registry);
@@ -489,6 +489,15 @@ impl Plugin for FilterPlugin {
             (apply_filter_params, mark_stale, start, collect)
                 .chain()
                 .in_set(Filter),
+        )
+        // After the scene's own drain, so an array uploaded in this tick is
+        // already in the store when a filter created in the same tick binds it.
+        // Before `Filter`, so a filter created this tick runs this tick.
+        .add_systems(
+            Update,
+            wire::apply_filter_commands
+                .after(crate::scene::apply_scene_commands)
+                .before(Filter),
         );
 
         // `on_click` is a Bevy observer, not a scheduled system, so it is not

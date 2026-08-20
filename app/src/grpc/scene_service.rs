@@ -32,7 +32,8 @@ use super::proto::{
     param_value::Value, scene_service_server::SceneService,
     upload_data_request::Payload as DataPayload,
 };
-use crate::scene::bus::SceneSender;
+use crate::bus::BusSender;
+use crate::filter::FilterCommand;
 use bevy::math::{Quat, Vec3};
 use bevy::prelude::warn;
 
@@ -63,26 +64,54 @@ const MAX_TEXT_BYTES: u64 = 1024 * 1024;
 /// server nothing until the client backs it up with real data.
 const MAX_EAGER_RESERVE: u64 = 64 * 1024 * 1024;
 
-/// Adapts the `SceneService` wire contract onto the scene command channel.
+/// Adapts the `SceneService` wire contract onto the two command channels.
+///
+/// Two senders rather than one, because filters are not part of the scene tree
+/// and are applied by a different system over different data. Which bus a method
+/// submits to is decided here, by the method, which is the only place that knows
+/// both.
 pub struct SceneBridgeService {
-    commands: SceneSender,
+    scene: BusSender<SceneCommand>,
+    filters: BusSender<FilterCommand>,
     /// Where events come from, for `Watch`. Cloning it is how each stream gets
     /// its own receiver.
     events: super::watch::Events,
 }
 
 impl SceneBridgeService {
-    pub fn new(commands: SceneSender, events: super::watch::Events) -> Self {
-        Self { commands, events }
+    pub fn new(
+        scene: BusSender<SceneCommand>,
+        filters: BusSender<FilterCommand>,
+        events: super::watch::Events,
+    ) -> Self {
+        Self {
+            scene,
+            filters,
+            events,
+        }
     }
 
-    /// Submits a command and waits for the scene to apply it on its next tick.
+    /// Submits a scene command and waits for it to be applied on the next tick.
     async fn submit<T>(
         &self,
         make: impl FnOnce(oneshot::Sender<T>) -> SceneCommand,
     ) -> Result<T, Status> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.commands
+        self.scene
+            .send(make(reply_tx))
+            .map_err(|_| Status::unavailable("scene is not running"))?;
+        reply_rx
+            .await
+            .map_err(|_| Status::internal("scene dropped the request without replying"))
+    }
+
+    /// As [`submit`](Self::submit), onto the filter bus.
+    async fn submit_filter<T>(
+        &self,
+        make: impl FnOnce(oneshot::Sender<T>) -> FilterCommand,
+    ) -> Result<T, Status> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.filters
             .send(make(reply_tx))
             .map_err(|_| Status::unavailable("scene is not running"))?;
         reply_rx
@@ -425,7 +454,7 @@ impl SceneService for SceneBridgeService {
         let params = params_from_proto(request.params)?;
 
         let summary = self
-            .submit(|reply| SceneCommand::AddFilter {
+            .submit_filter(|reply| FilterCommand::Add {
                 kind: request.kind,
                 params,
                 reply,
@@ -450,7 +479,7 @@ impl SceneService for SceneBridgeService {
         let params = params_from_proto(request.params)?;
 
         let summary = self
-            .submit(|reply| SceneCommand::SetFilter { id, params, reply })
+            .submit_filter(|reply| FilterCommand::Set { id, params, reply })
             .await?
             .map_err(scene_error)?;
 
@@ -470,7 +499,7 @@ impl SceneService for SceneBridgeService {
             .id;
 
         let removed = self
-            .submit(|reply| SceneCommand::RemoveFilter { id, reply })
+            .submit_filter(|reply| FilterCommand::Remove { id, reply })
             .await?;
 
         Ok(Response::new(RemoveFilterResponse { removed }))
@@ -481,7 +510,7 @@ impl SceneService for SceneBridgeService {
         _request: Request<ListFiltersRequest>,
     ) -> Result<Response<ListFiltersResponse>, Status> {
         let listing = self
-            .submit(|reply| SceneCommand::ListFilters { reply })
+            .submit_filter(|reply| FilterCommand::List { reply })
             .await?;
 
         Ok(Response::new(ListFiltersResponse {
@@ -494,7 +523,7 @@ impl SceneService for SceneBridgeService {
         _request: Request<ListFilterKindsRequest>,
     ) -> Result<Response<ListFilterKindsResponse>, Status> {
         let kinds = self
-            .submit(|reply| SceneCommand::ListFilterKinds { reply })
+            .submit_filter(|reply| FilterCommand::ListKinds { reply })
             .await?;
 
         Ok(Response::new(ListFilterKindsResponse {

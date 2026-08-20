@@ -89,6 +89,10 @@ fn app() -> App {
         .init_asset::<Mesh>()
         .init_resource::<DataStore>()
         .init_resource::<crate::scene::registry::ActorRegistry>()
+        // What `apply_filter_commands` writes to. Supplied by `ScenePlugin` and
+        // `CounterPlugin` in the real app; this harness runs neither.
+        .init_resource::<crate::counter::GlobalIDCounter>()
+        .init_resource::<crate::redraw::KeepAwake>()
         .add_systems(Update, apply_actor_params);
     app.add_plugins(FilterPlugin);
     app.world_mut()
@@ -464,5 +468,347 @@ fn an_unregistered_kind_is_survivable() {
     // rightly fail. Three frames is enough to show nothing panics.
     for _ in 0..3 {
         app.update();
+    }
+}
+
+/// The command surface: adding, configuring, listing and removing filters.
+///
+/// Here rather than beside the scene's own command tests because these are
+/// filter facts — handle allocation, cycle refusal, what a removal forgets — and
+/// the scene no longer knows how to apply them. The harness runs both drains,
+/// chained the way the real app does, because uploading an array is a scene
+/// command and binding it is a filter one.
+#[cfg(test)]
+mod commands {
+    use super::super::*;
+    use crate::counter::GlobalIDCounter;
+    use crate::redraw::KeepAwake;
+    use crate::scene::data::{BufferMeta, NamedBuffer};
+    use crate::scene::registry::{self, ActorRegistry};
+    use crate::scene::{CommandBus, DataStore, SceneCommand, SceneError};
+    use bevy::transform::TransformPlugin;
+    use tokio::sync::oneshot;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(TransformPlugin);
+        app.add_message::<AssetEvent<DataArray>>();
+        app.init_resource::<Assets<DataArray>>();
+        app.add_message::<AssetEvent<Mesh>>();
+        app.init_resource::<Assets<Mesh>>();
+        app.init_resource::<DataStore>();
+        app.init_resource::<GlobalIDCounter>();
+        app.init_resource::<ActorRegistry>();
+        app.init_resource::<FilterRegistry>();
+        app.world_mut()
+            .resource_mut::<ActorRegistry>()
+            .served_by("test");
+        app.init_resource::<KeepAwake>();
+        app.init_resource::<CommandBus>();
+        app.init_resource::<FilterBus>();
+        // Both drains, in the order the real app chains them: the scene's first,
+        // so an array uploaded this tick is in the store when a filter created
+        // this tick binds it.
+        app.add_systems(
+            Update,
+            (
+                crate::scene::apply_scene_commands,
+                super::super::wire::apply_filter_commands,
+            )
+                .chain(),
+        );
+        app
+    }
+
+    fn send<T>(
+        app: &App,
+        make: impl FnOnce(oneshot::Sender<T>) -> SceneCommand,
+    ) -> oneshot::Receiver<T> {
+        let (tx, rx) = oneshot::channel();
+        app.world()
+            .resource::<CommandBus>()
+            .sender()
+            .send(make(tx))
+            .expect("the scene is draining");
+        rx
+    }
+
+    fn send_filter<T>(
+        app: &App,
+        make: impl FnOnce(oneshot::Sender<T>) -> FilterCommand,
+    ) -> oneshot::Receiver<T> {
+        let (tx, rx) = oneshot::channel();
+        app.world()
+            .resource::<FilterBus>()
+            .sender()
+            .send(make(tx))
+            .expect("the filter graph is draining");
+        rx
+    }
+
+    fn array(name: &str, bytes: usize) -> NamedBuffer {
+        NamedBuffer {
+            meta: BufferMeta {
+                name: name.into(),
+                dtype: Dtype::Uint8,
+                shape: vec![bytes as u64],
+            },
+            data: vec![0; bytes],
+            strings: Vec::new(),
+        }
+    }
+    /// A filter kind that reads one array and writes two, so a test can tell
+    /// "an output" from "the outputs" and check declaration order.
+    fn passthrough(app: &mut App) {
+        const PARAMS: &[registry::ParamSpec] = &[registry::ParamSpec {
+            id: "values",
+            label: "values",
+            kind: registry::ParamKind::Array {
+                dtypes: &[],
+                shape: &[],
+                required: true,
+                structural: true,
+            },
+        }];
+        const OUTPUTS: &[super::super::OutputSpec] = &[
+            super::super::OutputSpec {
+                id: "first",
+                label: "first",
+                kind: super::super::OutputKind::Array {
+                    dtype: Some(Dtype::Uint8),
+                    shape: &[0],
+                },
+                provenance: super::super::Provenance::Opaque,
+            },
+            super::super::OutputSpec {
+                id: "second",
+                label: "second",
+                kind: super::super::OutputKind::Array {
+                    dtype: Some(Dtype::Uint8),
+                    shape: &[0],
+                },
+                provenance: super::super::Provenance::Opaque,
+            },
+        ];
+
+        app.world_mut()
+            .resource_mut::<super::super::FilterRegistry>()
+            .register(super::super::FilterKind {
+                id: "passthrough",
+                label: "passthrough",
+                params: PARAMS,
+                outputs: OUTPUTS,
+                run: Some(|_| super::super::Products::new().into()),
+            });
+    }
+
+    fn add_filter(
+        app: &App,
+        kind: &str,
+        bound: u64,
+    ) -> oneshot::Receiver<Result<FilterSummary, SceneError>> {
+        let mut params = registry::ParamMap::new();
+        params.insert("values".to_string(), registry::ParamValue::Data(bound));
+        send_filter(app, |reply| FilterCommand::Add {
+            kind: kind.into(),
+            params,
+            reply,
+        })
+    }
+
+    /// One upload, and the handle it came back as.
+    fn one_array(app: &mut App) -> u64 {
+        let mut uploaded = send(app, |reply| SceneCommand::UploadData {
+            arrays: vec![array("values", 4)],
+            reply,
+        });
+        app.update();
+        uploaded.try_recv().expect("a reply")[0].id
+    }
+
+    /// The reply carries usable handles, so the next call can bind one. Without
+    /// this every caller would have to add a filter, wait, and ask again.
+    #[test]
+    fn adding_a_filter_allocates_a_handle_per_declared_output() {
+        let mut app = app();
+        passthrough(&mut app);
+        let values = one_array(&mut app);
+
+        let mut added = add_filter(&app, "passthrough", values);
+        app.update();
+        let summary = added.try_recv().expect("a reply").expect("added");
+
+        let names: Vec<&str> = summary
+            .outputs
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(names, vec!["first", "second"], "declaration order");
+
+        let store = app.world().resource::<DataStore>();
+        for (name, handle) in &summary.outputs {
+            let held = store
+                .array(*handle)
+                .expect("registered before the first run");
+            assert_eq!(&held.meta.name, name);
+        }
+    }
+
+    /// Naming a kind this build does not have is the caller's mistake, and the
+    /// reply says how to find out what does exist.
+    #[test]
+    fn adding_an_unregistered_filter_kind_is_refused() {
+        let mut app = app();
+        let values = one_array(&mut app);
+
+        let mut added = add_filter(&app, "no-such-filter", values);
+        app.update();
+        assert!(matches!(
+            added.try_recv().expect("a reply"),
+            Err(SceneError::UnknownFilterKind { .. })
+        ));
+    }
+
+    /// A filter that fed itself would never come to rest: each run rewrites an
+    /// array that marks the next one stale, forever, with the app awake
+    /// throughout. Refusing the binding is much cheaper than detecting the spin.
+    #[test]
+    fn a_filter_cannot_be_made_to_read_its_own_output() {
+        let mut app = app();
+        passthrough(&mut app);
+        let values = one_array(&mut app);
+
+        let mut added = add_filter(&app, "passthrough", values);
+        app.update();
+        let summary = added.try_recv().expect("a reply").expect("added");
+        let (_, own_output) = summary.outputs[0].clone();
+
+        let mut params = registry::ParamMap::new();
+        params.insert("values".to_string(), registry::ParamValue::Data(own_output));
+        let mut set = send_filter(&app, |reply| FilterCommand::Set {
+            id: summary.id,
+            params,
+            reply,
+        });
+        app.update();
+
+        assert!(matches!(
+            set.try_recv().expect("a reply"),
+            Err(SceneError::FilterCycle { .. })
+        ));
+    }
+
+    /// The indirect case, which is the one a caller cannot see coming: two
+    /// filters that each look reasonable on their own.
+    #[test]
+    fn a_cycle_through_another_filter_is_refused() {
+        let mut app = app();
+        passthrough(&mut app);
+        let values = one_array(&mut app);
+
+        let mut first = add_filter(&app, "passthrough", values);
+        app.update();
+        let first = first.try_recv().expect("a reply").expect("added");
+
+        // The second reads the first. Fine so far.
+        let mut second = add_filter(&app, "passthrough", first.outputs[0].1);
+        app.update();
+        let second = second.try_recv().expect("a reply").expect("added");
+
+        // Now point the first at the second, closing the loop.
+        let mut params = registry::ParamMap::new();
+        params.insert(
+            "values".to_string(),
+            registry::ParamValue::Data(second.outputs[0].1),
+        );
+        let mut set = send_filter(&app, |reply| FilterCommand::Set {
+            id: first.id,
+            params,
+            reply,
+        });
+        app.update();
+
+        assert!(matches!(
+            set.try_recv().expect("a reply"),
+            Err(SceneError::FilterCycle { .. })
+        ));
+    }
+
+    /// Releasing an array a filter writes would leave it producing into nothing,
+    /// which on screen is indistinguishable from a filter that has broken.
+    #[test]
+    fn a_filters_output_cannot_be_released_on_its_own() {
+        let mut app = app();
+        passthrough(&mut app);
+        let values = one_array(&mut app);
+
+        let mut added = add_filter(&app, "passthrough", values);
+        app.update();
+        let summary = added.try_recv().expect("a reply").expect("added");
+        let generated = summary.outputs[0].1;
+
+        let mut released = send(&app, |reply| SceneCommand::ReleaseData {
+            // The upload alongside it, to show one refusal does not lose the
+            // rest of the batch.
+            ids: vec![generated, values],
+            reply,
+        });
+        app.update();
+
+        assert_eq!(released.try_recv().expect("a reply"), vec![values]);
+        assert!(
+            app.world()
+                .resource::<DataStore>()
+                .array(generated)
+                .is_some(),
+            "still held, because the filter is still writing it"
+        );
+    }
+
+    /// Removing the filter *is* how those handles go away.
+    #[test]
+    fn removing_a_filter_forgets_the_arrays_it_was_writing() {
+        let mut app = app();
+        passthrough(&mut app);
+        let values = one_array(&mut app);
+
+        let mut added = add_filter(&app, "passthrough", values);
+        app.update();
+        let summary = added.try_recv().expect("a reply").expect("added");
+
+        let mut removed = send_filter(&app, |reply| FilterCommand::Remove {
+            id: summary.id,
+            reply,
+        });
+        app.update();
+        assert!(removed.try_recv().expect("a reply"));
+
+        let store = app.world().resource::<DataStore>();
+        for (_, handle) in &summary.outputs {
+            assert!(store.array(*handle).is_none(), "released with the filter");
+        }
+        assert!(store.array(values).is_some(), "the upload is untouched");
+    }
+
+    /// A listing is how a client rediscovers a scene it did not build, so it has
+    /// to carry the output handles as well as the settings.
+    #[test]
+    fn listing_filters_reports_their_outputs() {
+        let mut app = app();
+        passthrough(&mut app);
+        let values = one_array(&mut app);
+
+        let mut added = add_filter(&app, "passthrough", values);
+        app.update();
+        let summary = added.try_recv().expect("a reply").expect("added");
+
+        let mut listed = send_filter(&app, |reply| FilterCommand::List { reply });
+        app.update();
+        let filters = listed.try_recv().expect("a reply");
+
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].id, summary.id);
+        assert_eq!(filters[0].kind, "passthrough");
+        assert_eq!(filters[0].outputs, summary.outputs);
     }
 }

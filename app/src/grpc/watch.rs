@@ -6,7 +6,7 @@
 //!
 //! # Which way the channel goes
 //!
-//! Commands travel ECS-wards over [`CommandBus`](crate::scene::bus::CommandBus), a crossbeam
+//! Commands travel ECS-wards over [`CommandBus`](crate::scene::CommandBus), a crossbeam
 //! channel drained each `Update`. Events travel the other way, and cannot use
 //! the same mechanism: there is one command queue and many watchers, and a
 //! watcher appears and disappears while the app is running.

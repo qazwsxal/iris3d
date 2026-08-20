@@ -142,7 +142,7 @@ pub type ActorData<'w, 's> = Query<
 
 /// Everything the UI reads about filters. See [`ObjectData`].
 ///
-/// Read-only on purpose, rather than [`filter::Filters`](crate::filter::Filters)
+/// Read-only on purpose, rather than `filter::Filters`
 /// — that wraps a mutable query over the same components and would conflict with
 /// every other reader in the schedule. The UI never writes a filter directly
 /// anyway; it asks through [`SceneCommand`](crate::scene::SceneCommand).

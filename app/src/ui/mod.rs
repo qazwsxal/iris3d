@@ -32,7 +32,7 @@ use bevy::prelude::*;
 use bevy_egui::egui::{LayerId, Ui, UiBuilder};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, PrimaryEguiContext, egui};
 
-use crate::filter::FilterSummary;
+use crate::filter::{FilterBus, FilterCommand, FilterSummary};
 
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamValue};
 use crate::scene::{DataArray, SceneCommand, SceneError};
@@ -574,6 +574,7 @@ fn apply_actions(
     // handle, because that is the name the command speaks in.
     scene_objects: Query<&crate::counter::UniqueID, With<crate::scene::SceneObject>>,
     bus: Res<crate::scene::CommandBus>,
+    filters: Res<FilterBus>,
     mut pending: ResMut<Pending>,
 ) {
     for action in actions.0.drain(..) {
@@ -690,9 +691,9 @@ fn apply_actions(
                 let mut params = ParamMap::default();
                 params.insert(input.to_string(), value);
                 let (reply, receiver) = tokio::sync::oneshot::channel();
-                if bus
+                if filters
                     .sender()
-                    .send(SceneCommand::SetFilter { id, params, reply })
+                    .send(FilterCommand::Set { id, params, reply })
                     .is_ok()
                 {
                     pending.waiting.push(Job {
@@ -704,7 +705,7 @@ fn apply_actions(
             }
             UiAction::RemoveFilter(id) => {
                 let (reply, _) = tokio::sync::oneshot::channel();
-                let _ = bus.sender().send(SceneCommand::RemoveFilter { id, reply });
+                let _ = filters.sender().send(FilterCommand::Remove { id, reply });
                 selection.filter = None;
             }
 
@@ -751,9 +752,9 @@ fn apply_actions(
                 match making {
                     Making::Filter(then) => {
                         let (reply, receiver) = tokio::sync::oneshot::channel();
-                        if bus
+                        if filters
                             .sender()
-                            .send(SceneCommand::AddFilter {
+                            .send(FilterCommand::Add {
                                 kind: kind.to_string(),
                                 params,
                                 reply,

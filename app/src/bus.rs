@@ -1,32 +1,29 @@
 //! The channel commands arrive on, and the handle for submitting them.
 //!
-//! Everything that changes the scene from outside the drain — the gRPC server,
-//! the interface, a drag in the viewport — goes through here. It carries
-//! [`SceneCommand`]s and nothing else, so it belongs to the scene rather than to
-//! any one producer: gRPC is the busiest caller, not the owner.
+//! Generic over what it carries, because nothing here is specific to any one
+//! kind of command: the scene and the filter graph each own a bus of their own,
+//! and the two are the same machinery over different payloads.
 //!
-//! Crossbeam rather than a Bevy message, because the sending half is used from a
-//! thread Bevy does not own. The receiver is drained by
-//! [`apply_scene_commands`](super::apply_scene_commands) each `Update`. Commands
-//! are applied in arrival order, but because insertion and deletion go through
-//! Bevy's deferred `Commands`, an object becomes queryable on the tick *after*
-//! the one that created it.
+//! Crossbeam rather than a Bevy message, because the sending half is used from
+//! threads Bevy does not own — the gRPC runtime, chiefly. A receiver is drained
+//! by the crate that owns it, once per `Update`. Commands are applied in arrival
+//! order, but because insertion and deletion go through Bevy's deferred
+//! `Commands`, an entity becomes queryable on the tick *after* the one that
+//! created it.
 
 use bevy::prelude::*;
 use bevy::winit::{EventLoopProxy, EventLoopProxyWrapper, WinitUserEvent};
 use crossbeam_channel::{Receiver, Sender, TryRecvError, unbounded};
 
-use super::SceneCommand;
-
-/// Both halves of the command channel, plus the means to wake the window.
+/// Both halves of a command channel, plus the means to wake the window.
 #[derive(Resource)]
-pub struct CommandBus {
-    tx: Sender<SceneCommand>,
-    rx: Receiver<SceneCommand>,
+pub struct Bus<T: Send + Sync + 'static> {
+    tx: Sender<T>,
+    rx: Receiver<T>,
     wake: Option<EventLoopProxy<WinitUserEvent>>,
 }
 
-impl CommandBus {
+impl<T: Send + Sync + 'static> Bus<T> {
     pub fn new(wake: Option<EventLoopProxy<WinitUserEvent>>) -> Self {
         let (tx, rx) = unbounded();
         Self { tx, rx, wake }
@@ -46,42 +43,52 @@ impl CommandBus {
     }
 
     /// A handle for submitting commands. Cheap to clone; hand one to every
-    /// producer that needs to talk to the scene.
-    pub fn sender(&self) -> SceneSender {
-        SceneSender {
+    /// producer that needs to talk to the owner of this bus.
+    pub fn sender(&self) -> BusSender<T> {
+        BusSender {
             commands: self.tx.clone(),
             wake: self.wake.clone(),
         }
     }
 
-    pub fn try_recv(&self) -> Result<SceneCommand, TryRecvError> {
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.rx.try_recv()
     }
 }
 
-impl Default for CommandBus {
+impl<T: Send + Sync + 'static> Default for Bus<T> {
     fn default() -> Self {
         Self::new(None)
     }
 }
 
-/// A handle for submitting [`SceneCommand`]s that also wakes the window.
+/// A handle for submitting commands that also wakes the window.
 ///
 /// The window only updates in response to events (see [`crate::redraw`]), and a
 /// command arriving on another thread is not an event winit knows about.
 /// Without the wake-up a scripted change would sit in the channel until the
 /// idle tick came round, so waking is part of sending rather than something a
 /// caller has to remember.
-#[derive(Clone)]
-pub struct SceneSender {
-    commands: Sender<SceneCommand>,
+pub struct BusSender<T> {
+    commands: Sender<T>,
     wake: Option<EventLoopProxy<WinitUserEvent>>,
 }
 
-impl SceneSender {
+// Derived `Clone` would demand `T: Clone`, which is wrong: a `Sender<T>` clones
+// whatever `T` is, and a command carries a reply channel that cannot be cloned.
+impl<T> Clone for BusSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            commands: self.commands.clone(),
+            wake: self.wake.clone(),
+        }
+    }
+}
+
+impl<T> BusSender<T> {
     /// Queues a command for the next tick, and makes sure a tick happens.
-    pub fn send(&self, command: SceneCommand) -> Result<(), SceneGone> {
-        self.commands.send(command).map_err(|_| SceneGone)?;
+    pub fn send(&self, command: T) -> Result<(), Gone> {
+        self.commands.send(command).map_err(|_| Gone)?;
         if let Some(wake) = &self.wake {
             // The only way this fails is the event loop having already exited,
             // which the caller finds out about when its reply never arrives.
@@ -91,8 +98,8 @@ impl SceneSender {
     }
 }
 
-/// The scene is no longer draining commands, so nothing more can be submitted.
-/// Only happens once the app is on its way out. The command is dropped rather
-/// than handed back, because there is nowhere else to put it.
+/// Nobody is draining this bus, so nothing more can be submitted. Only happens
+/// once the app is on its way out. The command is dropped rather than handed
+/// back, because there is nowhere else to put it.
 #[derive(Debug)]
-pub struct SceneGone;
+pub struct Gone;

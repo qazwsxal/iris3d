@@ -176,6 +176,14 @@ pub struct GeometryMeta {
 pub struct DataStore {
     arrays: HashMap<u64, StoredArray>,
     geometry: HashMap<u64, StoredGeometry>,
+    /// Data handle to the filter that writes it, for the handles a filter
+    /// allocated as its outputs.
+    ///
+    /// Held here rather than derived from the filter entities, so that "may I
+    /// forget this array" is a question the store answers on its own. Releasing
+    /// an array something is still generating would leave that filter producing
+    /// into nothing, which looks exactly like a filter that has broken.
+    generated: HashMap<u64, u64>,
 }
 
 /// One held array: what it is, and where its bytes live.
@@ -286,6 +294,22 @@ impl DataStore {
     }
 
     /// Forgets an array or a mesh, reporting whether it was held at all.
+    /// Records that `filter` writes `data`, when a filter's outputs are
+    /// allocated. Undone by [`forget_generated`](Self::forget_generated).
+    pub fn mark_generated(&mut self, data: u64, filter: u64) {
+        self.generated.insert(data, filter);
+    }
+
+    /// Drops the ownership record for one of a filter's outputs.
+    pub fn forget_generated(&mut self, data: u64) {
+        self.generated.remove(&data);
+    }
+
+    /// The filter that writes this handle, if any.
+    pub fn generated_by(&self, data: u64) -> Option<u64> {
+        self.generated.get(&data).copied()
+    }
+
     pub fn remove(&mut self, id: u64) -> bool {
         self.arrays.remove(&id).is_some() | self.geometry.remove(&id).is_some()
     }

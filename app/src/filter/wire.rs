@@ -24,7 +24,11 @@ use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::PrimitiveTopology;
 
+use tokio::sync::oneshot;
+
+use crate::bus::Bus;
 use crate::counter::{GlobalIDCounter, UniqueID};
+use crate::redraw::KeepAwake;
 use crate::scene::data::{BufferMeta, GeometryMeta};
 use crate::scene::registry::{ParamMap, ParamSpec};
 use crate::scene::{DataArray, DataStore, Dtype, SceneError};
@@ -190,12 +194,6 @@ impl Graph {
         }
         false
     }
-
-    /// The filter that writes this handle, if any. Used to refuse forgetting an
-    /// array something is still generating.
-    pub fn producer_of(&self, handle: u64) -> Option<u64> {
-        self.producer.get(&handle).copied()
-    }
 }
 
 /// Adds a filter, allocating a handle for each of its declared outputs.
@@ -278,6 +276,9 @@ pub fn add(
 
     for handle in allocated.values() {
         graph.producer.insert(*handle, id);
+        // The store keeps the same fact, so that refusing to release a
+        // generated array needs no filter graph — see `DataStore::generated_by`.
+        store.mark_generated(*handle, id);
     }
     graph.record_reads(registry, id, registered.id, &params);
 
@@ -395,6 +396,7 @@ pub fn remove(
 
     for handle in outputs.0.values() {
         store.remove(*handle);
+        store.forget_generated(*handle);
         graph.producer.remove(handle);
     }
     graph.reads.remove(&id);
@@ -473,3 +475,146 @@ fn check_bindings(
     }
     Ok(())
 }
+
+/// Work submitted to the filter graph from outside the ECS.
+///
+/// Separate from [`SceneCommand`](crate::scene::SceneCommand) because filters
+/// are not part of the scene tree: a filter has no place, no transform and no
+/// parent, and the two are applied by different systems over different data.
+/// Keeping them in one enum is what made the scene depend on this module.
+///
+/// Applied by [`apply_filter_commands`], after the
+/// scene has drained its own. Within a tick that means an upload is visible to a
+/// filter created in the same tick, which is the order a client needs; the
+/// reverse — binding a filter's output from a scene command in the same tick —
+/// cannot arise, because the handles only reach the caller in this command's
+/// reply.
+#[derive(Debug)]
+pub enum FilterCommand {
+    /// Derives arrays from arrays. Draws nothing.
+    ///
+    /// The reply carries a handle for each declared output, allocated by this
+    /// call, so the next thing a caller does can bind one — there is no waiting
+    /// for a first run to learn what they are.
+    Add {
+        /// Which registered kind. Named by the caller, as an actor's is.
+        kind: String,
+        /// Partial. Anything unset takes the kind's **default**.
+        params: ParamMap,
+        reply: oneshot::Sender<Result<FilterSummary, SceneError>>,
+    },
+    Set {
+        id: u64,
+        /// Partial. Anything unset keeps its **current** value — the opposite
+        /// of [`Add`](Self::Add), because here there is one.
+        params: ParamMap,
+        reply: oneshot::Sender<Result<FilterSummary, SceneError>>,
+    },
+    /// Removes a filter and forgets the arrays it was writing.
+    Remove {
+        id: u64,
+        reply: oneshot::Sender<bool>,
+    },
+    List {
+        reply: oneshot::Sender<Vec<FilterSummary>>,
+    },
+    ListKinds {
+        reply: oneshot::Sender<Vec<FilterKindSummary>>,
+    },
+}
+
+/// Everything a filter command needs to write to, as one system parameter.
+///
+/// Grouped for the same reason [`Filters`] is: the drain would otherwise sit at
+/// Bevy's ceiling of sixteen system parameters. These four are always wanted
+/// together — the store says what a handle names, and the two asset collections
+/// hold it.
+#[derive(SystemParam)]
+pub struct FilterData<'w> {
+    pub counter: ResMut<'w, GlobalIDCounter>,
+    pub arrays: ResMut<'w, Assets<DataArray>>,
+    pub meshes: ResMut<'w, Assets<Mesh>>,
+    pub store: ResMut<'w, DataStore>,
+}
+
+/// Drains commands submitted from outside the ECS and applies them to the filter
+/// graph. Replies are best-effort: a caller that has hung up is not an error.
+///
+/// Ordered after the scene's own drain, so an array uploaded in this tick is
+/// already in the store when a filter created in the same tick binds it.
+pub fn apply_filter_commands(
+    mut commands: Commands,
+    bus: Res<FilterBus>,
+    mut filters: Filters,
+    mut held: FilterData,
+    mut awake: ResMut<KeepAwake>,
+) {
+    let batch: Vec<FilterCommand> = std::iter::from_fn(|| bus.try_recv().ok()).collect();
+    if batch.is_empty() {
+        return;
+    }
+    awake.nudge();
+
+    // Who reads whose output, built once and kept current as commands are
+    // applied. Two commands arriving in one tick have to see each other, or
+    // adding a filter and then pointing another at it would look like two
+    // unrelated calls and the cycle check would miss the pair.
+    let mut graph = Graph::build(&filters.registry, &filters.entities);
+
+    for command in batch {
+        match command {
+            FilterCommand::Add {
+                kind,
+                params,
+                reply,
+            } => {
+                let result = add(
+                    &mut commands,
+                    &mut held.counter,
+                    &filters.registry,
+                    &mut graph,
+                    &mut held.arrays,
+                    &mut held.meshes,
+                    &mut held.store,
+                    kind,
+                    params,
+                );
+                let _ = reply.send(result);
+            }
+
+            FilterCommand::Set { id, params, reply } => {
+                let result = set(
+                    &filters.registry,
+                    &mut graph,
+                    &held.store,
+                    &mut filters.entities,
+                    id,
+                    params,
+                );
+                let _ = reply.send(result);
+            }
+
+            FilterCommand::Remove { id, reply } => {
+                let removed = remove(
+                    &mut commands,
+                    &mut graph,
+                    &mut held.store,
+                    &filters.entities,
+                    id,
+                );
+                let _ = reply.send(removed);
+            }
+
+            FilterCommand::List { reply } => {
+                let _ = reply.send(list(&filters.registry, &filters.entities));
+            }
+
+            FilterCommand::ListKinds { reply } => {
+                let _ = reply.send(list_kinds(&filters.registry));
+            }
+        }
+    }
+}
+
+/// The bus carrying [`FilterCommand`]s. See [`Bus`].
+pub type FilterBus = Bus<FilterCommand>;

@@ -2,7 +2,7 @@
 //!
 //! iris3d is scriptable from any language, so the wire contract in `proto/` is
 //! the real interface and this module is only an adapter onto it. Everything
-//! here converts protobuf messages into [`SceneCommand`](crate::scene::SceneCommand)s and back; the scene
+//! here converts protobuf messages into [`SceneCommand`]s and back; the scene
 //! itself does not depend on gRPC.
 //!
 //! Threading: Bevy owns the main thread, so the tonic server runs on its own
@@ -14,7 +14,9 @@ use bevy::prelude::*;
 use std::net::SocketAddr;
 use tonic::transport::Server;
 
-use crate::scene::bus::SceneSender;
+use crate::bus::BusSender;
+use crate::filter::FilterCommand;
+use crate::scene::SceneCommand;
 
 pub mod scene_service;
 pub mod watch;
@@ -48,18 +50,23 @@ impl Default for GrpcPlugin {
 
 impl Plugin for GrpcPlugin {
     fn build(&self, app: &mut App) {
-        // The bus belongs to the scene, so `ScenePlugin` has to be added
-        // first. gRPC is one producer onto it and holds a sender like any
-        // other.
-        let commands = app
+        // The buses belong to the scene and the filter graph, so both plugins
+        // have to be added first. gRPC is one producer onto each and holds a
+        // sender like any other.
+        let scene = app
             .world()
-            .get_resource::<crate::scene::bus::CommandBus>()
+            .get_resource::<crate::scene::CommandBus>()
             .expect("ScenePlugin must be added before GrpcPlugin")
+            .sender();
+        let filters = app
+            .world()
+            .get_resource::<crate::filter::FilterBus>()
+            .expect("FilterPlugin must be added before GrpcPlugin")
             .sender();
         // Built here rather than inside the server thread: the service needs
         // the same channel the ECS subscribes watchers to.
         let events = watch::Events::default();
-        spawn_server(self.addr, commands, events.clone());
+        spawn_server(self.addr, scene, filters, events.clone());
         app.insert_resource(events)
             .add_systems(Update, watch::report_picks);
     }
@@ -69,7 +76,12 @@ impl Plugin for GrpcPlugin {
 ///
 /// The server only needs the command channel, so it can come up before the
 /// Bevy app starts ticking; requests simply queue until the scene drains them.
-fn spawn_server(addr: SocketAddr, commands: SceneSender, events: watch::Events) {
+fn spawn_server(
+    addr: SocketAddr,
+    scene: BusSender<SceneCommand>,
+    filters: BusSender<FilterCommand>,
+    events: watch::Events,
+) {
     let spawned = std::thread::Builder::new()
         .name("iris3d-grpc".to_string())
         .spawn(move || {
@@ -86,8 +98,8 @@ fn spawn_server(addr: SocketAddr, commands: SceneSender, events: watch::Events) 
             };
 
             runtime.block_on(async move {
-                let scene = scene_service::SceneBridgeService::new(commands, events);
-                let service = SceneServiceServer::new(scene)
+                let service = scene_service::SceneBridgeService::new(scene, filters, events);
+                let service = SceneServiceServer::new(service)
                     .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE);
 
                 info!("grpc: listening on {addr}");
