@@ -386,10 +386,8 @@ pub fn gather(read: &SceneRead) -> Gathered {
             })
             .collect();
 
-        // An object owns no arrays at all. It used to own one — an actor's
-        // inline selection, held on the actor rather than in the store — and
-        // that is gone with the selection: every array is now a handle the
-        // store knows about, whoever made it.
+        // An object owns no arrays at all: every array is a handle the store
+        // knows about, whoever made it.
 
         // A parent that is not itself an object does not make this a child.
         let parented = parent.is_some_and(|link| objects.contains(link.parent()));
@@ -523,6 +521,9 @@ pub fn gather(read: &SceneRead) -> Gathered {
         consumers,
         total_bytes,
         meshes: store.iter_geometry().count(),
-        vertices: store.iter_geometry().map(|(_, mesh)| mesh.meta.vertices).sum(),
+        vertices: store
+            .iter_geometry()
+            .map(|(_, mesh)| mesh.meta.vertices)
+            .sum(),
     }
 }

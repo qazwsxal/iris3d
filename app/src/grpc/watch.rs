@@ -6,7 +6,7 @@
 //!
 //! # Which way the channel goes
 //!
-//! Commands travel ECS-wards over [`GrpcBridge`](super::GrpcBridge), a crossbeam
+//! Commands travel ECS-wards over [`CommandBus`](crate::scene::bus::CommandBus), a crossbeam
 //! channel drained each `Update`. Events travel the other way, and cannot use
 //! the same mechanism: there is one command queue and many watchers, and a
 //! watcher appears and disappears while the app is running.
@@ -20,7 +20,7 @@
 //!
 //! # Filtering happens per subscriber, not centrally
 //!
-//! Each stream holds its own [`Subscribe`] and drops what it did not ask for.
+//! Each stream holds its own [`Subscribe`](crate::grpc::proto::Subscribe) and drops what it did not ask for.
 //! The alternative — the ECS knowing who wants what — would put a registry of
 //! live gRPC clients inside the scene, which is exactly the coupling the command
 //! channel exists to avoid. The cost is that an event nobody wants is still
@@ -103,7 +103,7 @@ impl Events {
 /// the interface does with a click and what a script is told about it are two
 /// consumers of one fact, and neither should go through the other.
 pub fn report_picks(
-    mut picks: MessageReader<crate::viewport::pick::Picked>,
+    mut picks: MessageReader<crate::scene::Picked>,
     events: Res<Events>,
     ids: Query<&crate::counter::UniqueID>,
     objects: Query<(), With<SceneObject>>,

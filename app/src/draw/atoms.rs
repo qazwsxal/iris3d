@@ -4,7 +4,7 @@
 //! opaque ball-and-stick is an opaque ball-and-stick whatever draws it, and the
 //! only thing a pathway decides is what it hangs off the resulting mesh.
 //!
-//! That is a deliberate exception to the note in [`super::elements`] that
+//! That is a deliberate exception to the note in [`crate::chem`] that
 //! tessellation belongs to a backend, and the same exception the cartoon makes.
 //! The note is right when two pathways genuinely differ — one that *instanced*
 //! a single sphere per atom rather than merging would share nothing with this —
@@ -17,8 +17,6 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-
-use super::elements;
 
 /// Where each atom and bond ended up in the merged vertex buffer.
 ///
@@ -201,7 +199,7 @@ pub fn build(
     let mut merged = Merged::default();
     for (index, position) in positions.iter().enumerate() {
         let atomic_number = elements.get(index).copied().unwrap_or(6);
-        let radius = elements::radius(atomic_number) * sizes.atom_scale.max(0.01);
+        let radius = crate::chem::radius(atomic_number) * sizes.atom_scale.max(0.01);
         merged.stamp(
             &sphere,
             &Transform::from_translation(*position).with_scale(Vec3::splat(radius)),

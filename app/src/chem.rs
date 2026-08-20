@@ -1,15 +1,21 @@
-//! Chemistry every backend agrees on.
+//! Chemistry: facts about the periodic table.
 //!
-//! An element's radius and its conventional colour are facts about the periodic
-//! table, not about a pipeline. Any two pathways drawing a molecule disagree
-//! about *how* to put a sphere on screen and agree completely about how big it
-//! is and what colour it should be, so this sits in the shared layer.
+//! An element's radius and its conventional colour are properties of the
+//! element, not of a pipeline or of any way of computing with it. Two rendering
+//! pathways disagree about *how* to put a sphere on screen and agree completely
+//! about how big it is and what colour it should be, and a filter tinting by
+//! element wants the same answer a renderer does.
 //!
-//! Tessellation deliberately does **not** live here. This backend merges spheres
-//! and cylinders into one mesh; one that instanced a single sphere per atom, or
-//! raytraced analytic ones, would share no geometry code with it, because they
-//! are not doing the same thing. That is the usual outcome, and the reason
-//! actors belong to a backend.
+//! So this is a leaf module that depends on nothing in the crate. It sits here
+//! rather than under [`draw`](crate::draw) because
+//! [`filter::colormap`](crate::filter::colormap) reads the same table, and a
+//! periodic table under the renderer would make every filter that mentions an
+//! element depend on the renderer.
+//!
+//! Tessellation deliberately does **not** live here. The default backend merges
+//! spheres and cylinders into one mesh; one that instanced a single sphere per
+//! atom, or raytraced analytic ones, would share no geometry code with it. That
+//! is the usual outcome, and the reason actors belong to a backend.
 
 use bevy::prelude::*;
 

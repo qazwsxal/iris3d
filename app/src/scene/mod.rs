@@ -5,16 +5,15 @@
 //!
 //! - [`data`] — raw arrays, held flat in a [`DataStore`] and referred to by
 //!   handle. They belong to no object.
-//! - [`actor`] — how something gets *drawn*, as its own entity, binding the
-//!   arrays it reads.
+//! - [`registry`] — what an actor is: a kind id, its parameters, and the
+//!   arrays it binds. An actor is an entity, not a module.
 //! - [`link`] — where an actor sits, which is not the same question as what it
 //!   reads.
 //!
-//! An object is a place in the tree and nothing else. It used to hold data as
-//! well, and a dataset component saying what shape that data made, which meant
-//! "put these numbers in the scene" and "put a node in the tree" were one
-//! operation. Splitting them is what lets one array feed several actors, and one
-//! actor read arrays that arrived separately.
+//! An object is a place in the tree and nothing else. It holds no data at all,
+//! which is what lets one array feed several actors and one actor read arrays
+//! that arrived separately. Getting numbers into the scene and putting a node in
+//! the tree are two operations, deliberately.
 //!
 //! Nothing here knows about gRPC, and nothing here draws. A rendering backend
 //! plugs in by consuming actors and their bindings — see [`crate::draw`], which
@@ -29,18 +28,21 @@ use tokio::sync::oneshot;
 
 use crate::counter::{GlobalIDCounter, UniqueID};
 use crate::filter::{self, FilterKindSummary, FilterSummary};
-use crate::grpc::GrpcBridge;
 use crate::redraw::KeepAwake;
 
+pub mod bus;
 pub mod data;
 pub mod link;
+pub mod pick;
 pub mod registry;
 pub mod subset;
 
 // Only what other modules reach for. The rest stays available under its own
 // module path — this is a binary crate, so unused re-exports are just noise.
+pub use bus::CommandBus;
 pub use data::{BufferMeta, DataArray, DataStore, Dtype, HeldMeta, NamedBuffer};
 pub use link::{Parents, Placement, Shown};
+pub use pick::Picked;
 pub use registry::{ActorKindId, ActorParams, ActorRegistry};
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
@@ -51,7 +53,14 @@ pub struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.init_asset::<DataArray>()
+        let bus = bus::CommandBus::from_world(app.world());
+        app.insert_resource(bus)
+            // Registered here because the type lives here: `viewport::pick` writes
+            // it, and the interface, `filter::source` and `grpc::watch` all read
+            // it. A reader panics on an unregistered message type, so no one
+            // reader can be the one to register it.
+            .add_message::<Picked>()
+            .init_asset::<DataArray>()
             .init_resource::<DataStore>()
             .add_systems(
                 Update,
@@ -71,10 +80,8 @@ impl Plugin for ScenePlugin {
 
 /// A place in the scene tree, and a name for it.
 ///
-/// It used to hold data too — the arrays it was uploaded with, a dataset
-/// component saying what shape they made, and a `Fields` map saying what they
-/// meant. An actor binds the arrays it draws, so none of that was read any
-/// more, and what an object *is* has collapsed into where it is.
+/// It holds no data: an actor binds the arrays it draws, so what an object *is*
+/// is only where it is.
 ///
 /// Paired with a [`UniqueID`] carrying its handle, a transform, and whatever
 /// actors and child objects hang under it.
@@ -322,9 +329,6 @@ pub enum SceneCommand {
         /// of [`AddActor`](Self::AddActor), because here there is one.
         params: registry::ParamMap,
         visible: Option<bool>,
-        /// `None` leaves the selection alone; `Some(None)` clears it back to
-        /// drawing everything. Absent and cleared have to be distinguishable,
-        /// which is what the nesting buys.
         /// Replace the set of objects it is drawn under. `None` leaves them
         /// alone; `Some(vec![])` takes it off screen without removing it.
         parents: Option<Vec<u64>>,
@@ -377,9 +381,8 @@ pub enum SceneCommand {
 
 /// What a deletion took with it.
 ///
-/// Only ever the object named. Actors used to be listed here too, because a
-/// deletion destroyed the ones drawn under it; they are detached now, so
-/// nothing else goes.
+/// Only ever the object named. Actors under it are detached rather than
+/// destroyed, so nothing else goes.
 #[derive(Debug, Default, Clone)]
 pub struct Deleted {
     pub objects: Vec<u64>,
@@ -388,8 +391,8 @@ pub struct Deleted {
 /// Read-only view of the objects in the scene.
 ///
 /// An object's children are placements and nested objects, told apart by what
-/// each entity carries. An actor is no longer among them — a placement is a
-/// copy of one, and the actor itself sits outside the tree.
+/// each entity carries. An actor is not among them — a placement is a copy of
+/// one, and the actor itself sits outside the tree.
 type Objects<'w, 's> = Query<'w, 's, (Entity, &'static UniqueID, &'static SceneObject)>;
 
 /// Mutable view of the actor entities.
@@ -449,7 +452,7 @@ type ActorItem<'a> = (
 #[allow(clippy::too_many_arguments)]
 pub fn apply_scene_commands(
     mut commands: Commands,
-    bridge: Res<GrpcBridge>,
+    bus: Res<CommandBus>,
     mut counter: ResMut<GlobalIDCounter>,
     registry: Res<ActorRegistry>,
     held: HeldData,
@@ -464,7 +467,7 @@ pub fn apply_scene_commands(
     mut awake: ResMut<KeepAwake>,
     mut filters: crate::filter::Filters,
 ) {
-    let batch: Vec<SceneCommand> = std::iter::from_fn(|| bridge.try_recv().ok()).collect();
+    let batch: Vec<SceneCommand> = std::iter::from_fn(|| bus.try_recv().ok()).collect();
     if batch.is_empty() {
         return;
     }
@@ -745,9 +748,8 @@ pub fn apply_scene_commands(
                 };
                 let mut listing: Vec<ActorSummary> = actors
                     .iter()
-                    // Filtered on where an actor is drawn. It used to filter on
-                    // whose data it read, which is no longer a thing an actor
-                    // has — it reads arrays, and any number of them.
+                    // Filtered on where an actor is drawn, not on what it
+                    // reads: an actor reads arrays, and any number of them.
                     .filter(|item| filter.is_none_or(|object| item.5.0.contains(&object)))
                     .filter_map(|item| summarise_actor(item, &ids))
                     .collect();
@@ -894,18 +896,14 @@ fn add_actor(
     // representation suits some data is a judgement, and the server has no
     // basis for it beyond the order the kinds happened to register in.
     //
-    // Nor is there a check that the kind suits the object any more. It used to
-    // ask `supports(DatasetKind)`, which only meant anything while an actor took
-    // its data from the object it hung under. An actor binds its own arrays now,
-    // so what the object holds — usually nothing — says nothing about what can
-    // draw there. `check_bindings` is the real gate, and it asks about the data
-    // rather than about the node.
-    let registered = registry
-        .get(&kind)
-        .ok_or_else(|| SceneError::UnknownKind {
-            kind: kind.clone(),
-            backend: registry.backend(),
-        })?;
+    // Nor is there a check that the kind suits the object. An actor binds its
+    // own arrays, so what the object holds — usually nothing — says nothing
+    // about what can draw there. `check_bindings` is the real gate, and it asks
+    // about the data rather than about the node.
+    let registered = registry.get(&kind).ok_or_else(|| SceneError::UnknownKind {
+        kind: kind.clone(),
+        backend: registry.backend(),
+    })?;
 
     // Unset parameters take the kind's default: this is a new actor, so there
     // is no previous value to preserve.
@@ -928,10 +926,7 @@ fn add_actor(
         commands,
         counter,
         entities,
-        (
-            ActorKindId(registered.id),
-            ActorParams(params.clone()),
-        ),
+        (ActorKindId(registered.id), ActorParams(params.clone())),
     );
     drawn.insert(id, entity);
 
@@ -1042,17 +1037,12 @@ fn set_actor(
     .ok_or(SceneError::NoSuchActor(id))
 }
 
-/// Spawns an object entity, its default actor, and registers its handle.
-/// Returns the handle and a summary of the new object.
-#[allow(clippy::too_many_arguments)]
-/// Adds an object to the world. It holds data and a place in the tree, and
-/// nothing draws it.
+/// Spawns an object entity and registers its handle. Returns the handle and a
+/// summary of the new object.
 ///
-/// Choosing how to draw something is not the server's decision to make. It
-/// used to pick the first registered kind that supported the dataset, which
-/// meant the server answered a question only the caller can — and answered it
-/// out of whatever order the kinds happened to register in. A client that
-/// wants the obvious representation asks `ListActorKinds` and names one.
+/// The object is a place in the tree and a name. It holds no data and nothing
+/// draws it: how to draw something is the caller's decision, and a client that
+/// wants a particular representation asks `ListActorKinds` and names one.
 fn spawn_object(
     commands: &mut Commands,
     counter: &mut GlobalIDCounter,
@@ -1109,13 +1099,13 @@ fn set_parent(
         None => None,
     };
 
-    if let (Some(target), Some(parent_id)) = (parent_entity, parent) {
-        if would_cycle(entity, target, pending_parent, child_of) {
-            return Err(SceneError::WouldCycle {
-                object: id,
-                parent: parent_id,
-            });
-        }
+    if let (Some(target), Some(parent_id)) = (parent_entity, parent)
+        && would_cycle(entity, target, pending_parent, child_of)
+    {
+        return Err(SceneError::WouldCycle {
+            object: id,
+            parent: parent_id,
+        });
     }
 
     if keep_world_transform {
@@ -1206,9 +1196,9 @@ fn effective_parent(
 /// simply no placement left. `sync_placements` drops the dead parent from its
 /// list, and `RemoveActor` is what destroys an actor outright.
 ///
-/// Actors used to die here, back when an actor *was* its placement. That is the
-/// whole reason the two are separate: one drawing shown in three places should
-/// not be destroyed by tidying up one of them.
+/// An actor and its placements are separate precisely so that this is true: one
+/// drawing shown in three places must not be destroyed by tidying up one of
+/// them.
 fn delete_object(
     commands: &mut Commands,
     index: &mut HashMap<u64, Entity>,
@@ -1289,7 +1279,6 @@ fn summarise(
 mod tests {
     use super::*;
     use crate::counter::GlobalIDCounter;
-    use crate::grpc::GrpcBridge;
     use crate::redraw::KeepAwake;
 
     fn app() -> App {
@@ -1318,7 +1307,7 @@ mod tests {
             .resource_mut::<ActorRegistry>()
             .served_by("test");
         app.init_resource::<KeepAwake>();
-        app.init_resource::<GrpcBridge>();
+        app.init_resource::<CommandBus>();
         // Placements follow the parents the drain writes, so the whole chain
         // has to run for a listing to reflect what is on screen.
         app.add_systems(
@@ -1340,7 +1329,7 @@ mod tests {
     ) -> oneshot::Receiver<T> {
         let (tx, rx) = oneshot::channel();
         app.world()
-            .resource::<GrpcBridge>()
+            .resource::<CommandBus>()
             .sender()
             .send(make(tx))
             .expect("the scene is draining");
@@ -1462,10 +1451,7 @@ mod tests {
         let handles: Vec<u64> = summaries.iter().map(|array| array.id).collect();
         assert_eq!(summaries.len(), 2);
         assert_eq!(
-            summaries
-                .iter()
-                .map(|a| a.meta.name())
-                .collect::<Vec<_>>(),
+            summaries.iter().map(|a| a.meta.name()).collect::<Vec<_>>(),
             ["xyz", "t"],
             "handles come back in declaration order"
         );
@@ -1633,11 +1619,11 @@ mod tests {
     /// A rebind to an array the input cannot read is refused, and the actor
     /// keeps the array it had.
     ///
-    /// `SetActor` used to judge each value with `sanitise` alone, which for an
-    /// array input only confirms that a handle is a handle. An input's declared
-    /// element type and shape therefore held when the actor was added and
-    /// stopped holding the moment it was changed — which is the call a client
-    /// uses to rebind geometry.
+    /// `sanitise` alone is not enough here: for an array input it only confirms
+    /// that a handle is a handle. A rebind has to be checked against the input's
+    /// declared element type and shape as well, or the declaration would hold
+    /// when the actor is added and stop holding the moment it is changed — which
+    /// is the call a client uses to rebind geometry.
     #[test]
     fn an_actor_keeps_its_binding_when_a_rebind_is_refused() {
         const INPUTS: &[registry::ParamSpec] = &[registry::ParamSpec {
@@ -1906,7 +1892,10 @@ mod tests {
         let ids: Vec<&str> = kinds.iter().map(|kind| kind.id.as_str()).collect();
         assert_eq!(ids, vec!["marker", "sized"], "registration order");
 
-        let sized = kinds.iter().find(|kind| kind.id == "sized").expect("listed");
+        let sized = kinds
+            .iter()
+            .find(|kind| kind.id == "sized")
+            .expect("listed");
         assert_eq!(sized.label, "Sized");
         assert_eq!(sized.params.len(), 1);
         assert_eq!(sized.params[0].id, "size");
@@ -1955,10 +1944,10 @@ mod tests {
 
     /// Deleting an object costs an actor that one appearance and nothing else.
     ///
-    /// Actors used to be destroyed with the object they were under, which meant
-    /// tidying up one of the three places a drawing appeared destroyed the
-    /// drawing. The actor is not in the tree at all now — only its placements
-    /// are — so a deletion reaches exactly one of them.
+    /// The actor is not in the tree — only its placements are — so a deletion
+    /// reaches exactly one of them. Destroying the actor with the object would
+    /// mean tidying up one of the three places a drawing appears destroys the
+    /// drawing.
     #[test]
     fn deleting_one_object_leaves_the_actor_drawn_under_the_others() {
         let mut app = app();
@@ -2136,7 +2125,9 @@ mod tests {
 
         let store = app.world().resource::<DataStore>();
         for (name, handle) in &summary.outputs {
-            let held = store.array(*handle).expect("registered before the first run");
+            let held = store
+                .array(*handle)
+                .expect("registered before the first run");
             assert_eq!(&held.meta.name, name);
         }
     }
@@ -2244,7 +2235,10 @@ mod tests {
 
         assert_eq!(released.try_recv().expect("a reply"), vec![values]);
         assert!(
-            app.world().resource::<DataStore>().array(generated).is_some(),
+            app.world()
+                .resource::<DataStore>()
+                .array(generated)
+                .is_some(),
             "still held, because the filter is still writing it"
         );
     }

@@ -1,7 +1,7 @@
 //! The node view: the scene as a graph, wired together by hand.
 //!
 //! The tabbed panel lists each kind of thing separately and says in words what
-//! is connected to what — "from [3] colour map" on an input, "→ [9] surface" on
+//! is connected to what — `from [3] colour map` on an input, `→ [9] surface` on
 //! an output. That works, and it is what makes a chain followable at all, but a
 //! list can only ever describe a graph. This draws it.
 //!
@@ -35,9 +35,10 @@ use egui_snarl::{InPin, NodeId, OutPin, Snarl};
 
 use crate::scene::DataArray;
 use crate::scene::registry::{ParamKind, ParamValue, data as bound_handle};
+use crate::select::Selection;
 
 use super::gather::Gathered;
-use super::{PendingActions, UiAction, UiState, params};
+use super::{PendingActions, UiAction, params};
 
 /// One thing on the canvas, named by what identifies it in the scene.
 ///
@@ -184,9 +185,9 @@ fn column(node: &Node, depth: &HashMap<Node, f32>) -> f32 {
 fn rows(node: &Node, scene: &Gathered) -> usize {
     let pins = match node {
         Node::Data(_) => 1,
-        Node::Filter(id) => scene.filter(*id).map_or(1, |row| {
-            inputs_of(row.specs).count().max(row.outputs.len())
-        }),
+        Node::Filter(id) => scene
+            .filter(*id)
+            .map_or(1, |row| inputs_of(row.specs).count().max(row.outputs.len())),
         Node::Actor(entity) => scene
             .actor(*entity)
             .map_or(1, |(_, row)| inputs_of(row.specs).count().max(1)),
@@ -212,12 +213,7 @@ impl NodeGraph {
         for row in scene.rows.values() {
             wanted.extend(row.actors.iter().map(|actor| Node::Actor(actor.entity)));
         }
-        wanted.extend(
-            scene
-                .detached
-                .iter()
-                .map(|actor| Node::Actor(actor.entity)),
-        );
+        wanted.extend(scene.detached.iter().map(|actor| Node::Actor(actor.entity)));
 
         // Gone from the scene, so gone from the canvas. Removing by node rather
         // than clearing keeps every surviving node's position.
@@ -417,7 +413,7 @@ pub fn show(
     graph: &mut NodeGraph,
     scene: &Gathered,
     actions: &mut PendingActions,
-    state: &UiState,
+    selection: &Selection,
 ) {
     graph.reconcile(scene);
     graph.rewire(scene);
@@ -425,7 +421,7 @@ pub fn show(
     let mut viewer = Viewer {
         scene,
         actions,
-        state,
+        selection,
     };
     SnarlWidget::new()
         .id(egui::Id::new("iris3d-nodes"))
@@ -436,18 +432,18 @@ pub fn show(
 struct Viewer<'a> {
     scene: &'a Gathered,
     actions: &'a mut PendingActions,
-    state: &'a UiState,
+    selection: &'a Selection,
 }
 
 impl Viewer<'_> {
     /// Whether this node is what the rest of the interface is pointed at.
     fn is_selected(&self, node: &Node) -> bool {
         match node {
-            Node::Object(entity) => self.state.selected == Some(*entity),
-            Node::Actor(entity) => self.state.selected_actor == Some(*entity),
-            Node::Filter(id) => self.state.selected_filter == Some(*id),
+            Node::Object(entity) => self.selection.object == Some(*entity),
+            Node::Actor(entity) => self.selection.actor == Some(*entity),
+            Node::Filter(id) => self.selection.filter == Some(*id),
             Node::Data(handle) => {
-                self.array_of(*handle).is_some() && self.state.selected_array == self.array_of(*handle)
+                self.array_of(*handle).is_some() && self.selection.array == self.array_of(*handle)
             }
         }
     }
@@ -504,9 +500,10 @@ impl Viewer<'_> {
                     .actions
                     .0
                     .push(UiAction::SetFilterParam(id, param, value)),
-                Node::Actor(entity) => {
-                    self.actions.0.push(UiAction::SetParam(entity, param, value))
-                }
+                Node::Actor(entity) => self
+                    .actions
+                    .0
+                    .push(UiAction::SetParam(entity, param, value)),
                 Node::Data(_) | Node::Object(_) => {}
             }
         }
@@ -647,8 +644,7 @@ impl SnarlViewer<Node> for Viewer<'_> {
 
     /// The title, and clicking it selects the thing the node stands for.
     ///
-    /// The canvas used to be a read-only projection in this one respect: the
-    /// panel's trees could select and it could not, so switching views lost
+    /// The canvas selects as the panel's trees do, so switching views keeps
     /// where you were. Selection is already shared state — `viewport::overlays`
     /// draws the outline from it, both trees highlight from it — so the canvas
     /// joining in costs one action per kind and nothing else.
@@ -670,15 +666,11 @@ impl SnarlViewer<Node> for Viewer<'_> {
         // dead" is the question being asked while looking at it. The marker is
         // in the title so it survives a folded body.
         let problem = match node {
-            Node::Filter(id) => self
-                .scene
-                .filter(id)
-                .and_then(|row| row.problem.clone()),
+            Node::Filter(id) => self.scene.filter(id).and_then(|row| row.problem.clone()),
             _ => None,
         };
         let title = match &problem {
-            Some(_) => egui::RichText::new(format!("⚠ {title}"))
-                .color(ui.visuals().error_fg_color),
+            Some(_) => egui::RichText::new(format!("⚠ {title}")).color(ui.visuals().error_fg_color),
             None => egui::RichText::new(title),
         };
         let mut clicked = ui.selectable_label(chosen, title);
@@ -919,14 +911,16 @@ impl SnarlViewer<Node> for Viewer<'_> {
             return;
         };
         match sink {
-            Node::Filter(id) => self
-                .actions
-                .0
-                .push(UiAction::SetFilterParam(id, spec.id, ParamValue::Unset)),
-            Node::Actor(entity) => self
-                .actions
-                .0
-                .push(UiAction::SetParam(entity, spec.id, ParamValue::Unset)),
+            Node::Filter(id) => {
+                self.actions
+                    .0
+                    .push(UiAction::SetFilterParam(id, spec.id, ParamValue::Unset))
+            }
+            Node::Actor(entity) => {
+                self.actions
+                    .0
+                    .push(UiAction::SetParam(entity, spec.id, ParamValue::Unset))
+            }
             Node::Data(_) | Node::Object(_) => {}
         }
     }

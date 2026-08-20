@@ -33,7 +33,7 @@
 //! The element index. Bevy's mesh backend computes a `triangle_index` while
 //! raycasting and then drops it — `HitData::new` takes camera, depth, position
 //! and normal, and leaves `extra` as `None`. So "which atom" needs its own
-//! [`MeshRayCast`](bevy::picking::mesh_picking::ray_cast::MeshRayCast) call
+//! [`MeshRayCast`] call
 //! rather than a read off the event, and that is the piece the event stream will
 //! need. See `provenance` for the other half of the problem: with subsetting now
 //! done by filters, a drawn index has to be walked back through the graph before
@@ -47,39 +47,7 @@ use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
 
 use crate::scene::link::Placement;
-
-/// Which placement was clicked, and the actor and object it resolves to.
-///
-/// A message rather than a direct write, because what *selection* means belongs
-/// to the interface and picking should not depend on the interface existing.
-/// `ui` reads these and turns them into the same `UiAction`s a tree click emits,
-/// so there is still one path that changes what is selected.
-#[derive(Message, Debug, Clone, Copy)]
-pub struct Picked {
-    /// The actor entity that was drawn.
-    pub actor: Entity,
-    /// The object it was drawn under. An actor appears once per object, so this
-    /// is the one thing a hit can say that the actor alone cannot.
-    pub object: Entity,
-    /// Where the ray met the geometry, in world space.
-    ///
-    /// Free — the ray gave it up on the way to finding the entity — and it is
-    /// what a client needs to place a label or measure a distance without
-    /// knowing anything about what it hit. `None` if the backend did not report
-    /// one.
-    pub position: Option<Vec3>,
-    /// Which vertex of the drawn mesh was hit, if it could be recovered.
-    ///
-    /// Bevy's own event does not carry this — see the module doc — so it
-    /// costs a second, entity-filtered raycast from the camera through
-    /// [`position`](Self::position). `None` when the first cast reported no
-    /// position, or the second could not resolve a triangle.
-    ///
-    /// This is a **drawn** index, into whatever mesh the actor's `geometry`
-    /// input is bound to. Recovering the element a client uploaded means
-    /// walking it back through [`provenance`](crate::filter::provenance).
-    pub element: Option<u32>,
-}
+use crate::scene::pick::Picked;
 
 pub struct PickPlugin;
 
@@ -91,7 +59,6 @@ impl Plugin for PickPlugin {
                 require_markers: true,
                 ..default()
             })
-            .add_message::<Picked>()
             .add_systems(Update, (mark_camera, mark_placements))
             .add_observer(on_click);
     }
@@ -183,7 +150,11 @@ fn element_at(
         .with_filter(&filter)
         .always_early_exit();
 
-    let triangle = ray_cast.cast_ray(ray, &settings).first()?.1.triangle_index?;
+    let triangle = ray_cast
+        .cast_ray(ray, &settings)
+        .first()?
+        .1
+        .triangle_index?;
 
     // The triangle's first corner stands for the whole hit. Exact for a
     // vertex clicked dead centre and approximate elsewhere — good enough for

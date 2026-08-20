@@ -28,6 +28,8 @@ impl Plugin for ViewportPlugin {
             .init_resource::<FrameRequest>()
             .init_resource::<PointerCaptured>()
             .init_resource::<OverlaySettings>()
+            .init_resource::<crate::select::Selection>()
+            .init_resource::<manipulate::GizmoMode>()
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
@@ -118,6 +120,7 @@ fn setup(mut commands: Commands) {
 pub struct PointerCaptured(pub bool);
 
 /// Left drag orbits, right or middle drag pans, wheel zooms.
+#[allow(clippy::too_many_arguments)]
 fn orbit_controls(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -235,6 +238,11 @@ pub(crate) fn has_extent(aabb: &Aabb) -> bool {
     Vec3::from(aabb.half_extents).max_element() > 0.0
 }
 
+/// Anything with bounds that has just appeared or just moved — what a reframe
+/// waits to settle before it fits the camera to the scene.
+type Reframed<'w, 's> =
+    Query<'w, 's, (), (With<Aabb>, Or<(Added<Aabb>, Changed<GlobalTransform>)>)>;
+
 /// Frames the view when new geometry appears, or when the UI asks.
 ///
 /// Driven off `Aabb`, which Bevy computes for any mesh, so this works for any
@@ -246,7 +254,7 @@ pub(crate) fn has_extent(aabb: &Aabb) -> bool {
 /// hidden, but the same is true of anything hidden by hand.
 fn frame_content(
     time: Res<Time>,
-    changed: Query<(), (With<Aabb>, Or<(Added<Aabb>, Changed<GlobalTransform>)>)>,
+    changed: Reframed,
     bounds: Query<(&Aabb, &GlobalTransform, &InheritedVisibility)>,
     children: Query<&Children>,
     mut request: ResMut<FrameRequest>,

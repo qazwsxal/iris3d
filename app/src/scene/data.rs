@@ -159,9 +159,8 @@ pub struct GeometryMeta {
 
 /// Every array and mesh a client holds, by handle.
 ///
-/// Data used to arrive only as part of an object, which made "get these numbers
-/// into the scene" and "put a node in the tree" the same operation. They are not
-/// the same thing: one array may feed several representations, and a
+/// Getting numbers into the scene and putting a node in the tree are two
+/// operations, not one: an array may feed several representations, and a
 /// representation may read arrays that arrived at different times. So arrays are
 /// held here, flat, and an actor names the ones it wants.
 ///
@@ -431,19 +430,6 @@ impl DataArray {
     }
 }
 
-/// What a selection's indices are attached to.
-///
-// `Association` — PerPoint against PerCell — was declared here and read by
-// exactly one thing: an actor's inline `Subset`, which had to know whether it
-// was keeping vertices or whole cells. Subsetting is filters now, and each of
-// them answers the question by construction rather than by asking: `gather`
-// takes elements, `renumber` takes entries of a connectivity array.
-//
-// The distinction is real and will come back when a per-cell array can actually
-// be *drawn* — no actor kind reads one today. It is left out rather than kept
-// unused, so that when it returns it does so attached to something that needs
-// it.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,10 +476,12 @@ mod tests {
         DataArray::numeric(dtype, vec![values.len() as u64], data)
     }
 
-    /// Every dtype decodes to the same numbers. `to_u32` on a `Uint64` array
-    /// used to decode with a four-byte stride and panic on the `try_into`,
-    /// which meant any client uploading numpy's default integer width crashed
-    /// the application rather than seeing a rejected upload.
+    /// Every dtype decodes to the same numbers, whatever its width.
+    ///
+    /// The trap is a stride that does not match the dtype — decoding a `Uint64`
+    /// four bytes at a time panics on the `try_into`, so a client uploading
+    /// numpy's default integer width would crash the application rather than
+    /// see a rejected upload.
     #[test]
     fn every_dtype_round_trips() {
         let values = [0u64, 1, 7, 42, 127];

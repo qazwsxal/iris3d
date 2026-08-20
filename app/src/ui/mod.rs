@@ -1,10 +1,13 @@
 //! The egui interface: a menu bar, and one panel down the right-hand side.
 //!
-//! The panel carries three tabs — Data, Actors, Scene — and each is split into
-//! a list on top and a details section below it. Everything used to be spread
-//! across two side panels with the actor controls buried inside the tree, which
-//! meant tuning a slider squeezed the 3D view from both sides at once. One
-//! panel leaves the viewport the whole left of the window.
+//! Two views, switched from the menu bar. The **scene** view puts the panel
+//! beside the 3D viewport; the **nodes** view gives the graph canvas the whole
+//! window. See [`View`].
+//!
+//! The panel carries four tabs — Data, Filters, Actors, Scene — and each is
+//! split into a list on top and a details section below it. One panel rather
+//! than two, so the viewport keeps the whole left of the window and tuning a
+//! slider does not squeeze it from both sides.
 //!
 //! The UI reads the world and emits [`UiAction`]s rather than mutating
 //! directly. Two reasons: egui closures would otherwise need several
@@ -33,9 +36,9 @@ use crate::filter::FilterSummary;
 
 use crate::scene::registry::{ActorKindId, ActorParams, ActorRegistry, ParamMap, ParamValue};
 use crate::scene::{DataArray, SceneCommand, SceneError};
+use crate::select::Selection;
 use crate::viewport::manipulate::GizmoMode;
 use crate::viewport::{FrameRequest, FrameTarget, PointerCaptured};
-
 
 pub struct UiPlugin;
 
@@ -63,10 +66,7 @@ impl Plugin for UiPlugin {
             // `take_picks` first: a click in the 3D view becomes the same
             // `UiAction` a tree click emits, and is applied in the tick it
             // happened rather than the one after.
-            .add_systems(
-                Update,
-                (take_picks, collect_replies, apply_actions).chain(),
-            );
+            .add_systems(Update, (take_picks, collect_replies, apply_actions).chain());
     }
 }
 
@@ -131,11 +131,8 @@ pub enum Tab {
 /// refused alike. That is right — either one has nothing to do — but it means
 /// the interface has to hold a half-built thing somewhere, and this is where.
 ///
-/// The Actors tab used to duck this by spawning through `spawn_actor` directly,
-/// which skips the check the command path runs. It could therefore make actors
-/// a script could not: `add_actor("surface")` over gRPC is refused outright,
-/// while the button beside it produced one that silently drew nothing. Same
-/// draft for both closes that gap.
+/// Both halves of the interface build through the same draft and the same
+/// command path, so a button can never make an actor a script could not.
 pub struct Draft {
     pub kind: &'static str,
     pub params: ParamMap,
@@ -180,26 +177,9 @@ pub struct UiState {
     pub view: View,
     pub tab: Tab,
     pub show_panel: bool,
-    /// The selected object.
-    ///
-    /// Not tab-local, unlike the two below: `viewport::overlays` reads it to
-    /// draw the selection outline, the Scene tree highlights it, and the Actors
-    /// tab tints its group. Selecting an actor moves this to that actor's
-    /// source so all three agree.
-    pub selected: Option<Entity>,
-    pub selected_actor: Option<Entity>,
-    pub selected_array: Option<AssetId<DataArray>>,
-    /// The selected filter, by handle. See [`Gathered::filter`].
-    pub selected_filter: Option<u64>,
     /// The actor or filter being built, if a create form is open. One at a
     /// time, which is what keeps an offer from nesting a draft inside a draft.
     pub draft: Option<Draft>,
-    /// What the transform handles do to the selected object.
-    ///
-    /// Here rather than in a resource of its own, so the viewport reads it from
-    /// the same place it already reads the selection — and so `draw_ui` needs no
-    /// seventeenth system parameter. See `viewport::manipulate`.
-    pub gizmo: crate::viewport::manipulate::GizmoMode,
 }
 
 impl Default for UiState {
@@ -208,12 +188,7 @@ impl Default for UiState {
             view: View::Scene,
             tab: Tab::Scene,
             show_panel: true,
-            selected: None,
-            selected_actor: None,
-            selected_array: None,
-            selected_filter: None,
             draft: None,
-            gizmo: crate::viewport::manipulate::GizmoMode::default(),
         }
     }
 }
@@ -316,6 +291,8 @@ struct Job {
 fn draw_ui(
     mut contexts: EguiContexts,
     mut state: ResMut<UiState>,
+    selection: Res<Selection>,
+    mut gizmo: ResMut<GizmoMode>,
     mut actions: ResMut<PendingActions>,
     read: gather::SceneRead,
     arrays: Res<Assets<DataArray>>,
@@ -383,11 +360,8 @@ fn draw_ui(
                         (GizmoMode::Rotate, "Turn"),
                         (GizmoMode::Scale, "Size"),
                     ] {
-                        if ui
-                            .selectable_label(state.gizmo == mode, label)
-                            .clicked()
-                        {
-                            state.gizmo = mode;
+                        if ui.selectable_label(*gizmo == mode, label).clicked() {
+                            *gizmo = mode;
                         }
                     }
                 }
@@ -432,7 +406,7 @@ fn draw_ui(
     // early, so `right` stays zero and the 3D camera is given nothing below —
     // there is no scene on screen to inset it into.
     if state.view == View::Nodes {
-        nodes::show(&mut root, &mut graph, &world, &mut actions, &state);
+        nodes::show(&mut root, &mut graph, &world, &mut actions, &selection);
         // Nothing of the 3D scene is on screen, so the camera is given no
         // viewport at all rather than a sliver behind the canvas.
         if let Ok(mut camera) = cameras.single_mut() {
@@ -481,24 +455,26 @@ fn draw_ui(
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 match tab {
-                                    Tab::Data => data::details(ui, &world, &state, &arrays),
+                                    Tab::Data => data::details(ui, &world, &selection, &arrays),
                                     Tab::Filters => filters::details(
                                         ui,
                                         &world,
                                         &state,
+                                        &selection,
                                         &read.filter_registry,
                                         &mut actions,
                                     ),
-                                    Tab::Actors => {
-                                        actors::details(
-                                            ui,
-                                            &world,
-                                            &state,
-                                            &read.registry,
-                                            &mut actions,
-                                        )
+                                    Tab::Actors => actors::details(
+                                        ui,
+                                        &world,
+                                        &state,
+                                        &selection,
+                                        &read.registry,
+                                        &mut actions,
+                                    ),
+                                    Tab::Scene => {
+                                        scene::details(ui, &world, &selection, &mut actions)
                                     }
-                                    Tab::Scene => scene::details(ui, &world, &state, &mut actions),
                                 }
                                 // Whatever the backend last refused. Filters are
                                 // the only thing here that can be refused for a
@@ -515,16 +491,12 @@ fn draw_ui(
                 egui::ScrollArea::vertical()
                     .id_salt("list")
                     .show(ui, |ui| match tab {
-                        Tab::Data => data::list(ui, &world, &state, &mut actions, &arrays),
-                        Tab::Filters => filters::list(ui, &world, &state, &mut actions),
-                        Tab::Actors => actors::list(ui, &world, &state, &mut actions),
-                        Tab::Scene => scene::list(
-                            ui,
-                            &world,
-                            &state,
-                            &mut actions,
-                            &mut overlays,
-                        ),
+                        Tab::Data => data::list(ui, &world, &selection, &mut actions, &arrays),
+                        Tab::Filters => filters::list(ui, &world, &selection, &mut actions),
+                        Tab::Actors => actors::list(ui, &world, &selection, &mut actions),
+                        Tab::Scene => {
+                            scene::list(ui, &world, &selection, &mut actions, &mut overlays)
+                        }
                     });
             })
             .response
@@ -572,7 +544,7 @@ fn draw_ui(
 /// Ignored while egui owns the mouse. A click on a panel that happens to lie
 /// over geometry is a click on the panel.
 fn take_picks(
-    mut picks: MessageReader<crate::viewport::pick::Picked>,
+    mut picks: MessageReader<crate::scene::Picked>,
     captured: Res<PointerCaptured>,
     mut actions: ResMut<PendingActions>,
 ) {
@@ -586,10 +558,12 @@ fn take_picks(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_actions(
     mut commands: Commands,
     mut actions: ResMut<PendingActions>,
     mut state: ResMut<UiState>,
+    mut selection: ResMut<Selection>,
     mut frame: ResMut<FrameRequest>,
     registry: Res<ActorRegistry>,
     filter_registry: Res<crate::filter::FilterRegistry>,
@@ -599,13 +573,13 @@ fn apply_actions(
     // The handle as well as the membership: an actor is asked for by object
     // handle, because that is the name the command speaks in.
     scene_objects: Query<&crate::counter::UniqueID, With<crate::scene::SceneObject>>,
-    bridge: Res<crate::grpc::GrpcBridge>,
+    bus: Res<crate::scene::CommandBus>,
     mut pending: ResMut<Pending>,
 ) {
     for action in actions.0.drain(..) {
         match action {
             UiAction::Select(entity) => {
-                state.selected = if state.selected == Some(entity) {
+                selection.object = if selection.object == Some(entity) {
                     None
                 } else {
                     Some(entity)
@@ -613,18 +587,18 @@ fn apply_actions(
                 // The Actors tab would otherwise keep showing the controls for
                 // an actor of whatever was selected before, tinted under a
                 // group that is no longer highlighted.
-                state.selected_actor = None;
+                selection.actor = None;
             }
             UiAction::SelectActor(entity, under) => {
-                state.selected_actor = Some(entity);
+                selection.actor = Some(entity);
                 // Select the object it was clicked under too: the outline, the
                 // tree highlight and the tint in the actor list all key off the
                 // object selection, and three of them disagreeing is worse than
                 // the outline moving. An actor drawn nowhere clears it rather
                 // than leaving it on whatever was picked before.
-                state.selected = under.filter(|parent| scene_objects.contains(*parent));
+                selection.object = under.filter(|parent| scene_objects.contains(*parent));
             }
-            UiAction::SelectArray(id) => state.selected_array = Some(id),
+            UiAction::SelectArray(id) => selection.array = Some(id),
             UiAction::ToggleVisibility(entity) => {
                 if let Ok(mut visibility) = visibility.get_mut(entity) {
                     *visibility = match *visibility {
@@ -635,9 +609,7 @@ fn apply_actions(
             }
             UiAction::Delete(id) => {
                 let (reply, _) = tokio::sync::oneshot::channel();
-                let _ = bridge
-                    .sender()
-                    .send(SceneCommand::DeleteObject { id, reply });
+                let _ = bus.sender().send(SceneCommand::DeleteObject { id, reply });
             }
             UiAction::Frame(entity) => frame.0 = Some(FrameTarget::Subtree(entity)),
             UiAction::FrameAll => frame.0 = Some(FrameTarget::All),
@@ -659,8 +631,8 @@ fn apply_actions(
                 // so despawning the actor takes its placements with it.
                 if actor_entities.contains(entity) {
                     commands.entity(entity).despawn();
-                    if state.selected_actor == Some(entity) {
-                        state.selected_actor = None;
+                    if selection.actor == Some(entity) {
+                        selection.actor = None;
                     }
                 }
             }
@@ -686,7 +658,7 @@ fn apply_actions(
 
             UiAction::SetActorParents(id, parents) => {
                 let (reply, _) = tokio::sync::oneshot::channel();
-                let _ = bridge.sender().send(SceneCommand::SetActor {
+                let _ = bus.sender().send(SceneCommand::SetActor {
                     id,
                     params: ParamMap::default(),
                     visible: None,
@@ -696,7 +668,7 @@ fn apply_actions(
             }
             UiAction::SetObjectParent(id, parent) => {
                 let (reply, _) = tokio::sync::oneshot::channel();
-                let _ = bridge.sender().send(SceneCommand::SetParent {
+                let _ = bus.sender().send(SceneCommand::SetParent {
                     id,
                     parent,
                     // The object stays where it looks like it is. Re-parenting
@@ -707,7 +679,7 @@ fn apply_actions(
                 });
             }
 
-            UiAction::SelectFilter(id) => state.selected_filter = Some(id),
+            UiAction::SelectFilter(id) => selection.filter = Some(id),
 
             // Filters go down the command channel rather than being written
             // here. Not for consistency's sake: `set` merges the change over the
@@ -718,7 +690,7 @@ fn apply_actions(
                 let mut params = ParamMap::default();
                 params.insert(input.to_string(), value);
                 let (reply, receiver) = tokio::sync::oneshot::channel();
-                if bridge
+                if bus
                     .sender()
                     .send(SceneCommand::SetFilter { id, params, reply })
                     .is_ok()
@@ -732,10 +704,8 @@ fn apply_actions(
             }
             UiAction::RemoveFilter(id) => {
                 let (reply, _) = tokio::sync::oneshot::channel();
-                let _ = bridge
-                    .sender()
-                    .send(SceneCommand::RemoveFilter { id, reply });
-                state.selected_filter = None;
+                let _ = bus.sender().send(SceneCommand::RemoveFilter { id, reply });
+                selection.filter = None;
             }
 
             UiAction::OfferFilter { kind, then } => {
@@ -781,7 +751,7 @@ fn apply_actions(
                 match making {
                     Making::Filter(then) => {
                         let (reply, receiver) = tokio::sync::oneshot::channel();
-                        if bridge
+                        if bus
                             .sender()
                             .send(SceneCommand::AddFilter {
                                 kind: kind.to_string(),
@@ -803,7 +773,7 @@ fn apply_actions(
                     // needed afterwards the way a filter's outputs are.
                     Making::Actor(object) => {
                         let (reply, _) = tokio::sync::oneshot::channel();
-                        let _ = bridge.sender().send(SceneCommand::AddActor {
+                        let _ = bus.sender().send(SceneCommand::AddActor {
                             // One object. Drawing it somewhere else as well is a
                             // second parent, which a client asks for by handle —
                             // there is nothing to click on to mean "and also
@@ -849,11 +819,7 @@ fn collect_replies(mut pending: ResMut<Pending>, mut actions: ResMut<PendingActi
                     continue;
                 };
                 // The handles are the reason the reply was kept at all.
-                let Some((_, handle)) = summary
-                    .outputs
-                    .iter()
-                    .find(|(id, _)| id == output)
-                else {
+                let Some((_, handle)) = summary.outputs.iter().find(|(id, _)| id == output) else {
                     warn!("ui: filter {} produced no output \"{output}\"", summary.id);
                     continue;
                 };

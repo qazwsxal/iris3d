@@ -13,7 +13,7 @@
 //!
 //! # Opaque only
 //!
-//! As for [`glycan`](super::glycan), and unlike [`cartoon`](super::cartoon):
+//! As for [`glycan`](super::glycan), and unlike [`cartoon`](crate::filter::cartoon):
 //! there is no absorbing mode. A ball-and-stick is a *ball* — a hard little
 //! sphere standing for an atom — and making it a medium light passes through
 //! says something about atoms that nobody means.
@@ -22,9 +22,7 @@ use bevy::prelude::*;
 
 use crate::draw::atoms::{self, Layout, Sizes};
 use crate::scene::link::Placement;
-use crate::scene::registry::{
-    ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float,
-};
+use crate::scene::registry::{ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float};
 
 use crate::scene::{DataArray, DataStore, Dtype};
 
@@ -252,10 +250,8 @@ fn read(
         .and_then(|array| array.to_u32())
         .unwrap_or_else(|| vec![6; positions.len()]);
 
-    // Bonds are taken as they are. They used to be renumbered here, because an
-    // actor narrowed its own atoms and a bond names atoms by index; narrowing
-    // is a filter's job now, and `renumber` has already done it by the time
-    // anything reaches this.
+    // Bonds are taken as they are. Narrowing is a filter's job, so `renumber`
+    // has already reconciled the indices by the time anything reaches this.
     let bonds = bound(bindings, "bonds", store, arrays)
         .and_then(|array| array.to_u32())
         .unwrap_or_default();
@@ -269,7 +265,7 @@ fn read(
     let colours: Vec<[f32; 4]> = (0..positions.len())
         .map(|index| {
             bound_rgb.as_ref().map_or_else(
-                || crate::draw::elements::colour(elements.get(index).copied().unwrap_or(6)),
+                || crate::chem::colour(elements.get(index).copied().unwrap_or(6)),
                 |colours| colours[index],
             )
         })

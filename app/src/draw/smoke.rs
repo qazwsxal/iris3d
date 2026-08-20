@@ -66,7 +66,7 @@ fn headless() -> App {
         .init_asset::<StandardMaterial>();
 
     // The scene's half of what a backend reads. Not `ScenePlugin`, which also
-    // drains the gRPC command queue and so wants a bridge; these two systems are
+    // drains the command queue and so wants a bus; these two systems are
     // the part that turns a spawned actor into something drawable.
     app.init_asset::<DataArray>()
         .init_resource::<DataStore>()
@@ -284,11 +284,10 @@ fn the_backend_stands_up_with_every_kind_it_registers() {
 /// The point of stage 4, asserted directly: two actors of two kinds over one
 /// geometry hold the **same** `Mesh` asset.
 ///
-/// They used to hold two, built separately from the same four arrays, because
-/// each kind assembled its own. That is one upload of the vertices per way of
-/// drawing them, and a ribbon drawn as both a lit surface and an absorbing medium
-/// paid it twice. Handle equality is what proves nothing was duplicated;
-/// anything weaker passes while the memory is still doubled.
+/// Each kind assembling its own would mean one upload of the vertices per way
+/// of drawing them, and a ribbon drawn as both a lit surface and an absorbing
+/// medium would pay it twice. Handle equality is what proves nothing was
+/// duplicated; anything weaker passes while the memory is still doubled.
 #[test]
 fn two_kinds_over_one_geometry_share_the_mesh() {
     let mut app = headless();

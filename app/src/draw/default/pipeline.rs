@@ -5,6 +5,7 @@ use bevy::core_pipeline::FullscreenShader;
 use bevy::core_pipeline::core_3d::CORE_3D_DEPTH_FORMAT;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::mesh::{Mesh, MeshVertexBufferLayoutRef};
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::render::camera::ExtractedCamera;
 use bevy::render::mesh::RenderMesh;
@@ -15,14 +16,12 @@ use bevy::render::render_resource::binding_types::{
 };
 use bevy::render::render_resource::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntries, BlendComponent, BlendFactor, BlendOperation,
-    BlendState, CachedRenderPipelineId, ColorTargetState, ColorWrites, FragmentState,
-    CompareFunction, DepthStencilState, MultisampleState, PipelineCache, PrimitiveState,
-    RenderPipelineDescriptor, SamplerBindingType, ShaderStages,
-    SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
-    SpecializedRenderPipeline, SpecializedRenderPipelines, TextureFormat,
-    TextureSampleType, VertexState,
+    BlendState, CachedRenderPipelineId, ColorTargetState, ColorWrites, CompareFunction,
+    DepthStencilState, FragmentState, MultisampleState, PipelineCache, PrimitiveState,
+    RenderPipelineDescriptor, SamplerBindingType, ShaderStages, SpecializedMeshPipeline,
+    SpecializedMeshPipelineError, SpecializedMeshPipelines, SpecializedRenderPipeline,
+    SpecializedRenderPipelines, TextureFormat, TextureSampleType, VertexState,
 };
-use bevy::platform::collections::HashMap;
 use bevy::render::view::{ExtractedView, Msaa, ViewUniform};
 use bevy::shader::Shader;
 

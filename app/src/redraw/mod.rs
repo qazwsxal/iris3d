@@ -75,11 +75,14 @@ impl KeepAwake {
     }
 }
 
+/// Anything that has just appeared or just moved. The signal that the scene is
+/// not yet at rest.
+type Settling<'w, 's> = Query<'w, 's, (), Or<(Added<Aabb>, Changed<GlobalTransform>)>>;
 /// Asks for the next frame for as long as the scene is still settling.
 fn keep_awake(
     time: Res<Time>,
     mut awake: ResMut<KeepAwake>,
-    settling: Query<(), Or<(Added<Aabb>, Changed<GlobalTransform>)>>,
+    settling: Settling,
     mut resized: MessageReader<bevy::window::WindowResized>,
     mut redraw: MessageWriter<RequestRedraw>,
 ) {

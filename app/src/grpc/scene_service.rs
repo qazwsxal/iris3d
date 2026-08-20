@@ -7,34 +7,32 @@ use tokio::sync::{broadcast, oneshot};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::scene::registry::{ParamKind, ParamMap, ParamSpec, ParamValue};
 use crate::filter::{FilterKindSummary, FilterSummary, OutputKind};
+use crate::scene::registry::{ParamKind, ParamMap, ParamSpec, ParamValue};
 use crate::scene::{
     ActorSummary, BufferMeta, DataSummary, Dtype, HeldMeta, KindSummary, NamedBuffer,
     ObjectSummary, SceneCommand, SceneError,
 };
 
-use super::SceneSender;
 use super::proto::{
     ActorHandle, ActorInfo, ActorKindInfo, AddActorRequest, AddActorResponse, AddFilterRequest,
     AddFilterResponse, ArrayOutput, ArrayParam, BoolParam, BufferSpec, ChoiceParam, Chunk,
     CreateObjectRequest, CreateObjectResponse, DataHandle, DataInfo, DeleteObjectRequest,
     DeleteObjectResponse, Dtype as ProtoDtype, FilterHandle, FilterInfo, FilterKindInfo,
     FilterOutput, FloatParam, GeometryOutput, GeometryParam, GeometrySpec, ListActorKindsRequest,
-    ListActorKindsResponse, ListActorsRequest,
-    ListActorsResponse, ListDataRequest, ListDataResponse, ListFilterKindsRequest,
-    ListFilterKindsResponse, ListFiltersRequest, ListFiltersResponse, ListObjectsRequest,
-    ListObjectsResponse, ObjectHandle, ObjectInfo, OutputSpec as ProtoOutputSpec,
-    ParamSpec as ProtoSpec, ParamValue as ProtoParam, ReleaseDataRequest,
-    ReleaseDataResponse, RemoveActorRequest, RemoveActorResponse, RemoveFilterRequest,
-    RemoveFilterResponse, SetActorRequest, SetActorResponse, SetFilterRequest, SetFilterResponse,
-    SetParentRequest, SetParentResponse, SetTransformRequest, SetTransformResponse,
-    Subscribe, TextParam, UploadDataRequest, UploadDataResponse, VectorParam, WatchRequest,
-    WatchResponse,
-    VectorValue, data_info, output_spec, param_spec, param_value::Value,
-    scene_service_server::SceneService,
+    ListActorKindsResponse, ListActorsRequest, ListActorsResponse, ListDataRequest,
+    ListDataResponse, ListFilterKindsRequest, ListFilterKindsResponse, ListFiltersRequest,
+    ListFiltersResponse, ListObjectsRequest, ListObjectsResponse, ObjectHandle, ObjectInfo,
+    OutputSpec as ProtoOutputSpec, ParamSpec as ProtoSpec, ParamValue as ProtoParam,
+    ReleaseDataRequest, ReleaseDataResponse, RemoveActorRequest, RemoveActorResponse,
+    RemoveFilterRequest, RemoveFilterResponse, SetActorRequest, SetActorResponse, SetFilterRequest,
+    SetFilterResponse, SetParentRequest, SetParentResponse, SetTransformRequest,
+    SetTransformResponse, Subscribe, TextParam, UploadDataRequest, UploadDataResponse, VectorParam,
+    VectorValue, WatchRequest, WatchResponse, data_info, output_spec, param_spec,
+    param_value::Value, scene_service_server::SceneService,
     upload_data_request::Payload as DataPayload,
 };
+use crate::scene::bus::SceneSender;
 use bevy::math::{Quat, Vec3};
 use bevy::prelude::warn;
 
@@ -298,9 +296,9 @@ impl SceneService for SceneBridgeService {
         request: Request<AddActorRequest>,
     ) -> Result<Response<AddActorResponse>, Status> {
         let request = request.into_inner();
-        // Required. An empty kind used to mean "whatever you would have
-        // chosen", and there is no longer anything to choose — ask
-        // ListActorKinds and name one.
+        // Required. There is nothing for an empty kind to mean: the server
+        // has no basis for choosing a representation, so a client asks
+        // ListActorKinds and names one.
         if request.kind.is_empty() {
             return Err(Status::invalid_argument(
                 "kind is required; ask ListActorKinds for the ones this build supports",
@@ -1094,6 +1092,26 @@ fn buffer_spec(meta: &BufferMeta) -> BufferSpec {
     }
 }
 
+/// Whether one event matches what a stream asked for.
+///
+/// Per stream rather than centrally — see `watch::Events`. Both filters are
+/// "empty means everything except when it means nothing": an empty `kinds`
+/// reports nothing, because subscribing to no kinds is how you say you are not
+/// interested yet; an empty `objects` reports every object, because naming none
+/// is how you say you do not care which.
+///
+/// The asymmetry is deliberate and is the difference between an opt-in and a
+/// restriction.
+fn reportable(wanted: &Subscribe, event: &super::watch::SceneEvent) -> bool {
+    let kind = wanted.kinds.contains(&(event.kind as i32));
+    let object = wanted.objects.is_empty()
+        || wanted
+            .objects
+            .iter()
+            .any(|handle| handle.id == event.object);
+    kind && object
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1254,24 +1272,4 @@ mod tests {
         assert_eq!(spec.byte_length, 0);
         assert!(spec.values.is_empty());
     }
-}
-
-/// Whether one event matches what a stream asked for.
-///
-/// Per stream rather than centrally — see `watch::Events`. Both filters are
-/// "empty means everything except when it means nothing": an empty `kinds`
-/// reports nothing, because subscribing to no kinds is how you say you are not
-/// interested yet; an empty `objects` reports every object, because naming none
-/// is how you say you do not care which.
-///
-/// The asymmetry is deliberate and is the difference between an opt-in and a
-/// restriction.
-fn reportable(wanted: &Subscribe, event: &super::watch::SceneEvent) -> bool {
-    let kind = wanted
-        .kinds
-        .iter()
-        .any(|asked| *asked == event.kind as i32);
-    let object =
-        wanted.objects.is_empty() || wanted.objects.iter().any(|handle| handle.id == event.object);
-    kind && object
 }

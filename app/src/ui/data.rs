@@ -10,14 +10,15 @@ use bevy::asset::Assets;
 use bevy_egui::egui;
 
 use crate::scene::DataArray;
+use crate::select::Selection;
 
 use super::gather::Gathered;
-use super::{PendingActions, UiAction, UiState, human_bytes};
+use super::{PendingActions, UiAction, human_bytes};
 
 pub fn list(
     ui: &mut egui::Ui,
     scene: &Gathered,
-    state: &UiState,
+    selection: &Selection,
     actions: &mut PendingActions,
     arrays: &Assets<DataArray>,
 ) {
@@ -71,7 +72,7 @@ pub fn list(
                     .or_else(|| held.map(|(_, meta)| meta.name.as_str()));
                 if ui
                     .selectable_label(
-                        state.selected_array == Some(id),
+                        selection.array == Some(id),
                         name.unwrap_or("<unreferenced>"),
                     )
                     .clicked()
@@ -89,8 +90,13 @@ pub fn list(
         });
 }
 
-pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, arrays: &Assets<DataArray>) {
-    let Some(id) = state.selected_array else {
+pub fn details(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    selection: &Selection,
+    arrays: &Assets<DataArray>,
+) {
+    let Some(id) = selection.array else {
         ui.weak("Select an array.");
         return;
     };

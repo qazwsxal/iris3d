@@ -225,7 +225,12 @@ fn read(request: &Request, literal: Option<f32>) -> Result<Pair, String> {
     let a = left.to_f32();
 
     let right = match request.input("b") {
-        None => return Ok(Pair { a, b: literal.map(|value| vec![value]) }),
+        None => {
+            return Ok(Pair {
+                a,
+                b: literal.map(|value| vec![value]),
+            });
+        }
         Some(right) => right,
     };
     if right.components() > 1 {

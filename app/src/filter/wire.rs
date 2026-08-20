@@ -148,13 +148,7 @@ impl Graph {
         graph
     }
 
-    fn record_reads(
-        &mut self,
-        registry: &FilterRegistry,
-        id: u64,
-        kind: &str,
-        params: &ParamMap,
-    ) {
+    fn record_reads(&mut self, registry: &FilterRegistry, id: u64, kind: &str, params: &ParamMap) {
         let Some(registered) = registry.get(kind) else {
             return;
         };

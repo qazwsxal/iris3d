@@ -21,16 +21,16 @@
 //!
 //! `positions[indices]` is the same operation. This is what lets an actor stay a
 //! dumb consumer: a subset is applied *before* the actor by narrowing the arrays
-//! it binds, rather than by the actor deciding for itself what to draw. Deciding
-//! what to draw is not an actor's job, and three kinds used to do it anyway.
+//! it binds, rather than by the actor deciding for itself what to draw.
+//! Deciding what to draw is not an actor's job.
 //!
 //! # Three operations, because three kinds of array narrow differently
 //!
-//! - **Per-element data** — [`gather`]. One element out per index in.
-//! - **Connectivity** — [`renumber`]. A bond or a triangle survives only if
+//! - **Per-element data** — `gather`. One element out per index in.
+//! - **Connectivity** — `renumber`. A bond or a triangle survives only if
 //!   every endpoint did, and the survivors are renumbered into the new, denser
 //!   space. Keeping one with a dropped end would mean inventing a vertex.
-//! - **Dense hierarchy indices** — [`reindex`]. Narrowing atoms leaves
+//! - **Dense hierarchy indices** — `reindex`. Narrowing atoms leaves
 //!   `residue_index` full of gaps, and everything downstream assumes it is
 //!   dense. This re-densifies, and emits the `kept` array that narrows the
 //!   residue-keyed side arrays in turn.

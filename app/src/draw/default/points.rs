@@ -359,7 +359,11 @@ mod tests {
         // parameters — the real `register` is used, not a stand-in, so the
         // declarations under test are the ones that ship.
         app.init_resource::<crate::scene::ActorRegistry>();
-        register(&mut app.world_mut().resource_mut::<crate::scene::ActorRegistry>());
+        register(
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::scene::ActorRegistry>(),
+        );
         app.add_systems(
             Update,
             (
@@ -489,10 +493,9 @@ mod tests {
     /// Fewer points in means fewer quads out, and the assets are reused rather
     /// than reallocated.
     ///
-    /// This was `a_subset_draws_fewer_points`, when an actor narrowed its own
-    /// data. It narrows nothing now — a `gather` upstream does — so what it
-    /// draws is simply what it is bound to, and rebinding is the operation that
-    /// used to be "changing the subset".
+    /// The kind narrows nothing — a `gather` upstream does — so what it draws
+    /// is simply what it is bound to, and rebinding is how the drawn set
+    /// changes.
     #[test]
     fn rebinding_fewer_positions_draws_fewer_points() {
         let (mut app, _, actor) = app();

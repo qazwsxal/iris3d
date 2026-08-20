@@ -1,39 +1,13 @@
 //! Renumbering what survives when elements are dropped.
 //!
-//! # What used to be here, and why it is not
+//! Dropping elements renumbers everything after them, and a mesh's cells and a
+//! molecule's bonds refer to points by index — so their references have to be
+//! rewritten to match, not merely filtered. [`Remap`] is that rewrite.
 //!
-//! This module was a `Subset` **component on an actor**: a selection arrived
-//! inline on `AddActor`, was held beside the bindings, and three kinds —
-//! `points`, `ball-and-stick` and `glycan` — narrowed their own arrays with it
-//! while drawing.
-//!
-//! That made an actor decide *what* to draw, which is not an actor's job. An
-//! actor is a dumb consumer of arrays: it reads what it is handed and puts it on
-//! screen. Choosing which elements to hand it is a question about data, and
-//! questions about data belong to filters. It is the same category error the
-//! `cartoon` actor made before it became a filter, one level down.
-//!
-//! It also could not be *wired*. A selection carried inline on the actor is not
-//! a handle, so it appears nowhere in the graph, cannot be shared between two
-//! actors, and cannot be computed from the data it selects over.
-//!
-//! **Subsetting is now three filters**, in [`filter::index`](crate::filter::index):
-//!
-//! - `gather` narrows per-element data — positions, elements, B-factors;
-//! - `renumber` narrows connectivity, which is what [`Remap`] below is for;
-//! - `reindex` re-densifies a hierarchy index whose numbering went sparse.
-//!
-//! and the selection itself comes from `subset`, over a mask built by `compare`,
-//! `logic` and `match`. An actor sees only arrays that are already narrowed and
-//! is unchanged by any of it.
-//!
-//! # What stayed
-//!
-//! [`Remap`] alone, because the rule it implements is unchanged by the move: an
-//! entry of a connectivity array survives only when *every* element it names
-//! does. That is VTK's extract-selection rule, it was right when an actor
-//! applied it, and it is right now that `renumber` does. The tests below are the
-//! ones that pinned it, kept verbatim.
+//! Narrowing itself is not here. It is three filters in
+//! [`filter::index`](crate::filter::index), which is where the decision about
+//! *what* to draw belongs — see `docs/design/filters.md`. This module holds only
+//! the renumbering rule they share.
 
 /// Maps original element index to its position in the compacted output.
 ///

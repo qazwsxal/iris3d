@@ -6,7 +6,7 @@
 //! A `SourceKind` sibling to [`FilterKind`] was weighed and rejected before
 //! this was written. The registry, `AddFilter`/`SetFilter`/`ListFilters`, the
 //! node canvas and the parameter panel are already generic over any kind with
-//! `params`/`outputs` in this shape — none of them call `run`, only [`start`]
+//! `params`/`outputs` in this shape — none of them call `run`, only [`start`](super::start)
 //! does — so a source registers here for free and a sibling registry would
 //! have bought type purity at the cost of a second, permanently-parallel RPC
 //! family for what is, today, one kind.
@@ -31,13 +31,15 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::counter::UniqueID;
+use crate::scene::Picked;
 use crate::scene::data::{BufferMeta, Dtype};
 use crate::scene::registry::Bindings;
 use crate::scene::{DataArray, DataStore};
-use crate::viewport::pick::Picked;
 
 use super::provenance::{self, Element, Origin, Step};
-use super::{FilterKind, FilterKindId, FilterRegistry, OutputKind, OutputSpec, Outputs, Provenance};
+use super::{
+    FilterKind, FilterKindId, FilterRegistry, OutputKind, OutputSpec, Outputs, Provenance,
+};
 
 const OUTPUTS: &[OutputSpec] = &[
     OutputSpec {
@@ -202,7 +204,7 @@ fn write_mask(
 /// thousands — and rebuilding avoids keeping a second copy of the filter
 /// graph as a resource in step with `scene::mod`'s own, command-scoped one.
 struct WorldGraph<'a> {
-    steps: HashMap<u64, (&'static [OutputSpec], HashMap<&'static str, u64>, HashMap<&'static str, u64>)>,
+    steps: super::Steps,
     producer: HashMap<u64, u64>,
     arrays: &'a Assets<DataArray>,
     store: &'a DataStore,
@@ -211,7 +213,10 @@ struct WorldGraph<'a> {
 impl<'a> WorldGraph<'a> {
     fn build(
         registry: &FilterRegistry,
-        filters: &Query<(&UniqueID, &FilterKindId, &Outputs, Option<&Bindings>), With<FilterKindId>>,
+        filters: &Query<
+            (&UniqueID, &FilterKindId, &Outputs, Option<&Bindings>),
+            With<FilterKindId>,
+        >,
         arrays: &'a Assets<DataArray>,
         store: &'a DataStore,
     ) -> Self {

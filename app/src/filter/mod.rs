@@ -1,60 +1,34 @@
 //! Arrays in, arrays out. Nothing here draws.
 //!
 //! A **filter** reads arrays and parameters and writes arrays. An **actor**
-//! reads arrays and draws them. That line is the whole point of this module,
-//! and it exists because actor kinds used to sit on both sides of it.
-//!
-//! # What went wrong without it
-//!
-//! [`cartoon`] built the triangles of a ribbon and was careful to hand back a
-//! `Ribbon` rather than a `Mesh`, so that any pathway could map it onto GPU data
-//! its own way. But its only caller was one actor's draw system. The ribbon
-//! lived for one frame, inside one actor, and nothing else could see it — so
-//! drawing the same ribbon as an absorbing medium meant giving that kind a
-//! `mode` parameter that duplicated the difference between the `surface` and
-//! `medium` actor kinds.
-//!
-//! That is the combinatorial shape: every kind that *generates* geometry grows a
-//! mode for every way of *displaying* it, and two ways of displaying one ribbon
-//! build it twice. Filters make it `N + M` instead of `N * M`, and let two
-//! actors share one generated result.
-//!
-//! # Filters are above the backends
+//! reads arrays and draws them. Nothing straddles that line, and keeping it
+//! that way is what turns `N` ways of generating geometry times `M` ways of
+//! displaying it into `N + M`: one generated ribbon can be drawn as a lit
+//! surface and as an absorbing medium at once.
 //!
 //! A filter produces arrays, not GPU data, so it knows nothing about pipelines
-//! and lives outside [`draw`](crate::draw) entirely. The same `contour` output
-//! feeds whatever can draw triangles.
+//! and lives outside [`draw`](crate::draw) entirely.
 //!
 //! # How a filter takes part
 //!
 //! It is an entity, carrying the same components an actor does — a kind id,
 //! a [`ParamMap`], and [`Bindings`] derived from it — plus [`Outputs`], which
-//! maps each declared output to the handle it writes.
+//! maps each declared output to the handle it writes. Those handles are
+//! allocated **when the filter is created** and are stable for its life, so a
+//! client can bind an output before the first run has produced anything.
 //!
-//! Those handles are allocated **when the filter is created** and are stable for
-//! its life, so a client can bind an output before the first run has produced
-//! anything. Each starts as an empty array in [`DataStore`]. A run rewrites the
-//! asset in place rather than replacing the handle, which is what makes
-//! [`draw::mark_dirty`](crate::draw) re-dirty every actor bound to it with no
-//! new code — it already watches `AssetEvent::Modified`.
+//! A run rewrites its output asset in place rather than replacing the handle.
+//! That raises `AssetEvent::Modified`, which is already what
+//! [`draw::mark_dirty`](crate::draw) watches — so consumers re-dirty with no
+//! new code, and chaining falls out of the same fact. Nothing walks a graph,
+//! and no filter knows its consumers. The price is one frame per link.
 //!
-//! Chaining falls out of the same fact. Filter A rewrites its output, the asset
-//! event marks filter B stale, B runs and rewrites its own, and the actor at the
-//! end redraws. Nothing walks a graph, and no filter knows its consumers.
+//! A run happens on [`AsyncComputeTaskPool`], off the main thread, so it takes
+//! owned copies of its inputs. See [`Request`].
 //!
-//! The price of that is **one frame per link**: `AssetEvent::Modified` is not
-//! delivered until the frame after the write, so a two-filter chain reaches the
-//! screen a frame later than a one-filter chain. Worth knowing and not worth
-//! removing — removing it means walking the graph in dependency order, which is
-//! the coupling this shape exists to avoid, to save a frame on a chain that has
-//! already spent several running.
-//!
-//! # Off the main thread
-//!
-//! A run happens on [`AsyncComputeTaskPool`], because the ones worth having are
-//! not frame-sized: extracting a surface from a 256³ grid is not something to do
-//! between two frames. The cost of that is a copy — a task cannot borrow from
-//! the world, so it takes owned input arrays. See [`Request`].
+//! The full argument — why the split exists, what the one-frame cost buys, and
+//! why an [`Outcome`] reports a problem rather than an empty output — is in
+//! `docs/design/filters.md`.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -241,18 +215,31 @@ impl From<Mesh> for Product {
 /// learned, so nothing changes.
 pub type Products = HashMap<&'static str, Product>;
 
+/// What each filter in a graph declares and what it has wired up, by handle:
+/// its output specs, the handle it writes for each output, and the handle it
+/// reads for each input.
+///
+/// One alias because two things build the same map — `source::WorldGraph`
+/// from the live world, and `provenance`'s test double — and the tuple is wide
+/// enough that spelling it twice invites the two to drift.
+pub type Steps = HashMap<
+    u64,
+    (
+        &'static [OutputSpec],
+        HashMap<&'static str, u64>,
+        HashMap<&'static str, u64>,
+    ),
+>;
+
 /// What a run produced, and what went wrong if something did.
 ///
-/// A run used to return [`Products`] alone, so the only way to report failure
-/// was to return none — and "produced nothing" is not one fact but several.
-/// A `cartoon` with no backbone, a `gather` handed indices past the end of its
-/// values, and a `contour` whose level sits outside the field all looked
-/// identical from outside: an output that quietly kept its previous contents.
-///
-/// That was survivable while every filter was hand-tuned and had one caller.
-/// It stops being survivable with arithmetic in the graph, where a length
-/// mismatch between two arrays is the *routine* mistake and the user needs to be
-/// told which two lengths rather than left to guess why a wire went dead.
+/// Products alone are not enough, because "produced nothing" is not one fact but
+/// several: a `cartoon` with no backbone, a `gather` handed indices past the end
+/// of its values, and a `contour` whose level sits outside the field are three
+/// different mistakes that an empty output makes look identical. With arithmetic
+/// in the graph a length mismatch between two arrays is the *routine* mistake,
+/// and the user needs to be told which two lengths rather than left to guess why
+/// a wire went dead.
 ///
 /// A problem does **not** mean nothing was produced, and products do not mean
 /// there was no problem: a filter may emit what it can and still say that an
@@ -368,7 +355,11 @@ pub struct FilterRegistry {
 
 impl FilterRegistry {
     pub fn register(&mut self, kind: FilterKind) {
-        if let Some(existing) = self.kinds.iter_mut().find(|existing| existing.id == kind.id) {
+        if let Some(existing) = self
+            .kinds
+            .iter_mut()
+            .find(|existing| existing.id == kind.id)
+        {
             warn!("filter: kind \"{}\" re-registered", kind.id);
             *existing = kind;
             return;
@@ -505,13 +496,12 @@ impl Plugin for FilterPlugin {
         // regardless, and `Picked` persists across two frames, so this only
         // has to land before the frame is over for `AssetEvent::Modified` to
         // be seen next frame the way any other filter's write is.
-        //
-        // `add_message` is idempotent — `PickPlugin` also calls it in the
-        // real app — and is repeated here because this module's own test
-        // harness builds a minimal `App` with `FilterPlugin` alone, and
-        // `write_picks`'s `MessageReader<Picked>` panics on an uninitialised
+        // `add_message` is idempotent — `ScenePlugin` owns the type and also
+        // registers it — and is repeated because this module's test harness
+        // builds a minimal `App` with `FilterPlugin` alone, and
+        // `write_picks`'s `MessageReader<Picked>` panics on an unregistered
         // message type rather than silently reading nothing.
-        app.add_message::<crate::viewport::pick::Picked>()
+        app.add_message::<crate::scene::Picked>()
             .add_systems(Update, source::write_picks.before(Filter));
     }
 }
@@ -629,7 +619,10 @@ fn start(
             let Some(handle) = bound.get(spec.id) else {
                 continue;
             };
-            let Some(array) = store.array(handle).and_then(|held| arrays.get(&held.handle)) else {
+            let Some(array) = store
+                .array(handle)
+                .and_then(|held| arrays.get(&held.handle))
+            else {
                 continue;
             };
             inputs.insert(spec.id, array.clone());
@@ -639,13 +632,10 @@ fn start(
             params: params.0.clone(),
             inputs,
         };
-        commands
-            .entity(entity)
-            .remove::<Stale>()
-            .insert(Running {
-                task: pool.spawn(async move { run(&request) }),
-                started_at: *generation,
-            });
+        commands.entity(entity).remove::<Stale>().insert(Running {
+            task: pool.spawn(async move { run(&request) }),
+            started_at: *generation,
+        });
     }
 }
 
@@ -748,7 +738,8 @@ pub(crate) fn describe(name: &str, mesh: &Mesh) -> crate::scene::data::GeometryM
         // An unindexed mesh has none and its vertices are its corners.
         triangles: mesh
             .indices()
-            .map_or(mesh.count_vertices() / 3, |indices| indices.len() / 3) as u64,
+            .map_or(mesh.count_vertices() / 3, |indices| indices.len() / 3)
+            as u64,
         normals: mesh.attribute(Mesh::ATTRIBUTE_NORMAL).is_some(),
         colours: mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some(),
     }

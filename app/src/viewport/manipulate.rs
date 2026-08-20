@@ -40,18 +40,19 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
 use crate::counter::UniqueID;
-use crate::grpc::GrpcBridge;
 use crate::redraw::KeepAwake;
+use crate::scene::CommandBus;
 use crate::scene::{SceneCommand, SceneObject};
+use crate::select::Selection;
 
 use super::OrbitCamera;
 
 /// How the handles move the object.
-/// Held in `UiState` rather than as a resource of its own: `draw_ui` is close
-/// to Bevy's sixteen-parameter ceiling, and the viewport already reads `UiState`
-/// for the selection. One more read there costs nothing; one more system
-/// parameter costs a system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// A resource owned by the viewport, which is what acts on it. The interface
+/// writes it — that is the only thing the radio buttons do — and reads it back
+/// to show which one is active.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GizmoMode {
     #[default]
     Translate,
@@ -128,11 +129,11 @@ const AXES: [(Vec3, Color); 3] = [
 /// object — an actor can be selected too, and an actor has no place of its own
 /// to move.
 fn target(
-    state: Option<&crate::ui::UiState>,
+    selection: &Selection,
     objects: &Query<Selected, With<SceneObject>>,
     bounds: &Query<(&Aabb, &GlobalTransform)>,
 ) -> Option<Target> {
-    let entity = state?.selected?;
+    let entity = selection.object?;
     let (id, world, local, children) = objects.get(entity).ok()?;
     Some(Target {
         object: id.0,
@@ -192,9 +193,13 @@ struct Target {
 ///
 /// Immediate mode, like every other overlay: there is nothing to keep between
 /// frames, and a handle is a line whose length depends on where the camera is.
+// Eight because the selection and the gizmo mode are two resources rather than
+// one lump of interface state, which is the point of the split.
+#[allow(clippy::too_many_arguments)]
 fn draw_handles(
     mut gizmos: Gizmos,
-    state: Option<Res<crate::ui::UiState>>,
+    selection: Res<Selection>,
+    gizmo: Res<GizmoMode>,
     held: Res<GizmoDrag>,
     objects: Query<Selected, With<SceneObject>>,
     bounds: Query<(&Aabb, &GlobalTransform)>,
@@ -206,8 +211,8 @@ fn draw_handles(
     // `overlays`' read-only ones, drawn at the object's origin.
     camera: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
 ) {
-    let mode = state.as_deref().map(|state| state.gizmo).unwrap_or_default();
-    let Some(Target { origin, .. }) = target(state.as_deref(), &objects, &bounds) else {
+    let mode = *gizmo;
+    let Some(Target { origin, .. }) = target(&selection, &objects, &bounds) else {
         return;
     };
     let Ok((view_camera, view)) = camera.single() else {
@@ -300,11 +305,7 @@ fn nearest_handle(
 /// The camera is inset to whatever the panels leave, so a window position has
 /// to be made relative to that rect before it means anything to
 /// `viewport_to_world`.
-fn pointer_ray(
-    window: &Window,
-    camera: &Camera,
-    view: &GlobalTransform,
-) -> Option<Ray3d> {
+fn pointer_ray(window: &Window, camera: &Camera, view: &GlobalTransform) -> Option<Ray3d> {
     camera
         .viewport_to_world(view, pointer_in_view(window, camera)?)
         .ok()
@@ -325,7 +326,10 @@ fn pointer_ray(
 /// but only to decide whether the pointer is over the 3D view or over a panel.
 fn pointer_in_view(window: &Window, camera: &Camera) -> Option<Vec2> {
     let pointer = window.cursor_position()?;
-    camera.logical_viewport_rect()?.contains(pointer).then_some(pointer)
+    camera
+        .logical_viewport_rect()?
+        .contains(pointer)
+        .then_some(pointer)
 }
 
 /// The point on an infinite line closest to a ray, as a distance along the line.
@@ -364,12 +368,13 @@ fn drag(
     buttons: Res<ButtonInput<MouseButton>>,
     mut held: ResMut<GizmoDrag>,
     captured: Res<super::PointerCaptured>,
-    state: Option<Res<crate::ui::UiState>>,
+    selection: Res<Selection>,
+    gizmo: Res<GizmoMode>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     objects: Query<Selected, With<SceneObject>>,
     bounds: Query<(&Aabb, &GlobalTransform)>,
-    bridge: Res<GrpcBridge>,
+    bus: Res<CommandBus>,
     mut awake: ResMut<KeepAwake>,
 ) {
     if buttons.just_released(MouseButton::Left) {
@@ -393,7 +398,7 @@ fn drag(
             object,
             origin,
             local,
-        }) = target(state.as_deref(), &objects, &bounds)
+        }) = target(&selection, &objects, &bounds)
         else {
             return;
         };
@@ -401,9 +406,7 @@ fn drag(
 
         // The same test the highlight uses, so what lights up is what gets
         // picked up.
-        if let Some((axis, offset)) =
-            nearest_handle(origin, size, ray, window, view_camera, view)
-        {
+        if let Some((axis, offset)) = nearest_handle(origin, size, ray, window, view_camera, view) {
             held.0 = Some(Grab {
                 object,
                 axis,
@@ -436,13 +439,9 @@ fn drag(
     // Computed from the transform the drag started with, never accumulated: a
     // frame that does not run leaves no drift behind, and releasing and
     // grabbing again re-bases cleanly.
-    let mode = state.as_deref().map(|state| state.gizmo).unwrap_or_default();
+    let mode = *gizmo;
     let (translation, rotation, scale) = match mode {
-        GizmoMode::Translate => (
-            Some(grab.start.translation + grab.axis * moved),
-            None,
-            None,
-        ),
+        GizmoMode::Translate => (Some(grab.start.translation + grab.axis * moved), None, None),
         GizmoMode::Rotate => (
             None,
             Some(grab.start.rotation * Quat::from_axis_angle(grab.axis, moved * 0.05)),
@@ -462,7 +461,7 @@ fn drag(
     // The same command a script sends. Fire and forget: the reply says only
     // what was applied, and the next frame's `GlobalTransform` shows it.
     let (reply, _) = tokio::sync::oneshot::channel();
-    let _ = bridge.sender().send(SceneCommand::SetTransform {
+    let _ = bus.sender().send(SceneCommand::SetTransform {
         id: grab.object,
         translation,
         rotation,

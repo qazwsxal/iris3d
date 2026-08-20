@@ -2,10 +2,15 @@
 //!
 //! A **backend** is a whole rendering pathway: one pipeline, together with the
 //! actor kinds built for it. Backends are mutually exclusive, and which one
-//! runs is decided once at launch — not per camera, not per object, not per
-//! actor. Two techniques that composite differently cannot share a frame
-//! correctly, so choosing once removes the whole class of interop questions
-//! rather than answering them one at a time.
+//! runs is decided once at launch. Two techniques that composite differently
+//! cannot share a frame correctly, so choosing once removes the whole class of
+//! interop questions rather than answering them one at a time.
+//!
+//! [`default`](mod@default) is the only pathway built. It accumulates moments:
+//! opaque geometry goes through Bevy's ordinary passes, and anything
+//! transmitting deposits absorbance into a shared buffer instead of blending,
+//! so a structure inside the density map it was built from composes correctly
+//! with nothing sorted.
 //!
 //! This module is the part every backend shares, and it draws nothing itself:
 //! what makes an actor out of date, how a bound handle resolves to an array,
@@ -19,26 +24,9 @@
 //! array parameters, so a client is told that `points` wants `float32 [n, 3]`
 //! rather than having to name an array "positions" and hope.
 //!
-//! # One pathway
-//!
-//! [`default`] is the only one, and it accumulates moments: opaque geometry
-//! goes through Bevy's ordinary passes, and anything transmitting deposits
-//! absorbance into a shared buffer instead of blending, so a structure inside
-//! the density map it was built from composes correctly with nothing sorted.
-//!
-//! Two others have been and gone. A plain `Mesh3d`-per-actor baseline on the
-//! standard pipeline could not compose a mesh with a volume correctly, which is
-//! the thing this project is actually for. A `bevy_solari` raytracing pathway
-//! had no transparency and no volumes, and having to keep every kind working
-//! under both was shaping the design of things that had nothing to do with
-//! raytracing. Both are recoverable from history.
-//!
-//! The **seam stays** even with one pathway behind it: this module is the shared
-//! layer and [`default`] is a pathway directory. Which technique iris3d should
-//! settle on is still an open question, and flattening the two together would
-//! answer it by accident. What has gone is only the machinery for reconciling
-//! *two at once* — the `Backend` enum, the `--backend` flag, and the `shared`
-//! flag on a kind.
+//! A pathway that cannot run on this machine refuses rather than substituting
+//! another — see [`probe`]. Why the seam is kept with one pathway behind it,
+//! and what was tried before, is in `docs/design/backends.md`.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -49,15 +37,13 @@ use bevy::render::settings::WgpuFeatures;
 use bevy::color::ColorToComponents;
 
 use crate::filter::colormap::{ColorMap, sample};
-use crate::scene::registry::{ActorKindId, ActorRegistry, Bindings, ParamKind, ParamMap, ParamSpec};
+use crate::scene::registry::{
+    ActorKindId, ActorRegistry, Bindings, ParamKind, ParamMap, ParamSpec,
+};
 use crate::scene::{DataArray, DataStore};
 
 mod atoms;
-mod default;
-// Visible to the filters as well as to the backends: the CPK table is what
-// `colormap`'s `element` map reads, and there is no reason for a second copy of
-// the periodic table to exist for it.
-pub(crate) mod elements;
+pub(crate) mod default;
 mod glycan;
 mod probe;
 #[cfg(test)]
@@ -154,10 +140,9 @@ pub(crate) fn mark(commands: &mut Commands, entity: Entity, what: Dirty) {
 /// What every actor has, whichever backend is running: its own style, how much
 /// of the data it draws, what it draws, and what is out of date.
 ///
-/// Colouring used to be here too, as a `ColorBy` every actor carried. It is a
-/// filter now, so a colour reaches an actor as an ordinary bound array and needs
-/// no place of its own — and a flat colour is a parameter like any other, which
-/// means it lives in the kind's own style component.
+/// Colouring is not here. It is a filter, so a colour reaches an actor as an
+/// ordinary bound array and needs no place of its own — and a flat colour is a
+/// parameter like any other, living in the kind's own style component.
 ///
 /// A backend extends this with whatever *it* produced last time, which is what
 /// makes reuse rather than reallocation possible — and is precisely the part
@@ -391,10 +376,9 @@ fn clear_dirty(mut dirty: Query<&mut Dirty>) {
 /// maps, scales or reduces: how numbers became colours was decided by whatever
 /// wrote the array, which for a scalar field is the `colormap` filter.
 ///
-/// This used to be the whole colour pipeline — a bound scalar, autoscaled over
-/// its own range, through a `ColorMap` carried by every actor. That put "which
-/// ramp" in the same place as "how to rasterise", and it meant an actor could be
-/// coloured exactly one way. See [`crate::filter::colormap`].
+/// Choosing a ramp here instead would put "which ramp" in the same place as
+/// "how to rasterise", and leave an actor colourable exactly one way. See
+/// [`crate::filter::colormap`].
 ///
 /// `None` when the array is too short for the elements being drawn, which is the
 /// honest answer to a colour array that does not match its positions: better an
@@ -471,7 +455,10 @@ pub(crate) fn ramp_texture(map: ColorMap) -> Image {
     let mut data = Vec::with_capacity(RAMP_STEPS * 4);
     for step in 0..RAMP_STEPS {
         let rgba = sample(map, step as f32 / (RAMP_STEPS - 1) as f32);
-        data.extend(rgba.iter().map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8));
+        data.extend(
+            rgba.iter()
+                .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+        );
     }
 
     let mut image = Image::new(
@@ -544,14 +531,14 @@ mod tests {
         app.init_resource::<ActorRegistry>();
         // `mark_dirty` asks the registry what a changed array invalidates, so a
         // kind that is not registered would be marked for nothing at all.
-        app.world_mut()
-            .resource_mut::<ActorRegistry>()
-            .register(crate::scene::registry::ActorKind {
+        app.world_mut().resource_mut::<ActorRegistry>().register(
+            crate::scene::registry::ActorKind {
                 id: "points",
                 label: "points",
                 params: SPECS,
                 apply: |_, _| {},
-            });
+            },
+        );
         app.add_systems(Update, mark_dirty);
         app
     }
@@ -810,9 +797,8 @@ mod tests {
     }
 
     /// Every actor binding an array redraws when its bytes change, wherever in
-    /// the tree it sits. This used to be reached by following the source link
-    /// from the object holding the data; the binding says it directly, so an
-    /// actor placed under some unrelated node is no longer a special case.
+    /// the tree it sits. The binding says so directly, so an actor placed under
+    /// some unrelated node is not a special case.
     #[test]
     fn marks_every_actor_binding_an_array() {
         let mut app = app();

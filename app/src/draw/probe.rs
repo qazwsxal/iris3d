@@ -6,7 +6,7 @@
 //! composite differently, so a substitution shows a picture that is wrong and
 //! says nothing about it. Wrong and silent is worse than not starting.
 //!
-//! The check runs in [`Plugin::finish`](bevy::app::Plugin::finish) rather than
+//! The check runs in [`Plugin::finish`] rather than
 //! before `App::new()`. Requesting an adapter independently would test *an*
 //! adapter rather than *the* adapter — Bevy picks by its own power preference
 //! and backend order, and on a laptop with two GPUs that is a real difference.

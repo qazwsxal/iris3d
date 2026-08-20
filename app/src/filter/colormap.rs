@@ -6,10 +6,10 @@
 //!
 //! # Why this is a filter and not a setting on an actor
 //!
-//! It used to be `ColorBy` — a map, a range and a flat colour, carried by every
-//! actor, applied inside every backend's draw system. That put "which ramp" in
-//! the same place as "how to rasterise", and it meant an actor could be coloured
-//! exactly one way: by one bound scalar, through one built-in ramp.
+//! A map, a range and a flat colour carried by every actor and applied inside
+//! every backend's draw system would put "which ramp" in the same place as "how
+//! to rasterise", and leave an actor colourable exactly one way: by one bound
+//! scalar, through one built-in ramp.
 //!
 //! As a filter it composes. Colour by a field the client computed, by a residue
 //! index a `cartoon` emitted, by the output of another filter — and the actor is
@@ -29,9 +29,9 @@
 
 use bevy::prelude::*;
 
+use crate::scene::DataArray;
 use crate::scene::data::Dtype;
 use crate::scene::registry::{ParamKind, ParamSpec, text, vector};
-use crate::scene::DataArray;
 
 use super::{
     FilterKind, FilterRegistry, Outcome, OutputKind, OutputSpec, Products, Provenance, Request,
@@ -90,7 +90,7 @@ pub(crate) const MAPS: &[&str] = &["viridis", "cool-warm", "grayscale"];
 ///
 /// The two lists differ on purpose. `MAPS` is what can be baked into a ramp
 /// texture and read at an arbitrary point along it, which is what
-/// [`volume`](crate::draw::default::volume) and [`contour`](super::contour) do —
+/// [`volume`](mod@crate::draw::default::volume) and [`contour`](super::contour) do —
 /// they sample per ray step and per vertex against a normalised position in the
 /// range.
 ///
@@ -99,7 +99,13 @@ pub(crate) const MAPS: &[&str] = &["viridis", "cool-warm", "grayscale"];
 /// along" anything, and normalising it would make the colours shift every time
 /// the number of chains changed. So they are available where colours are
 /// computed per element and absent where a ramp is what is wanted.
-const FILTER_MAPS: &[&str] = &["viridis", "cool-warm", "grayscale", "categorical", "element"];
+const FILTER_MAPS: &[&str] = &[
+    "viridis",
+    "cool-warm",
+    "grayscale",
+    "categorical",
+    "element",
+];
 
 /// A repeating qualitative palette, for colouring by an integer that names a
 /// thing rather than measures one — chain, secondary structure, entity.
@@ -206,7 +212,7 @@ fn run(request: &Request) -> Outcome {
             let key = value.round().max(0.0) as u32;
             let rgb = match chosen {
                 "element" => {
-                    let rgba = crate::draw::elements::colour(key);
+                    let rgba = crate::chem::colour(key);
                     [rgba[0], rgba[1], rgba[2]]
                 }
                 _ => CATEGORICAL[key as usize % CATEGORICAL.len()],
@@ -370,11 +376,16 @@ mod tests {
         }
         let mut inputs = HashMap::new();
         inputs.insert("values", array);
-        Request { params: map, inputs }
+        Request {
+            params: map,
+            inputs,
+        }
     }
 
     fn produced(products: &Outcome) -> &DataArray {
-        products.products["colour"].array().expect("colour is an array")
+        products.products["colour"]
+            .array()
+            .expect("colour is an array")
     }
 
     fn colours(products: &Outcome) -> Vec<[f32; 3]> {
@@ -469,7 +480,7 @@ mod tests {
     /// Colour maps are authored in sRGB and every consumer wants linear, so
     /// [`sample`] has to convert. This went unnoticed for a long time because
     /// the failure is quiet — ramps merely looked washed out — and because
-    /// `elements::colour` did convert, so half the renderer was right.
+    /// `chem::colour` did convert, so half the renderer was right.
     ///
     /// Checked against the transfer function rather than a recorded number, so
     /// the test says *why* the value is what it is.

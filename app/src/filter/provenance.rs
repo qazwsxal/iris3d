@@ -2,11 +2,9 @@
 //!
 //! # The problem this solves
 //!
-//! Subsetting used to happen inside an actor, so an actor knew the source index
-//! of everything it drew and could answer "which atom is this" out of its own
-//! `Remap`. Narrowing is filters now — which is right, and is what made a
-//! selection shareable and computable — and the consequence is that the answer
-//! moved out of the actor and into the graph.
+//! Narrowing happens in filters, not in the actor, which is what makes a
+//! selection shareable and computable. The consequence is that no actor knows
+//! the source index of what it draws: the answer lives in the graph.
 //!
 //! So a click lands on vertex 40 122 of a ribbon, and getting from there to "the
 //! third atom of residue 210 of chain B" means walking backwards: through the
@@ -148,11 +146,19 @@ pub fn trace(graph: &impl Graph, from: Element) -> Origin {
         };
 
         at = match spec.provenance {
-            Provenance::Opaque => return Origin::Blocked { at, output: spec.id },
+            Provenance::Opaque => {
+                return Origin::Blocked {
+                    at,
+                    output: spec.id,
+                };
+            }
             Provenance::Identity(input) => {
                 // Same position, one array upstream.
                 let Some(handle) = step.bound.get(input).copied() else {
-                    return Origin::Blocked { at, output: spec.id };
+                    return Origin::Blocked {
+                        at,
+                        output: spec.id,
+                    };
                 };
                 Element {
                     handle,
@@ -164,16 +170,25 @@ pub fn trace(graph: &impl Graph, from: Element) -> Origin {
                 let (Some(map), Some(handle)) =
                     (step.produced.get(via).copied(), step.bound.get(of).copied())
                 else {
-                    return Origin::Blocked { at, output: spec.id };
+                    return Origin::Blocked {
+                        at,
+                        output: spec.id,
+                    };
                 };
                 let Some(values) = graph.array(map).and_then(DataArray::to_u32) else {
-                    return Origin::Blocked { at, output: spec.id };
+                    return Origin::Blocked {
+                        at,
+                        output: spec.id,
+                    };
                 };
                 let Some(index) = values.get(at.index as usize).copied() else {
                     // Past the end of the map. The filter has been re-run since
                     // the pick, most likely; better to stop than to name an
                     // element at random.
-                    return Origin::Blocked { at, output: spec.id };
+                    return Origin::Blocked {
+                        at,
+                        output: spec.id,
+                    };
                 };
                 Element { handle, index }
             }
@@ -197,14 +212,7 @@ mod tests {
         /// handle -> filter that writes it.
         producer: HashMap<u64, u64>,
         /// filter -> (outputs, produced, bound)
-        steps: HashMap<
-            u64,
-            (
-                &'static [OutputSpec],
-                HashMap<&'static str, u64>,
-                HashMap<&'static str, u64>,
-            ),
-        >,
+        steps: crate::filter::Steps,
         arrays: HashMap<u64, DataArray>,
     }
 
@@ -379,7 +387,11 @@ mod tests {
         graph.producer.insert(40, 4);
         graph.steps.insert(
             4,
-            (OPAQUE, HashMap::from_iter([("geometry", 40)]), HashMap::new()),
+            (
+                OPAQUE,
+                HashMap::from_iter([("geometry", 40)]),
+                HashMap::new(),
+            ),
         );
         let at = Element {
             handle: 40,

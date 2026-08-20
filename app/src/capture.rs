@@ -55,7 +55,10 @@ fn capture(
     awake.nudge();
     *frame += 1;
     if *frame == capture.after {
-        info!("capture: taking a screenshot into {}", capture.path.display());
+        info!(
+            "capture: taking a screenshot into {}",
+            capture.path.display()
+        );
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(capture.path.clone()));

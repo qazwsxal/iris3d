@@ -119,8 +119,7 @@ fn cube_corners(world_from_local: Mat4) -> [Vec3; 8] {
     let mut corners = [Vec3::ZERO; 8];
     for (index, corner) in corners.iter_mut().enumerate() {
         let pick = |bit: usize| if index & (1 << bit) == 0 { 0.0 } else { 1.0 };
-        *corner =
-            world_from_local.transform_point3(Vec3::new(pick(0), pick(1), pick(2)));
+        *corner = world_from_local.transform_point3(Vec3::new(pick(0), pick(1), pick(2)));
     }
     corners
 }
@@ -153,9 +152,7 @@ pub fn extract_volumes(
             ExtractedVolume {
                 mesh: mesh.0.id(),
                 world_from_local,
-                world_from_local_normal: Mat3::from_mat4(world_from_local)
-                    .inverse()
-                    .transpose(),
+                world_from_local_normal: Mat3::from_mat4(world_from_local).inverse().transpose(),
                 strength,
                 dirac,
                 tint: volume.tint,

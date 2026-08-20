@@ -18,15 +18,21 @@ use crate::filter::FilterRegistry;
 use super::gather::{FilterRow, Gathered};
 use super::params;
 use super::{PendingActions, Target, UiAction, UiState};
+use crate::select::Selection;
 
-pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
+pub fn list(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    selection: &Selection,
+    actions: &mut PendingActions,
+) {
     if scene.filters.is_empty() {
         ui.weak("No filters. Nothing is deriving anything.");
         return;
     }
     for filter in &scene.filters {
         ui.horizontal(|ui| {
-            let picked = state.selected_filter == Some(filter.id);
+            let picked = selection.filter == Some(filter.id);
             if ui
                 .selectable_label(picked, format!("[{}] {}", filter.id, filter.label))
                 .clicked()
@@ -49,10 +55,11 @@ pub fn details(
     ui: &mut egui::Ui,
     scene: &Gathered,
     state: &UiState,
+    selection: &Selection,
     registry: &FilterRegistry,
     actions: &mut PendingActions,
 ) {
-    match state.selected_filter.and_then(|id| scene.filter(id)) {
+    match selection.filter.and_then(|id| scene.filter(id)) {
         Some(filter) => controls(ui, scene, filter, actions),
         None => {
             ui.weak("Select a filter.");
@@ -81,7 +88,10 @@ fn controls(
     // burying it past a screenful of sliders would put the complaint further
     // from its cause than from anything else.
     if let Some(problem) = &current.problem {
-        ui.colored_label(ui.visuals().error_fg_color, format!("{} {problem}", current.label));
+        ui.colored_label(
+            ui.visuals().error_fg_color,
+            format!("{} {problem}", current.label),
+        );
     }
     ui.separator();
 

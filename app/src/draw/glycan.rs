@@ -31,7 +31,7 @@
 //!
 //! So there is no primitive library here and, more to the point, every shape
 //! comes out closed and correctly wound for free — which
-//! [`default`](super::default) requires.
+//! [`default`](mod@super::default) requires.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -186,14 +186,9 @@ pub struct Input {
 /// needs: a symbol sits at the residue's centroid, so which atom is which does
 /// not come into it.
 ///
-/// Nothing is narrowed here. It used to be — an actor carried a `Subset` and cut
-/// its own atoms down with it — and that is a filter's job now: bind arrays a
-/// `gather` has already narrowed, and this reads whatever it is handed.
-pub fn read(
-    bindings: &Bindings,
-    store: &DataStore,
-    arrays: &Assets<DataArray>,
-) -> Option<Input> {
+/// Nothing is narrowed here: that is a filter's job. This binds arrays a
+/// `gather` has already narrowed and reads whatever it is handed.
+pub fn read(bindings: &Bindings, store: &DataStore, arrays: &Assets<DataArray>) -> Option<Input> {
     let positions = super::bound(bindings, "positions", store, arrays)?;
     let positions = positions.to_vec3();
     let residue_of_atom = super::bound(bindings, "residue_index", store, arrays)?.to_u32()?;
@@ -258,7 +253,10 @@ fn sugars(input: &Input) -> Vec<Sugar> {
         if code == 0 {
             continue;
         }
-        atoms.entry(residue).or_default().push(input.positions[atom]);
+        atoms
+            .entry(residue)
+            .or_default()
+            .push(input.positions[atom]);
     }
 
     let mut sugars: Vec<Sugar> = atoms

@@ -25,10 +25,9 @@
 //! colour from another is the usual pairing in scientific volume rendering.
 //!
 //! The grid's *shape* is not a parameter: it is read off the bound array, which
-//! declares itself as `(nx, ny, nz)`. It used to be a `dims` vector beside the
-//! field, which meant two statements of one fact that could contradict each
-//! other — and did, since its default of one sample per axis described no real
-//! grid at all. `origin` and `spacing` stay, because where a grid sits in the
+//! declares itself as `(nx, ny, nz)`. A `dims` parameter beside the field would
+//! be two statements of one fact that can contradict each other. `origin` and
+//! `spacing` are parameters, because where a grid sits in the
 //! world is genuinely not something the numbers in it can say. `step` skips
 //! samples on the way to the texture, matching `contour`, so a 512³ field can be
 //! looked at before it is looked at properly.
@@ -50,12 +49,12 @@ use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
+use crate::filter::colormap::ColorMap;
 use crate::scene::link::Placement;
 use crate::scene::registry::{
-    ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float, text,
-    uvec3 as param_uvec3, vec3 as param_vec3, vector,
+    ActorKind, ActorRegistry, Bindings, ParamKind, ParamSpec, float, text, uvec3 as param_uvec3,
+    vec3 as param_vec3, vector,
 };
-use crate::filter::colormap::ColorMap;
 use crate::scene::{DataArray, DataStore};
 
 use super::{Actor, Dirty, bound, mark};
@@ -360,8 +359,8 @@ pub fn invalidate(
 ///
 /// `apply` cannot do this: it turns a parameter map into components and has no
 /// reach into the data store, so the shape has to be read here instead. That is
-/// the whole reason `dims` used to be a parameter — and the reason it could
-/// state something the array contradicted.
+/// why the shape is not a parameter: a parameter could state something the
+/// array contradicts.
 ///
 /// Runs before [`invalidate`], so a grid that changes size marks the texture
 /// dirty through the ordinary `Changed<GridBox>` path rather than needing one of
@@ -501,9 +500,7 @@ fn field_texture(
     let colour_range = tint_values
         .as_ref()
         .map(|values| style.range.unwrap_or_else(|| range_of(&values[..full])));
-    let glow_range = glow_values
-        .as_ref()
-        .map(|values| range_of(&values[..full]));
+    let glow_range = glow_values.as_ref().map(|values| range_of(&values[..full]));
 
     // Reorder while normalising. The wire runs z fastest, which is what a numpy
     // array of shape (x, y, z) gives from a plain `.ravel()`. A 3D texture wants
@@ -521,12 +518,13 @@ fn field_texture(
         grid.step.y as usize,
         grid.step.z as usize,
     );
-    let channel = |values: &Option<Vec<f32>>, range: Option<(f32, f32)>, index: usize, fallback| {
-        match (values, range) {
+    let channel =
+        |values: &Option<Vec<f32>>, range: Option<(f32, f32)>, index: usize, fallback| match (
+            values, range,
+        ) {
             (Some(values), Some(range)) => quantise(values[index], range),
             _ => fallback,
-        }
-    };
+        };
     let mut data = Vec::with_capacity(expected * 4);
     for z in 0..nz {
         for y in 0..ny {
@@ -743,4 +741,3 @@ mod tests {
         assert_eq!(range_of(&[f32::NAN, f32::INFINITY]), (0.0, 1.0));
     }
 }
-

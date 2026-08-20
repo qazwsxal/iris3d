@@ -9,12 +9,13 @@ use bevy_egui::egui;
 use crate::viewport::OverlaySettings;
 
 use super::gather::Gathered;
-use super::{PendingActions, UiAction, UiState};
+use super::{PendingActions, UiAction};
+use crate::select::Selection;
 
 pub fn list(
     ui: &mut egui::Ui,
     scene: &Gathered,
-    state: &UiState,
+    selection: &Selection,
     actions: &mut PendingActions,
     overlays: &mut OverlaySettings,
 ) {
@@ -22,7 +23,7 @@ pub fn list(
         ui.weak("Nothing loaded. Upload over gRPC.");
     }
     for root in &scene.roots {
-        node(ui, *root, scene, state, actions);
+        node(ui, *root, scene, selection, actions);
     }
 
     ui.add_space(8.0);
@@ -44,13 +45,13 @@ fn node(
     ui: &mut egui::Ui,
     entity: bevy::prelude::Entity,
     scene: &Gathered,
-    state: &UiState,
+    selection: &Selection,
     actions: &mut PendingActions,
 ) {
     let Some(row) = scene.rows.get(&entity) else {
         return;
     };
-    let selected = state.selected == Some(entity);
+    let selected = selection.object == Some(entity);
     let label = if row.visible {
         format!("[{}] {}", row.id, row.name)
     } else {
@@ -76,13 +77,18 @@ fn node(
     })
     .body(|ui| {
         for child in &row.children {
-            node(ui, *child, scene, state, actions);
+            node(ui, *child, scene, selection, actions);
         }
     });
 }
 
-pub fn details(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
-    let Some(row) = state.selected.and_then(|entity| scene.rows.get(&entity)) else {
+pub fn details(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    selection: &Selection,
+    actions: &mut PendingActions,
+) {
+    let Some(row) = selection.object.and_then(|entity| scene.rows.get(&entity)) else {
         ui.weak("Select an object.");
         return;
     };

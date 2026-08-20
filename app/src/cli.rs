@@ -6,9 +6,8 @@
 //! is what a script *cannot* set — where to listen, and how to capture what was
 //! drawn.
 //!
-//! There used to be a `--backend` here. One pathway is built now, so there is
-//! nothing to choose between; a client asks `ListActorKinds` to learn what the
-//! running one can draw, which was always the right question.
+//! There is no flag for choosing a rendering pathway: one is built, and a
+//! client asks `ListActorKinds` to learn what it can draw.
 //!
 //! Parsed before `App::new()`. Winit does not read `argv`, so nothing downstream
 //! is surprised by the flags, and `--help` exits before a window is created.

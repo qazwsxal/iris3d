@@ -165,11 +165,8 @@ pub fn controls_where(
                                 }
                                 any = true;
                                 let picked = bound == Some(*id);
-                                let text = format!(
-                                    "{} · {}",
-                                    scene.describe_handle(*id),
-                                    meta.describe()
-                                );
+                                let text =
+                                    format!("{} · {}", scene.describe_handle(*id), meta.describe());
                                 if ui.selectable_label(picked, text).clicked() && !picked {
                                     edits.set.push((spec.id, ParamValue::Data(*id)));
                                 }
@@ -383,10 +380,7 @@ mod tests {
         let scene = Gathered::default();
         let mut params = ParamMap::default();
         params.insert("level".into(), ParamValue::Float(0.5));
-        params.insert(
-            "step".into(),
-            ParamValue::Vector(vec![1.0, 1.0, 1.0]),
-        );
+        params.insert("step".into(), ParamValue::Vector(vec![1.0, 1.0, 1.0]));
         params.insert("map".into(), ParamValue::Text("viridis".into()));
 
         let mut edited = Vec::new();

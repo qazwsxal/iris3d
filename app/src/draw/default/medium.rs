@@ -3,96 +3,34 @@
 //! Not the same thing as [`surface`](super::surface), which draws them as an
 //! opaque lit skin. This kind says the triangles *bound a medium*: what you see
 //! is the interior, so thick parts read dark and thin parts clear, and
-//! overlapping or nested bodies compose without sorting.
+//! overlapping or nested bodies compose without sorting. Same geometry, two
+//! different claims about what it is, so two kinds — the rule is the pass, and
+//! their parameters are disjoint.
 //!
-//! The two were one kind, and splitting them is what stopped a client binding
-//! triangles and getting something it had not asked for. Same geometry, two
-//! different claims about what it is, so two names.
+//! An actor here draws two things over each other: the **interior** always, a
+//! body absorbing at `sigma` per unit of path length; and the **boundary** when
+//! `shell` is on, a thin dielectric skin that reflects and absorbs nothing. The
+//! shell is what stops the shape reading as coloured fog. See [`MomentShell`].
 //!
-//! # The name
+//! `mode` decides whether the mesh must be closed. In `solid` it must — every
+//! ray entering the interior has to leave it, or the contributions do not
+//! cancel. In `film` it need not, because each fragment is a spike at its own
+//! depth and needs no partner; that is the mode for geometry you did not author,
+//! CAD tessellations especially. What `film` costs is thickness.
 //!
-//! A **medium** in the physical sense — light passing through it is absorbed
-//! along the way. Blender calls the same thing a volume absorption shader on an
-//! object's interior, and requires the same closed manifold mesh for it; the
-//! word `volume` is spent here on [`volume`](super::volume), the grid actor, so
-//! `medium` is what is left and what the physics calls it.
+//! Per-vertex colours are ignored here and normals are read only when a shell is
+//! on. Both are attributes of a mesh this kind shares rather than owns, so it
+//! cannot decline to carry them — the same geometry drawn as a lit
+//! [`surface`](super::surface) wants exactly the ones this pass ignores.
 //!
-//! It was called `solid` for a while, which was backwards twice over. In
-//! ChimeraX `solid` is the **opaque** filled style, the opposite of this, and in
-//! ordinary English a solid sounds like something you cannot see through. The
-//! word survives where it is right — as this kind's `mode`, where `solid` means
-//! a body with thickness against `film`, a surface without one.
-//!
-//! # Transparency is a kind here, and a property everywhere else
-//!
-//! Worth knowing, because it looks like a mistake. ParaView, PyMOL and ChimeraX
-//! all make transparency an *opacity setting* on the ordinary surface
-//! representation; none of them has a separate kind for it.
-//!
-//! This is not that. An opacity slider blends a surface with what is behind it;
-//! this integrates absorbance along the path *through* a body, which is a
-//! different physical claim, needs a closed mesh, and is the thing iris3d exists
-//! to compose correctly against a volume. Blender agrees it is a different
-//! thing rather than a slider.
-//!
-//! So they are two kinds and not one kind with a mode, and the rule is the pass:
-//! `surface` goes through Bevy's ordinary opaque pass with a `StandardMaterial`,
-//! this one through [`moment_pass`](super::pass) and [`shell_pass`](super::pass)
-//! with [`MomentVolume`](super::MomentVolume). A mode inside a kind is right
-//! when the pass is the same — `solid` against `film`, below, is exactly that —
-//! and wrong when it is not. Their parameters are disjoint too: `sigma` means
-//! nothing to a lit surface and `double_sided` nothing to a medium.
-//!
-//! There is no `double_sided` here, unlike `surface`: it is a lighting choice,
-//! and both faces are always drawn — they *have* to be, since the two of them
-//! are the endpoints of the interval being integrated.
-//!
-//! # Two ways of drawing, over each other
-//!
-//! An actor here can produce both halves of what a piece of glass looks like:
-//!
-//! - the **interior**, always — a body absorbing at `sigma` per unit of path
-//!   length, which is what makes thick parts read dark and thin parts clear;
-//! - the **boundary**, when `shell` is on — a thin dielectric skin adding a
-//!   Fresnel-weighted specular reflection and absorbing nothing.
-//!
-//! They are two passes over the same mesh, and the second is what the shape
-//! needs to stop reading as coloured fog. See [`MomentShell`].
-//!
-//! # Whether the mesh must be closed depends on `mode`
-//!
-//! In `solid` it must. Every ray entering the interior has to leave it, or the
-//! contributions do not cancel; the pathway cannot tell an open mesh from a
-//! closed one, because closedness is a property of the connectivity a client
-//! uploads and checking it would cost a pass over every edge on every rebuild
-//! to report a fact the client already knows.
-//!
-//! In `film` it need not. Each fragment is a spike at its own depth and needs
-//! no partner, so an open shell, a lone triangle or a self-intersecting soup
-//! are all valid. That is the mode for geometry you did not author — CAD
-//! tessellations especially, which are routinely not closed. What it costs is
-//! thickness: every crossing counts the same however deep the part is.
-//!
-//! # What it does not read
-//!
-//! The geometry's per-vertex colours mean nothing here. Absorbance is a property
-//! of a medium, so it is one value for the whole volume rather than something
-//! varying across a surface the interior does not have; colour arrives through
-//! the `tint` parameter, read as a transmission. Its **normals** are read, but
-//! only when a shell is on — the accumulation cares where a boundary is, not
-//! which way it faces, so a volume with no skin never pays for them.
-//!
-//! Both are attributes of a mesh this kind shares rather than owns, so neither
-//! is something it can decline to carry: the same geometry drawn as a lit
-//! [`surface`](super::surface) wants exactly the ones this pass ignores. What
-//! that costs is stride, and what it buys is one upload instead of two. The
-//! accumulation pipeline pulls only the position out of whatever layout it is
-//! given — see [`MomentMeshPipeline`](super::pipeline::MomentMeshPipeline).
+//! **`docs/design/moment-transparency.md` has the rest:** why transparency is a
+//! kind here when ParaView, PyMOL and ChimeraX all make it an opacity slider,
+//! where the name comes from, and why closedness is not checked.
 
 use bevy::prelude::*;
 
-use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag, float, text};
 use crate::scene::DataStore;
+use crate::scene::registry::{ActorKind, ActorRegistry, ParamKind, ParamSpec, flag, float, text};
 
 use super::{Actor, Depiction, Dirty, MomentShell, MomentVolume, mark};
 
@@ -235,12 +173,10 @@ pub fn register(registry: &mut ActorRegistry) {
     });
 }
 
-/// Nothing here changes the mesh, because this kind no longer owns one.
+/// Nothing here changes the mesh: this kind does not own one.
 ///
-/// Turning the shell on used to be a rebuild: it needs normals, and a volume
-/// with no shell was built without them to save the stride. The geometry is
-/// shared now and carries whatever it carries, so switching the shell on can
-/// only succeed or be refused by the pipeline — there is nothing left to
+/// The geometry is shared and carries whatever it carries, so switching the
+/// shell on can only succeed or be refused by the pipeline. There is nothing to
 /// rebuild, and no way to add normals to a mesh another actor is drawing.
 pub fn invalidate(mut commands: Commands, changed: Query<Entity, Changed<MediumStyle>>) {
     for entity in &changed {
@@ -258,11 +194,7 @@ type Drawable<'a> = (
     Option<&'a MomentVolume>,
 );
 
-pub fn draw_media(
-    mut commands: Commands,
-    store: Res<DataStore>,
-    dirty: Query<Drawable>,
-) {
+pub fn draw_media(mut commands: Commands, store: Res<DataStore>, dirty: Query<Drawable>) {
     for ((entity, style, bindings, dirty), mesh3d, _volume) in &dirty {
         if !dirty.any() {
             continue;
@@ -317,7 +249,7 @@ pub fn draw_media(
 /// "dielectric". Taking the index instead means water, ice and diamond are the
 /// same control rather than three magic constants.
 ///
-/// Shared with [`cartoon`](super::cartoon) rather than written twice. Backends
+/// Shared with [`cartoon`](crate::filter::cartoon) rather than written twice. Backends
 /// duplicate their drawing code from *each other* by design — see
 /// [`crate::draw`] — but this is one pathway's own physics, and both of its
 /// kinds mean exactly the same thing by an index of refraction.
@@ -339,7 +271,7 @@ pub(super) fn normal_reflectance(ior: f32) -> f32 {
 /// the parameter is read, because the accumulation works in linear light
 /// throughout.
 ///
-/// Shared with [`cartoon`](super::cartoon); see [`normal_reflectance`] for why
+/// Shared with [`cartoon`](crate::filter::cartoon); see [`normal_reflectance`] for why
 /// that is not a breach of the rule that backends duplicate.
 pub(super) fn transmission(tint: Vec3) -> Vec3 {
     tint.clamp(Vec3::ZERO, Vec3::ONE)

@@ -3,11 +3,11 @@
 
 use bevy::prelude::*;
 use bevy::render::camera::ExtractedCamera;
+use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{
     BindGroup, BindGroupEntries, Extent3d, PipelineCache, ShaderType, StorageBuffer,
     TextureDescriptor, TextureDimension, TextureUsages, UniformBuffer,
 };
-use bevy::render::render_asset::RenderAssets;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::texture::{CachedTexture, GpuImage, TextureCache};
 use bevy::render::view::{ExtractedView, Msaa, ViewDepthTexture, ViewUniforms};

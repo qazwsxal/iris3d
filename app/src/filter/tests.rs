@@ -69,7 +69,10 @@ fn strict(request: &Request) -> Outcome {
         return Outcome::refused("was given an empty array");
     }
     let mut products = Products::new();
-    let bytes: Vec<u8> = values.iter().flat_map(|v| (v * 2.0).to_le_bytes()).collect();
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|v| (v * 2.0).to_le_bytes())
+        .collect();
     products.insert(
         "doubled",
         DataArray::numeric(Dtype::Float32, vec![values.len() as u64], bytes).into(),
@@ -194,7 +197,9 @@ fn settle(app: &mut App) {
     let mut quiet = 0;
     for _ in 0..200 {
         app.update();
-        let mut world = app.world_mut().query::<(Option<&Stale>, Option<&Running>)>();
+        let mut world = app
+            .world_mut()
+            .query::<(Option<&Stale>, Option<&Running>)>();
         let busy = world
             .iter(app.world())
             .any(|(stale, running)| stale.is_some() || running.is_some());
@@ -297,7 +302,10 @@ fn rewriting_a_bound_array_re_runs_the_filter() {
         .expect("held")
         .handle
         .clone();
-    let bytes: Vec<u8> = [10.0f32, 20.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+    let bytes: Vec<u8> = [10.0f32, 20.0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
     *app.world_mut()
         .resource_mut::<Assets<DataArray>>()
         .get_mut(&source)

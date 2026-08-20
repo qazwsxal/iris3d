@@ -5,8 +5,8 @@
 //! shape or to [`medium`] for one you can see the thickness of, and the
 //! extraction happens once for both.
 //!
-//! [`surface`]: crate::draw::default::surface
-//! [`medium`]: crate::draw::default::medium
+//! [`surface`]: mod@crate::draw::default::surface
+//! [`medium`]: mod@crate::draw::default::medium
 //!
 //! # Surface Nets, not marching cubes
 //!
@@ -40,7 +40,7 @@
 //! before `geometry` assembles them. A contour's values exist **only on the
 //! surface it is building**: sampling `colour_field` where each vertex landed is
 //! something only this run can do, so the ramp is read here, exactly as
-//! [`volume`](crate::draw::default::volume) reads one per ray sample for the
+//! [`volume`](mod@crate::draw::default::volume) reads one per ray sample for the
 //! same reason. Emitting a per-vertex scalar for `colormap` instead would mean
 //! assembling the mesh a second time to attach the result.
 
@@ -722,7 +722,10 @@ mod tests {
         map.insert("level".into(), ParamValue::Float(fraction(&field, level)));
         let mut inputs = HashMap::new();
         inputs.insert("field", field);
-        Request { params: map, inputs }
+        Request {
+            params: map,
+            inputs,
+        }
     }
 
     /// Where `value` sits in the field's own range, which is what `level` means.
@@ -876,9 +879,7 @@ mod tests {
             // An open edge has to lie in one of the six boundary faces. Surface
             // Nets puts its vertices inside the cells, so the outermost one sits
             // half a cell in.
-            let on_face = |p: Vec3| {
-                p.min_element() <= 1.0 || (last - p.max_element()) <= 1.0
-            };
+            let on_face = |p: Vec3| p.min_element() <= 1.0 || (last - p.max_element()) <= 1.0;
             assert!(
                 on_face(*a) && on_face(*b),
                 "an edge from {a} to {b} is open away from the boundary"

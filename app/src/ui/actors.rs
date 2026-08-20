@@ -9,13 +9,19 @@
 use bevy_egui::egui;
 
 use crate::scene::registry::ParamKind;
+use crate::select::Selection;
 
+use super::Making;
 use super::gather::{ActorRow, Gathered, Row};
 use super::params;
-use super::Making;
 use super::{PendingActions, UiAction, UiState};
 
-pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut PendingActions) {
+pub fn list(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    selection: &Selection,
+    actions: &mut PendingActions,
+) {
     let mut drew_anything = false;
 
     for object in &scene.ordered {
@@ -27,7 +33,7 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
         }
         drew_anything = true;
 
-        let highlighted = state.selected == Some(row.entity);
+        let highlighted = selection.object == Some(row.entity);
         let frame = if highlighted {
             // The selection colour rather than a fixed grey, so this follows
             // whichever theme egui is in.
@@ -44,7 +50,7 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
                 heading.weak()
             });
             for actor in &row.actors {
-                entry(ui, actor, Some(row), state, actions);
+                entry(ui, actor, Some(row), selection, actions);
             }
         });
     }
@@ -58,7 +64,7 @@ pub fn list(ui: &mut egui::Ui, scene: &Gathered, state: &UiState, actions: &mut 
         egui::Frame::new().inner_margin(4.0).show(ui, |ui| {
             ui.label(egui::RichText::new("Detached — not drawn").weak().italics());
             for actor in &scene.detached {
-                entry(ui, actor, None, state, actions);
+                entry(ui, actor, None, selection, actions);
             }
         });
     }
@@ -77,11 +83,11 @@ fn entry(
     ui: &mut egui::Ui,
     actor: &ActorRow,
     under: Option<&Row>,
-    state: &UiState,
+    selection: &Selection,
     actions: &mut PendingActions,
 ) {
     ui.horizontal(|ui| {
-        let picked = state.selected_actor == Some(actor.entity);
+        let picked = selection.actor == Some(actor.entity);
         if ui
             .selectable_label(picked, format!("[{}] {}", actor.id, actor.label))
             .clicked()
@@ -100,10 +106,11 @@ pub fn details(
     ui: &mut egui::Ui,
     scene: &Gathered,
     state: &UiState,
+    selection: &Selection,
     registry: &crate::scene::registry::ActorRegistry,
     actions: &mut PendingActions,
 ) {
-    match state.selected_actor.and_then(|entity| scene.actor(entity)) {
+    match selection.actor.and_then(|entity| scene.actor(entity)) {
         Some((row, actor)) => {
             controls(ui, scene, row, actor, actions);
             ui.separator();
@@ -113,7 +120,7 @@ pub fn details(
             ui.separator();
         }
     }
-    add(ui, scene, state, registry, actions);
+    add(ui, scene, state, selection, registry, actions);
 }
 
 /// The "draw this another way" row.
@@ -124,6 +131,7 @@ fn add(
     ui: &mut egui::Ui,
     scene: &Gathered,
     state: &UiState,
+    selection: &Selection,
     registry: &crate::scene::registry::ActorRegistry,
     actions: &mut PendingActions,
 ) {
@@ -143,7 +151,7 @@ fn add(
         return;
     }
 
-    let Some(row) = state.selected.and_then(|entity| scene.rows.get(&entity)) else {
+    let Some(row) = selection.object.and_then(|entity| scene.rows.get(&entity)) else {
         ui.weak("Select an object to draw.");
         return;
     };

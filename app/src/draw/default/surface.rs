@@ -13,10 +13,9 @@
 //! and a pass. That is the whole difference between it and
 //! [`medium`](super::medium): same handle, same buffers, two materials.
 //!
-//! This kind used to take positions, indices, normals and colour and build its
-//! own `bevy::Mesh` from them, as `medium` separately did. Two actors over one
-//! ribbon were therefore two uploads of the same vertices, which is what the
-//! split into filters set out to stop.
+//! Assembling the mesh here instead would mean two actors over one ribbon
+//! uploading the same vertices twice, which is what the split into filters sets
+//! out to stop.
 //!
 //! # The name
 //!

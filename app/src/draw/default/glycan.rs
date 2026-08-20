@@ -7,13 +7,13 @@
 //!
 //! # Opaque only, and no mode to choose
 //!
-//! [`cartoon`](super::cartoon) offers `absorbing` because a ribbon is a plausible
+//! [`cartoon`](crate::filter::cartoon) offers `absorbing` because a ribbon is a plausible
 //! medium: it has a thickness worth seeing through. A glycan symbol is not — it
 //! is a *notation*, a stand-in for a residue rather than a depiction of one, and
 //! a semi-transparent notation is just a harder-to-read notation. So there is no
 //! choice here, which is the honest shape rather than a missing feature.
 //!
-//! Colour comes from the notation rather than from [`ColorBy`](crate::scene::ColorBy):
+//! Colour comes from the notation rather than from a bound `colour` array:
 //! in SNFG the colour is half the identity — a blue square is GlcNAc and a
 //! yellow square is GalNAc — so it is not the actor's to set.
 
@@ -193,7 +193,7 @@ pub fn draw_glycans(
 
 /// Gives every placement of a glycan the mesh and material it holds.
 ///
-/// As for [`cartoon::place_cartoons`](super::cartoon::place_cartoons): these
+/// As for [`place_molecules`](super::molecule::place_molecules): these
 /// actors carry no `MomentVolume`, so the pathway's own placement system does
 /// not match them.
 #[allow(clippy::type_complexity)]

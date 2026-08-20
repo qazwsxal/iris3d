@@ -1,10 +1,9 @@
 //! Which ways of drawing exist, and what can be tuned about each.
 //!
-//! Actor kinds used to be variants of an enum here, which meant this module
-//! had to know every way of drawing anything — and had to carry a list of
-//! which ones a backend could actually honour, a fact only the backend knows.
-//! Backends register their kinds instead, so a kind exists exactly when
-//! something can draw it and a new backend needs no edit here.
+//! Backends register their kinds, so a kind exists exactly when something can
+//! draw it and a new backend needs no edit here. This module therefore knows
+//! nothing about any particular way of drawing, and needs no list of which
+//! kinds a backend can honour — a fact only the backend has.
 //!
 //! Each kind declares its parameters, and that one declaration is what the UI
 //! builds controls from, what the wire format carries, and what fills in
@@ -266,8 +265,8 @@ pub enum ParamKind {
     /// Not an [`Array`](Self::Array) of a particular shape, because it is not
     /// numbers the kind decodes. It is geometry somebody else assembled, and
     /// every consumer **references** it rather than building its own — which is
-    /// the whole reason it exists. A ribbon drawn as a lit surface and as an
-    /// absorbing medium used to be the same vertices uploaded twice.
+    /// the whole reason it exists: a ribbon drawn as a lit surface and as an
+    /// absorbing medium is one set of vertices, uploaded once.
     ///
     /// What it carries is described by
     /// [`GeometryMeta`](super::data::GeometryMeta), and a kind reads it rather
@@ -366,7 +365,7 @@ impl ParamKind {
         // in advance declares `[]`, which is "not stated" rather than "no
         // axes" — the same thing `None` says about a dtype. Testing only for a
         // zero *axis* missed it, because `[]` has no axes to test.
-        let empty = meta.shape.is_empty() || meta.shape.iter().any(|axis| *axis == 0);
+        let empty = meta.shape.is_empty() || meta.shape.contains(&0);
         if !empty && !dtypes.is_empty() && !dtypes.contains(&meta.dtype) {
             return Err(format!(
                 "is {} but this input takes {}",
@@ -571,7 +570,11 @@ impl ActorRegistry {
     /// Adds a kind. A duplicate id replaces the earlier registration, so a
     /// backend can deliberately take over a name from another.
     pub fn register(&mut self, kind: ActorKind) {
-        if let Some(existing) = self.kinds.iter_mut().find(|existing| existing.id == kind.id) {
+        if let Some(existing) = self
+            .kinds
+            .iter_mut()
+            .find(|existing| existing.id == kind.id)
+        {
             warn!("draw: actor kind \"{}\" re-registered", kind.id);
             *existing = kind;
             return;
@@ -676,8 +679,8 @@ pub fn apply_actor_params(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::data::BufferMeta;
+    use super::*;
 
     const SPECS: &[ParamSpec] = &[
         ParamSpec {
@@ -941,9 +944,9 @@ mod tests {
     }
 
     /// Kinds come back in registration order, and every one of them is offered
-    /// for every object. Which kinds *could* draw an object used to be filtered
-    /// by a `supports(DatasetKind)` predicate; an actor's data is bound to it
-    /// now, so the object it hangs under says nothing about what can draw it.
+    /// for every object. Nothing filters by what an object holds: an actor's
+    /// data is bound to the actor, so the object it hangs under says nothing
+    /// about what can draw it.
     #[test]
     fn kinds_come_back_in_registration_order() {
         let mut registry = ActorRegistry::default();

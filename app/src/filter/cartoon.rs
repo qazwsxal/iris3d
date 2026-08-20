@@ -47,7 +47,7 @@
 //! > Copyright (c) 2018-2024 Mol\* contributors, licensed under MIT.
 //!
 //! Two things differ, both forced by the moment pathway in
-//! [`default`](super::default).
+//! [`default`](mod@crate::draw::default).
 //! Every run is **closed and capped**, because a moment pathway reads an open
 //! mesh as a solid whose far wall is infinitely distant and draws it too clear;
 //! Mol\*'s two-segment ribbon has no closed form and is not offered. And a run
@@ -132,10 +132,10 @@ const PARAMS: &[ParamSpec] = &[
     },
     // Which atoms to build from, by index. Unbound uses all of them.
     //
-    // This is what an actor's `Subset` used to do for the cartoon, and it has to
-    // be here rather than on the consumer: narrowing the *vertices* of a
-    // finished ribbon would cut triangles apart, and "draw chain A" means
-    // rebuilding the curve from fewer atoms rather than hiding some of it.
+    // Narrowing happens here rather than on the consumer: cutting the
+    // *vertices* of a finished ribbon would cut triangles apart, and "draw
+    // chain A" means rebuilding the curve from fewer atoms rather than hiding
+    // some of it.
     ParamSpec {
         id: "atoms",
         label: "atoms to build from",
@@ -220,7 +220,7 @@ const PARAMS: &[ParamSpec] = &[
 
 /// Arrays, not one assembled mesh.
 ///
-/// Deliberate, though this filter could build a [`Mesh`](bevy::prelude::Mesh)
+/// Deliberate, though this filter could build a [`Mesh`]
 /// itself. A ribbon is coloured by sending `residue_index` through `colormap`,
 /// and those colours have to reach the *vertex buffer* — so the assembly has to
 /// happen after the colouring, which means after this. See
@@ -326,9 +326,7 @@ fn run(request: &Request) -> Outcome {
         // selection is correct, and a ribbon that draws nothing because the
         // atom names were bound to the wrong array is not, and they look
         // identical on screen.
-        return Outcome::refused(
-            "found no protein or nucleic backbone in the atoms it was given",
-        );
+        return Outcome::refused("found no protein or nucleic backbone in the atoms it was given");
     }
 
     let vertices = ribbon.positions.len() as u64;
@@ -345,7 +343,11 @@ fn run(request: &Request) -> Outcome {
         DataArray::numeric(
             Dtype::Uint32,
             vec![ribbon.indices.len() as u64 / 3, 3],
-            ribbon.indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
+            ribbon
+                .indices
+                .iter()
+                .flat_map(|i| i.to_le_bytes())
+                .collect(),
         )
         .into(),
     );
@@ -354,7 +356,11 @@ fn run(request: &Request) -> Outcome {
         DataArray::numeric(
             Dtype::Uint32,
             vec![vertices],
-            ribbon.residue.iter().flat_map(|r| r.to_le_bytes()).collect(),
+            ribbon
+                .residue
+                .iter()
+                .flat_map(|r| r.to_le_bytes())
+                .collect(),
         )
         .into(),
     );
@@ -654,8 +660,7 @@ impl Base {
         let mut perimeter = [Vec3::ZERO; RING_ATOMS];
 
         if let (Some(n7), Some(c8), Some(n9)) = (n7, c8, n9) {
-            perimeter[..RING_ATOMS]
-                .copy_from_slice(&[n1?, c2?, n3?, c4?, n9, c8, n7, c5?, c6?]);
+            perimeter[..RING_ATOMS].copy_from_slice(&[n1?, c2?, n3?, c4?, n9, c8, n7, c5?, c6?]);
             return Some(Self {
                 perimeter,
                 corners: RING_ATOMS,
@@ -829,9 +834,7 @@ pub fn build(backbone: &Backbone, style: &Style) -> Ribbon {
     // A nucleic residue whose ring did not resolve draws a bare ribbon, which
     // looks like a rendering bug rather than like missing atoms. Counting both
     // is what tells the two apart without opening the file.
-    debug!(
-        "draw: cartoon over {residues} residues ({nucleic} nucleic, {bases} with a base ring)"
-    );
+    debug!("draw: cartoon over {residues} residues ({nucleic} nucleic, {bases} with a base ring)");
     ribbon
 }
 
@@ -1353,13 +1356,7 @@ fn tensions(segment: &Segment) -> Vec<f32> {
 /// to the arrow's width over its own last segment, about an eighth of a residue.
 /// The result is a bevelled shoulder rather than a flat annulus, which is both
 /// what the sharing buys and cheaper than the alternative.
-fn pair_size(
-    segment: &Segment,
-    forms: &[Form],
-    pair: usize,
-    t: f32,
-    style: &Style,
-) -> (f32, f32) {
+fn pair_size(segment: &Segment, forms: &[Form], pair: usize, t: f32, style: &Style) -> (f32, f32) {
     let (_, thick) = segment[pair].form.size(style);
     if forms[pair] == Form::Arrow {
         let (wide, _) = Form::Arrow.size(style);
@@ -1369,10 +1366,7 @@ fn pair_size(
     }
     let (start_wide, start_thick) = segment[pair].form.size(style);
     let (end_wide, end_thick) = segment[pair + 1].form.size(style);
-    (
-        start_wide.lerp(end_wide, t),
-        start_thick.lerp(end_thick, t),
-    )
+    (start_wide.lerp(end_wide, t), start_thick.lerp(end_thick, t))
 }
 
 /// Builds one sample's frame from the curve and the residue direction.
@@ -1630,7 +1624,10 @@ pub(crate) fn sweep_run(run: &[Sample], profile: &Profile, ribbon: &mut Ribbon) 
                 sample.across * rim.u * sample.half_width + sample.up * rim.v * sample.half_thick;
             let flat = rim.normal.unwrap_or_else(|| {
                 // The outward normal of the ellipse this rim point lies on.
-                Vec2::new(rim.u / sample.half_width.max(1e-6), rim.v / sample.half_thick.max(1e-6))
+                Vec2::new(
+                    rim.u / sample.half_width.max(1e-6),
+                    rim.v / sample.half_thick.max(1e-6),
+                )
             });
             let normal = (sample.across * flat.x + sample.up * flat.y).normalize_or(sample.up);
             push(ribbon, sample.position + offset, normal, sample.residue);
@@ -1663,7 +1660,11 @@ pub(crate) fn sweep_run(run: &[Sample], profile: &Profile, ribbon: &mut Ribbon) 
 /// the reverse of it. The outline is wound counter-clockwise about the tangent,
 /// so the front cap takes it reversed and the back cap as it is.
 fn cap(ribbon: &mut Ribbon, sample: &Sample, profile: &Profile, front: bool) {
-    let normal = if front { -sample.tangent } else { sample.tangent };
+    let normal = if front {
+        -sample.tangent
+    } else {
+        sample.tangent
+    };
     let centre = ribbon.positions.len() as u32;
     push(ribbon, sample.position, normal, sample.residue);
 
@@ -1990,11 +1991,11 @@ mod tests {
 
     /// An arrowhead narrows all the way to its tip and never widens again.
     ///
-    /// It used to. The run absorbed the following run's first sample, which
-    /// carries a *coil's* width, so the head tapered to a point and then flared
-    /// straight back out — a bow-tie, with the roll across the pinch reading as
-    /// a twist. Walking the widths is what catches it: the shape is wrong long
-    /// before any count or index is.
+    /// The trap is absorbing the following run's first sample, which carries a
+    /// *coil's* width: the head then tapers to a point and flares straight back
+    /// out — a bow-tie, with the roll across the pinch reading as a twist.
+    /// Walking the widths is what catches it: the shape is wrong long before
+    /// any count or index is.
     #[test]
     fn an_arrowhead_never_widens() {
         // A nearly straight backbone with alternating carbonyls, which is what a
@@ -2018,7 +2019,7 @@ mod tests {
         }
         let names = names();
         // A strand that ends inside the segment, so the arrow has a coil after
-        // it — which is exactly the case that used to flare.
+        // it — the case that flares if the following sample is absorbed.
         let sse = [3u8, 3, 3, 3, 3, 3, 0, 0, 0, 0];
         let backbone = Backbone {
             positions: &positions,

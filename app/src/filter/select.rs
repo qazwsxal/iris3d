@@ -92,9 +92,7 @@ const MATCH_PARAMS: &[ParamSpec] = &[
     ParamSpec {
         id: "text",
         label: "names to match (comma separated)",
-        kind: ParamKind::Text {
-            default: "",
-        },
+        kind: ParamKind::Text { default: "" },
     },
 ];
 
@@ -158,10 +156,7 @@ fn run_subset(request: &Request) -> Outcome {
     );
     let outcome: Outcome = products.into();
     match empty {
-        true => outcome.but(format!(
-            "selected none of its {} elements",
-            values.len()
-        )),
+        true => outcome.but(format!("selected none of its {} elements", values.len())),
         false => outcome,
     }
 }

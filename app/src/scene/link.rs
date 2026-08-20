@@ -1,11 +1,10 @@
 //! Where an actor is drawn, which may be several places at once.
 //!
-//! An actor used to *be* its placement: one entity, child of one object,
-//! carrying the mesh. That made "what it draws" and "where it is drawn" the
-//! same entity, and `ChildOf` holds one parent, so an actor could only ever
-//! appear once.
+//! An actor and its placements are separate entities, and have to be:
+//! `ChildOf` holds one parent, so an actor that *was* its placement could only
+//! ever appear in one place.
 //!
-//! They are separate now. The actor entity holds the definition — its kind, its
+//! The actor entity holds the definition — its kind, its
 //! parameters, its bindings — and owns whatever drawable output its kind builds
 //! for it. It is not in the tree and it never renders. A [`Placement`]
 //! entity per parent is a child of an object and carries *clones of those
@@ -18,11 +17,9 @@
 //! binding the same array can do neither: they are two definitions, changed one
 //! at a time.
 //!
-//! There used to be a second link, `ActorOf`, naming the object whose *data* an
-//! actor drew, separate from `ChildOf`, which named where it was placed. This
-//! is what that was reaching for and could not express — it gave an actor one
-//! data source and one place, where the split here gives it any number of
-//! places and, through binding, any number of arrays.
+//! Note that there is no link naming the object whose *data* an actor draws.
+//! There is nothing for one to say: an actor binds arrays directly, so it has
+//! any number of sources and, through placements, any number of places.
 
 use bevy::platform::collections::HashSet;
 use bevy::prelude::*;
@@ -155,11 +152,10 @@ pub fn sync_placements(
             // backend adds later. A placement is a *place* — that is the whole
             // of what it is — so it carries one whatever ends up drawn there.
             //
-            // It used to arrive only because `Mesh3d` requires `Transform`, and
-            // the default backend always inserts one. A backend that puts its
-            // instances *under* the placement rather than on it left the
-            // placement with no `GlobalTransform` for them to inherit, and Bevy
-            // warned once per instance.
+            // Relying on `Mesh3d` to require it is not enough: a backend that
+            // puts its instances *under* the placement rather than on it would
+            // leave the placement with no `GlobalTransform` for them to
+            // inherit, and Bevy warns once per instance.
             commands.spawn((
                 Placement(actor),
                 ChildOf(*parent),
@@ -216,12 +212,7 @@ mod tests {
     fn actor(app: &mut App, parents: Vec<Entity>) -> Entity {
         let mut counter = GlobalIDCounter::default();
         let mut commands = app.world_mut().commands();
-        let (_, entity) = spawn_actor(
-            &mut commands,
-            &mut counter,
-            parents,
-            ActorKindId("surface"),
-        );
+        let (_, entity) = spawn_actor(&mut commands, &mut counter, parents, ActorKindId("surface"));
         app.world_mut().flush();
         entity
     }

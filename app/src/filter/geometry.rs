@@ -7,13 +7,12 @@
 //!
 //! # Why this is a filter and not something each actor does
 //!
-//! It used to be something each actor did. `surface` and `medium` both took
-//! positions, indices, normals and colour, and both built their own
-//! `bevy::Mesh` from them — so a ribbon drawn as a lit surface *and* as an
-//! absorbing medium was the same vertices uploaded twice, and a third way of
-//! drawing it would have been a third copy. The generation had already been made
-//! to happen once, by turning the cartoon into a filter; the vertex buffers were
-//! the half that was still duplicated per consumer.
+//! If each actor assembled its own mesh, `surface` and `medium` would both take
+//! positions, indices, normals and colour and build their own `bevy::Mesh` from
+//! them — so a ribbon drawn as a lit surface *and* as an absorbing medium would
+//! be the same vertices uploaded twice, and a third way of drawing it a third
+//! copy. Assembling once here is the other half of the same argument that makes
+//! the cartoon a filter.
 //!
 //! Assembling once and sharing the handle also puts the question "how do these
 //! arrays become a mesh" in one place instead of in every kind that draws
@@ -97,10 +96,10 @@ const PARAMS: &[ParamSpec] = &[
             structural: true,
         },
     },
-    // Which vertices to keep, by index. This is what an actor's `Subset` used to
-    // do for a mesh, and it has to happen *here* now: two actors sharing one
-    // mesh cannot each narrow it, and narrowing it after assembly would mean
-    // rewriting the connectivity of geometry somebody else is drawing.
+    // Which vertices to keep, by index. Narrowing has to happen *here*: two
+    // actors sharing one mesh cannot each narrow it, and narrowing after
+    // assembly would mean rewriting the connectivity of geometry somebody else
+    // is drawing.
     //
     // A triangle survives only when all three of its corners do, following VTK's
     // extract-selection — keeping one with a dropped corner would mean inventing
