@@ -9,3 +9,6 @@ __pycache__/
 iris3d-*.png
 
 # The uv virtualenv ignores itself via .venv/.gitignore.
+
+# Editor settings, kept local
+.vscode/
