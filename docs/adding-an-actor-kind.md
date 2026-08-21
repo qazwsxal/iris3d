@@ -7,9 +7,9 @@ Actor kinds belong to a **backend**, not to the shared layer. A backend is a
 whole rendering pathway — one pipeline plus the kinds built for it — chosen once
 at launch. How a dataset is best mapped onto GPU primitives depends on the
 pipeline, which is why the kinds live inside
-[`crates/iris3d-draw/src/default/`](../crates/iris3d-draw/src/default/) rather than above it.
+[`src/draw/default/`](../src/draw/default/) rather than above it.
 
-[`draw/default/points.rs`](../crates/iris3d-draw/src/default/points.rs) is the smallest
+[`draw/default/points.rs`](../src/draw/default/points.rs) is the smallest
 complete example.
 
 ## The four pieces
@@ -46,7 +46,7 @@ in a kind.
 mesh built by the `geometry` filter, so one set of vertex buffers is uploaded
 once and referenced by both.
 
-Shared specs live in [`draw/lib.rs`](../crates/iris3d-draw/src/lib.rs) — `iris3d_draw::TINT`
+Shared specs live in [`draw/lib.rs`](../src/draw/mod.rs) — `crate::draw::TINT`
 is one, so every kind spells its flat colour the same way.
 
 ### 3. Register the kind
@@ -72,7 +72,7 @@ pub fn register(registry: &mut ActorRegistry) {
 
 ### 4. Wire it in
 
-Add the module to [`draw/default/mod.rs`](../crates/iris3d-draw/src/default/mod.rs), call
+Add the module to [`draw/default/mod.rs`](../src/draw/default/mod.rs), call
 its `register` beside the others, and add whatever systems build and draw its GPU
 data.
 
@@ -84,7 +84,7 @@ yours::register(&mut registry);
 
 ## Rebuilds and repaints
 
-[`draw::Dirty`](../crates/iris3d-draw/src/lib.rs) grades invalidation rather than treating
+[`draw::Dirty`](../src/draw/mod.rs) grades invalidation rather than treating
 it as a single flag, because rebuilding geometry and changing a colour are not
 the same cost. A kind's draw system reads the grade and does the least work that
 covers it. This is what `structural: true` on a `ParamSpec` feeds.
@@ -93,7 +93,7 @@ covers it. This is what `structural: true` on a `ParamSpec` feeds.
 
 Shaders are embedded in the binary, not loaded from an `assets/` directory — see
 the comment on `SHADER` in
-[`points.rs`](../crates/iris3d-draw/src/default/points.rs). Bevy resolves a filesystem
+[`points.rs`](../src/draw/default/points.rs). Bevy resolves a filesystem
 asset root that differs between `cargo run` and launching the executable
 directly, and embedding removes the failure mode.
 
@@ -104,8 +104,8 @@ things are worth doing:
 
 - Register the **real** `register` in the test app rather than a stand-in, so the
   declarations under test are the ones that ship. See the `mod tests` block in
-  [`points.rs`](../crates/iris3d-draw/src/default/points.rs).
-- Add the kind to [`draw/smoke.rs`](../crates/iris3d-draw/src/smoke.rs), which builds a
+  [`points.rs`](../src/draw/default/points.rs).
+- Add the kind to [`draw/smoke.rs`](../src/draw/smoke.rs), which builds a
   world with every kind in it and checks nothing panics.
 
 Then look at it, because a rendering change is only judgeable as an image:

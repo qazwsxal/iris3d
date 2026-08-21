@@ -1,9 +1,0 @@
-[package]
-name = "iris3d-model"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-iris3d-data = { workspace = true }
-
-bevy = { workspace = true }

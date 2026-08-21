@@ -6,11 +6,11 @@ Read [README.md](README.md) first, then the header of
 [`proto/iris3d/v1/scene.proto`](proto/iris3d/v1/scene.proto) — it explains the
 data model, and the wire contract is the real interface.
 
-The crate-level documentation in [`crates/iris3d/src/main.rs`](crates/iris3d/src/main.rs) maps the
+The crate-level documentation in [`src/main.rs`](src/main.rs) maps the
 Rust side. Generate and browse it:
 
 ```bash
-cargo doc --workspace --no-deps --document-private-items --open
+cargo doc --no-deps --document-private-items --open
 ```
 
 The two most likely first changes have walkthroughs:
@@ -22,17 +22,29 @@ The two most likely first changes have walkthroughs:
 CI runs these; run them first.
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+bash scripts/check-layering.sh
 buf lint
 ```
+
+The layering check is the one that needs explaining. The modules are ordered —
+`data` and `model` below `scene`, `scene` below `filter`, `filter` below `draw`,
+`draw` below `view` — and a module may only name the ones below it. Nothing in
+the compiler enforces that, so the script does, by grepping `crate::` imports.
+Comment lines are stripped before it looks, so a doc link pointing upward is
+fine; only code makes a dependency.
+
+If it fails, the fix is almost never to add an edge to its table. It is to move
+the shared thing down to a layer both sides can see — that is how the periodic
+table ended up in `data/` and `SceneError` in `model/`.
 
 Documentation links are checked too, so a rename that breaks an intra-doc link
 fails the build:
 
 ```bash
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 ```
 
 Rendering is not covered by the tests. If you changed anything that reaches the
