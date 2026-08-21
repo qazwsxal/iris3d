@@ -18,7 +18,9 @@ use iris3d_core::bus::BusSender;
 use iris3d_filter::FilterCommand;
 use iris3d_scene::SceneCommand;
 
+pub mod convert;
 pub mod scene_service;
+pub mod upload;
 pub mod watch;
 
 /// Generated types for `proto/iris3d/v1/scene.proto`.

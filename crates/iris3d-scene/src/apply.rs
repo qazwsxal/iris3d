@@ -19,9 +19,7 @@ use super::object_commands::{
     delete_object, list_objects, set_parent, set_transform, spawn_object,
 };
 use super::registry::{ActorKindId, ActorParams, ActorRegistry};
-use super::{
-    CommandBus, SceneCommand, SceneObject,
-};
+use super::{CommandBus, SceneCommand, SceneObject};
 
 /// Read-only view of the objects in the scene.
 ///
