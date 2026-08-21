@@ -20,11 +20,11 @@
 //!
 //! # What it draws
 //!
-//! Six kinds, split by whether they transmit.
+//! Five kinds, split by whether they transmit.
 //!
-//! **Opaque, through the ordinary passes:** `surface`, `points`,
-//! `ball-and-stick` and `glycan`. These write depth and are the thing the
-//! absorbance is measured *in front of*.
+//! **Opaque, through the ordinary passes:** `surface`, `points` and
+//! `ball-and-stick`. These write depth and are the thing the absorbance is
+//! measured *in front of*.
 //!
 //! **Transmitting, into the moment buffer:** `medium` and `volume`.
 //!
@@ -66,7 +66,6 @@ use crate::scene::link::Placement;
 use crate::scene::registry::ActorRegistry;
 
 pub(crate) mod extract;
-pub(crate) mod glycan;
 pub(crate) mod medium;
 pub(crate) mod molecule;
 pub(crate) mod pass;
@@ -353,7 +352,6 @@ impl Plugin for MomentBackendPlugin {
             let mut registry = app.world_mut().resource_mut::<ActorRegistry>();
             surface::register(&mut registry);
             medium::register(&mut registry);
-            glycan::register(&mut registry);
             molecule::register(&mut registry);
             points::register(&mut registry);
             volume::register(&mut registry);
@@ -369,7 +367,6 @@ impl Plugin for MomentBackendPlugin {
                 (
                     surface::invalidate,
                     medium::invalidate,
-                    glycan::invalidate,
                     molecule::invalidate,
                     points::invalidate,
                     volume::invalidate,
@@ -378,7 +375,6 @@ impl Plugin for MomentBackendPlugin {
                 (
                     surface::draw_surfaces,
                     medium::draw_media,
-                    glycan::draw_glycans,
                     molecule::draw_molecules,
                     points::draw_points,
                     volume::draw_volumes,
@@ -387,7 +383,6 @@ impl Plugin for MomentBackendPlugin {
                 (
                     place_volumes,
                     surface::place_surfaces,
-                    glycan::place_glycans,
                     molecule::place_molecules,
                     points::place_points,
                     volume::place_grids,

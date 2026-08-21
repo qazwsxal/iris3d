@@ -373,17 +373,33 @@ def main() -> int:
         # --- glycans --------------------------------------------------------
         #
         # A second way of drawing the same atoms rather than a different set of
-        # them: the SNFG symbols are placed per *residue*, and the actor reads
+        # them: the SNFG symbols are placed per *residue*, and the filter reads
         # which residues are sugars off `residue_snfg`. No subsetting needed,
         # which is why this one was already clean.
-        client.add_actor(
+        #
+        # `colour` comes out of the filter rather than a `colormap`, because
+        # SNFG's palette identifies the sugar and is not a choice to offer.
+        symbols = client.add_filter(
             "glycan",
-            parent=bench.place("glycans (SNFG)"),
             params={
                 "positions": iris3d.Bind(atoms["positions"]),
                 "residue_index": iris3d.Bind(atoms["residue_index"]),
                 "residue_snfg": iris3d.Bind(atoms["residue_snfg"]),
             },
+        )
+        snfg = client.add_filter(
+            "geometry",
+            params={
+                "positions": iris3d.Bind(symbols["positions"]),
+                "indices": iris3d.Bind(symbols["indices"]),
+                "normals": iris3d.Bind(symbols["normals"]),
+                "colour": iris3d.Bind(symbols["colour"]),
+            },
+        )
+        client.add_actor(
+            "surface",
+            parent=bench.place("glycans (SNFG)"),
+            params={"geometry": iris3d.Bind(snfg["geometry"])},
         )
         made.append("glycan")
 

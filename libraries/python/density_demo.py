@@ -153,18 +153,35 @@ def main():
         )
 
         # The glycans, as SNFG symbols. 5A63 carries 20 sugars, and a cartoon
-        # draws nothing for them — a sugar has no backbone — so the two actors
+        # draws nothing for them — a sugar has no backbone — so the two chains
         # are complementary and share the same uploaded positions.
-        if "residue_snfg" in structure and "glycan" in kinds:
+        #
+        # The symbols carry their own colours: in SNFG the colour is half the
+        # identity, so this is the one filter that maps its own rather than
+        # handing a scalar to `colormap`.
+        if "residue_snfg" in structure and "glycan" in filters:
             sugars = client.upload_data({"residue_snfg": structure["residue_snfg"]})
-            client.add_actor(
+            symbols = client.add_filter(
                 "glycan",
-                parent=ribbon,
                 params={
                     "positions": iris3d.Bind(held["positions"]),
                     "residue_index": iris3d.Bind(held["residue_index"]),
                     "residue_snfg": iris3d.Bind(sugars["residue_snfg"]),
                 },
+            )
+            snfg = client.add_filter(
+                "geometry",
+                params={
+                    "positions": iris3d.Bind(symbols["positions"]),
+                    "indices": iris3d.Bind(symbols["indices"]),
+                    "normals": iris3d.Bind(symbols["normals"]),
+                    "colour": iris3d.Bind(symbols["colour"]),
+                },
+            )
+            client.add_actor(
+                "surface",
+                parent=ribbon,
+                params={"geometry": iris3d.Bind(snfg["geometry"])},
             )
             print(f"  {int((structure['residue_snfg'] > 0).sum())} sugars as SNFG symbols")
 

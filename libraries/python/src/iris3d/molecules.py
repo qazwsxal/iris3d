@@ -258,7 +258,7 @@ def _glycans(res_names: np.ndarray) -> np.ndarray | None:
 
     ``None`` rather than an array of zeros: a structure with no glycan should
     leave the array off the wire entirely, so a client binding it to a glycan
-    actor gets nothing drawn rather than an empty upload to reason about.
+    filter gets nothing drawn rather than an empty upload to reason about.
     """
     codes = np.array(
         [_CCD_TO_SNFG.get(str(name).strip().upper(), 0) for name in res_names],

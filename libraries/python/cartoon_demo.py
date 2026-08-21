@@ -168,20 +168,37 @@ def main():
                 parent=handle,
                 params={"geometry": iris3d.Bind(shape["geometry"])},
             )
-            # Glycans, as a second actor under the same object. A cartoon draws
+            # Glycans, as a second chain under the same object. A cartoon draws
             # nothing for a sugar — it has no backbone — so the two are
             # complementary rather than overlapping, and they share the same
             # uploaded positions.
-            if "residue_snfg" in arrays and "glycan" in available:
+            #
+            # Same shape as the ribbon above, minus the colour map: SNFG's
+            # palette is the notation, so the filter hands out `colour` itself
+            # rather than a scalar for something downstream to interpret.
+            if "residue_snfg" in arrays and "glycan" in filters:
                 sugars = client.upload_data({"residue_snfg": arrays["residue_snfg"]})
-                client.add_actor(
+                symbols = client.add_filter(
                     "glycan",
-                    parent=handle,
                     params={
                         "positions": iris3d.Bind(held["positions"]),
                         "residue_index": iris3d.Bind(held["residue_index"]),
                         "residue_snfg": iris3d.Bind(sugars["residue_snfg"]),
                     },
+                )
+                snfg = client.add_filter(
+                    "geometry",
+                    params={
+                        "positions": iris3d.Bind(symbols["positions"]),
+                        "indices": iris3d.Bind(symbols["indices"]),
+                        "normals": iris3d.Bind(symbols["normals"]),
+                        "colour": iris3d.Bind(symbols["colour"]),
+                    },
+                )
+                client.add_actor(
+                    "surface",
+                    parent=handle,
+                    params={"geometry": iris3d.Bind(snfg["geometry"])},
                 )
                 count = int((arrays["residue_snfg"] > 0).sum())
                 print(f"  {entry}: {count} sugar residues as SNFG symbols")

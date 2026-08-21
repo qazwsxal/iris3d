@@ -96,11 +96,11 @@ corrected in the code — see `draw::default::pass` for the depth handling and
 
 ## What it draws
 
-Six kinds, split by whether they transmit.
+Five kinds, split by whether they transmit.
 
 | Pass | Kinds |
 |---|---|
-| Opaque, ordinary passes | `surface`, `points`, `ball-and-stick`, `glycan` |
+| Opaque, ordinary passes | `surface`, `points`, `ball-and-stick` |
 | Transmitting, into the moment buffer | `medium`, `volume` |
 
 The opaque kinds write depth and are the thing absorbance is measured *in front

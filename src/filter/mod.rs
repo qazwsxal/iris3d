@@ -43,6 +43,7 @@ pub(crate) mod cartoon;
 pub(crate) mod colormap;
 pub(crate) mod contour;
 pub(crate) mod geometry;
+pub(crate) mod glycan;
 pub(crate) mod index;
 pub(crate) mod maths;
 pub(crate) mod provenance;
@@ -466,6 +467,7 @@ impl Plugin for FilterPlugin {
             colormap::register(&mut registry);
             contour::register(&mut registry);
             geometry::register(&mut registry);
+            glycan::register(&mut registry);
             index::register(&mut registry);
             maths::register(&mut registry);
             select::register(&mut registry);

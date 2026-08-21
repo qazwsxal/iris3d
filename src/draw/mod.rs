@@ -43,7 +43,6 @@ use crate::scene::{DataArray, DataStore};
 
 pub(crate) mod atoms;
 pub(crate) mod default;
-pub(crate) mod glycan;
 pub(crate) mod probe;
 #[cfg(test)]
 mod smoke;

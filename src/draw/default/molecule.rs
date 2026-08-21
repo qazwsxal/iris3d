@@ -13,10 +13,10 @@
 //!
 //! # Opaque only
 //!
-//! As for [`glycan`](super::glycan), and unlike `cartoon`:
-//! there is no absorbing mode. A ball-and-stick is a *ball* — a hard little
-//! sphere standing for an atom — and making it a medium light passes through
-//! says something about atoms that nobody means.
+//! Unlike the triangles a `cartoon` produces, which reach either `surface` or
+//! `medium`, there is no absorbing form of this. A ball-and-stick is a *ball* —
+//! a hard little sphere standing for an atom — and making it a medium light
+//! passes through says something about atoms that nobody means.
 
 use bevy::prelude::*;
 
@@ -295,9 +295,9 @@ fn repaint(meshes: &mut Assets<Mesh>, existing: Option<&Mesh3d>, colours: Vec<[f
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
 }
 
-/// Gives every placement the mesh and material the actor holds. As for
-/// [`glycan::place_glycans`](super::glycan::place_glycans): these carry no
-/// `MomentVolume`, so the pathway's own placement system does not match them.
+/// Gives every placement the mesh and material the actor holds. Its own system
+/// because these actors carry no `MomentVolume`, so the pathway's own placement
+/// system does not match them.
 #[allow(clippy::type_complexity)]
 pub fn place_molecules(
     mut commands: Commands,
