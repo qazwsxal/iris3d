@@ -9,6 +9,10 @@
 //! than two, so the viewport keeps the whole left of the window and tuning a
 //! slider does not squeeze it from both sides.
 //!
+//! Scene is the outliner: objects and the actors drawn under them in one tree,
+//! with each row carrying its own toggles. The Actors tab lists the same actors
+//! flat and across objects, which is the comparison a tree cannot show.
+//!
 //! The UI reads the world and emits [`UiAction`]s rather than mutating
 //! directly. Two reasons: egui closures would otherwise need several
 //! conflicting mutable borrows at once, and keeping every mutation in one place

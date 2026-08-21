@@ -30,7 +30,25 @@ pub struct Row {
     pub entity: Entity,
     pub id: u64,
     pub name: String,
+    /// Its own visibility flag — what the eye on its row toggles.
     pub visible: bool,
+    /// Whether it is actually drawn, parents included.
+    ///
+    /// Bevy hides a whole subtree from one flag, so a child of a hidden object
+    /// keeps `visible` and is on screen nowhere. The tree has to show the second
+    /// answer or a hidden branch looks as though only its top row went.
+    ///
+    /// Walked up the rows here rather than read from `InheritedVisibility`.
+    /// That component is propagated in `PostUpdate`, one schedule after the pass
+    /// that draws this, so it answers for the frame before the click — and the
+    /// walk is the same three lines either way.
+    ///
+    /// It assumes an object is `Inherited` or `Hidden` and never
+    /// `Visibility::Visible`, which is what the eye writes and all a client can
+    /// ask for: there is no object visibility on the wire.
+    pub shown: bool,
+    /// The object this one is nested in, if any.
+    pub parent: Option<Entity>,
     /// Everything drawn under this object.
     pub actors: Vec<ActorRow>,
     /// Kinds that could be added to this object. Resolved while gathering so
@@ -50,6 +68,18 @@ pub struct ActorRow {
     pub entity: Entity,
     pub id: u64,
     pub label: &'static str,
+    /// Where the kind sits in the registry.
+    ///
+    /// Carried so a list can give each kind a colour without knowing what the
+    /// kinds are: registration order is stable within a build, and that is all a
+    /// badge needs. A name would be the honest key, but it would put the choice
+    /// of colours in the interface's hands rather than the registry's.
+    pub badge: usize,
+    /// The objects it is drawn under, in handle order, as entity and name.
+    ///
+    /// The name to show and the entity to select when it is clicked: a list
+    /// that names the objects should also be a way to reach them.
+    pub parents: Vec<(Entity, String)>,
     /// The controls to show, taken straight from the backend's declaration —
     /// `&'static` so nothing here has to be cloned or borrowed from the world.
     pub specs: &'static [ParamSpec],
@@ -178,6 +208,12 @@ pub struct Gathered {
     /// Every object in handle order, which is how the Data and Actors tabs
     /// group their listings.
     pub ordered: Vec<Entity>,
+    /// Every actor once, in handle order, whatever it is drawn under.
+    ///
+    /// The Actors tab lists this rather than walking the objects: an actor drawn
+    /// under three of them is one actor, and naming its objects in a column says
+    /// so better than three identical rows in three groups did.
+    pub actors: Vec<ActorRow>,
     /// Actors drawn under no object, in handle order.
     ///
     /// Deleting an object costs an actor that placement rather than its life,
@@ -284,7 +320,7 @@ impl Gathered {
             .get(&handle)
             .and_then(|producer| self.filters.iter().find(|row| row.id == *producer))
         {
-            Some(from) => format!("d{handle} {name} · from [{}] {}", from.id, from.label),
+            Some(from) => format!("d{handle} {name} · from {}", from.label),
             None => format!("d{handle} {name}"),
         }
     }
@@ -294,13 +330,37 @@ impl Gathered {
 ///
 /// A kind with no registration cannot be drawn or configured, so there is
 /// nothing useful to show for it either.
-fn actor_row(actors: &ActorData, registry: &ActorRegistry, entity: Entity) -> Option<ActorRow> {
+fn actor_row(
+    actors: &ActorData,
+    registry: &ActorRegistry,
+    names: &HashMap<Entity, (u64, String)>,
+    entity: Entity,
+) -> Option<ActorRow> {
     let (entity, id, kind, params, parents) = actors.get(entity).ok()?;
     let registered = registry.get(kind.0)?;
+    // In handle order rather than in the order the parents were added, so a list
+    // of them reads the same twice running.
+    let mut under: Vec<(u64, Entity, String)> = parents
+        .0
+        .iter()
+        .filter_map(|object| {
+            let (id, name) = names.get(object)?;
+            Some((*id, *object, name.clone()))
+        })
+        .collect();
+    under.sort_by_key(|(id, ..)| *id);
     Some(ActorRow {
         entity,
         id: id.0,
         label: registered.label,
+        badge: registry
+            .iter()
+            .position(|candidate| candidate.id == kind.0)
+            .unwrap_or(0),
+        parents: under
+            .into_iter()
+            .map(|(_, entity, name)| (entity, name))
+            .collect(),
         specs: registered.params,
         params: params.0.clone(),
         places: parents.0.len(),
@@ -355,6 +415,14 @@ pub fn gather(read: &SceneRead) -> Gathered {
         .collect();
     bindable.sort_by_key(|(id, _)| *id);
 
+    // The names first, in a pass of their own: an actor row names the objects it
+    // is drawn under, and those are not the object whose loop iteration builds
+    // it. One extra walk over a list the size of the tree.
+    let names: HashMap<Entity, (u64, String)> = objects
+        .iter()
+        .map(|(entity, id, object, ..)| (entity, (id.0, object.name.clone())))
+        .collect();
+
     for (entity, id, object, visibility, children, parent) in objects {
         // One child list, told apart by what each entity carries: a child that
         // is an object is a nested node, and one the actor query matches is
@@ -373,7 +441,7 @@ pub fn gather(read: &SceneRead) -> Gathered {
             .into_iter()
             .flatten()
             .copied()
-            .filter_map(|child| actor_row(actors, registry, placements.get(child).ok()?.0))
+            .filter_map(|child| actor_row(actors, registry, &names, placements.get(child).ok()?.0))
             .collect();
 
         // Every kind, for every object. What an actor draws is what it binds, so
@@ -390,7 +458,10 @@ pub fn gather(read: &SceneRead) -> Gathered {
         // knows about, whoever made it.
 
         // A parent that is not itself an object does not make this a child.
-        let parented = parent.is_some_and(|link| objects.contains(link.parent()));
+        let inside = parent
+            .map(|link| link.parent())
+            .filter(|parent| objects.contains(*parent));
+        let parented = inside.is_some();
         if !parented {
             roots.push(entity);
         }
@@ -402,6 +473,9 @@ pub fn gather(read: &SceneRead) -> Gathered {
                 id: id.0,
                 name: object.name.clone(),
                 visible: *visibility != Visibility::Hidden,
+                // Filled in below, once every row exists to be walked up.
+                shown: true,
+                parent: inside,
                 actors: drawn,
                 available,
                 children: child_objects,
@@ -409,12 +483,47 @@ pub fn gather(read: &SceneRead) -> Gathered {
         );
     }
 
-    // Actors with nowhere to be drawn. Asked of the parent list rather than of
-    // the tree, because an actor is not in the tree — only its placements are.
+    // What is actually on screen, now that every row exists to be walked up.
+    // Bounded by the tree's own depth limit, so a parent link that somehow
+    // cycles costs a fixed number of steps rather than the frame.
+    let effective: Vec<(Entity, bool)> = rows
+        .values()
+        .map(|row| {
+            let mut shown = row.visible;
+            let mut above = row.parent;
+            for _ in 0..crate::scene::MAX_HIERARCHY_DEPTH {
+                let (true, Some(parent)) = (shown, above) else {
+                    break;
+                };
+                let Some(parent) = rows.get(&parent) else {
+                    break;
+                };
+                shown = parent.visible;
+                above = parent.parent;
+            }
+            (row.entity, shown)
+        })
+        .collect();
+    for (entity, shown) in effective {
+        if let Some(row) = rows.get_mut(&entity) {
+            row.shown = shown;
+        }
+    }
+
+    // Every actor once, however many objects draw it. Asked of the actor query
+    // rather than of the tree, because an actor is not in the tree — only its
+    // placements are.
+    let mut every_actor: Vec<ActorRow> = actors
+        .iter()
+        .filter_map(|(entity, ..)| actor_row(actors, registry, &names, entity))
+        .collect();
+    every_actor.sort_by_key(|row| row.id);
+
+    // Those with nowhere to be drawn.
     let mut detached: Vec<ActorRow> = actors
         .iter()
         .filter(|(.., parents)| parents.0.is_empty())
-        .filter_map(|(entity, ..)| actor_row(actors, registry, entity))
+        .filter_map(|(entity, ..)| actor_row(actors, registry, &names, entity))
         .collect();
     detached.sort_by_key(|row| row.id);
 
@@ -512,6 +621,7 @@ pub fn gather(read: &SceneRead) -> Gathered {
         rows,
         roots,
         ordered,
+        actors: every_actor,
         detached,
         owners,
         held,

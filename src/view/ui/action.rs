@@ -20,6 +20,16 @@ pub(super) enum UiAction {
     SelectActor(Entity, Option<Entity>),
     SelectArray(AssetId<DataArray>),
     ToggleVisibility(Entity),
+    /// Make an empty object, optionally inside another.
+    ///
+    /// The name is chosen here rather than by the backend, which takes whatever
+    /// it is given: the interface is the only side that knows what the tree
+    /// already reads like, and two rows both called "object" is a worse tree
+    /// than one called "object 2".
+    AddObject {
+        name: String,
+        inside: Option<Entity>,
+    },
     Delete(u64),
     Frame(Entity),
     FrameAll,
@@ -87,8 +97,20 @@ pub struct PendingActions(pub Vec<UiAction>);
 #[derive(Resource, Default)]
 pub(super) struct Pending {
     pub(super) waiting: Vec<Job>,
+    /// Objects asked for and not yet made.
+    pub(super) objects: Vec<NewObject>,
     /// Shown at the foot of the panel until the next thing succeeds.
     pub(super) error: Option<String>,
+}
+
+/// An object being created, and where it should end up.
+///
+/// Creating and nesting are two commands, because `CreateObject` makes a root
+/// and only the reply says which one. Held until it lands rather than sent
+/// blind: the second command needs the handle from the first.
+pub(super) struct NewObject {
+    pub(super) reply: tokio::sync::oneshot::Receiver<crate::scene::ObjectSummary>,
+    pub(super) inside: Option<u64>,
 }
 
 pub(super) struct Job {
@@ -184,6 +206,24 @@ pub(super) fn apply_actions(
                         Visibility::Hidden => Visibility::Inherited,
                         _ => Visibility::Hidden,
                     };
+                }
+            }
+            UiAction::AddObject { name, inside } => {
+                let (reply, receiver) = tokio::sync::oneshot::channel();
+                if bus
+                    .sender()
+                    .send(SceneCommand::CreateObject { name, reply })
+                    .is_ok()
+                {
+                    // The reply is kept for the same reason a filter's is: the
+                    // handle it carries is the only way to say "and put it in
+                    // here", and the object does not exist until it lands.
+                    pending.objects.push(NewObject {
+                        reply: receiver,
+                        inside: inside
+                            .and_then(|parent| scene_objects.get(parent).ok())
+                            .map(|id| id.0),
+                    });
                 }
             }
             UiAction::Delete(id) => {
@@ -385,6 +425,25 @@ pub(super) fn apply_actions(
 /// created for an actor's empty input is bound to it in the tick its handles
 /// arrive, not the one after.
 pub(super) fn collect_replies(mut pending: ResMut<Pending>, mut actions: ResMut<PendingActions>) {
+    let mut still_creating = Vec::new();
+    for mut new in std::mem::take(&mut pending.objects) {
+        match new.reply.try_recv() {
+            Ok(summary) => {
+                if let Some(parent) = new.inside {
+                    // Made at the root and moved, rather than created in place:
+                    // `CreateObject` takes no parent, and nesting is its own
+                    // command with its own rules about the transform.
+                    actions
+                        .0
+                        .push(UiAction::SetObjectParent(summary.id, Some(parent)));
+                }
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => still_creating.push(new),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {}
+        }
+    }
+    pending.objects = still_creating;
+
     let mut still_waiting = Vec::new();
     for mut job in std::mem::take(&mut pending.waiting) {
         match job.reply.try_recv() {

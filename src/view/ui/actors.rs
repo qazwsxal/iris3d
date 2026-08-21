@@ -1,10 +1,11 @@
 //! The Actors tab: everything being drawn, and the controls for one of them.
 //!
-//! The list is the whole scene rather than just the selected object's actors.
-//! Two actors of one object differ only in their settings, and comparing them
-//! against a third somewhere else is the reason several exist at all — hiding
-//! the rest behind a selection would make that impossible to see. The selected
-//! object's group is tinted instead.
+//! One row per actor, whatever it is drawn under — three columns: what kind it
+//! is, what it is, and where it appears. The Scene tab already nests actors
+//! under their object, so grouping them by object here as well said the same
+//! thing twice and split an actor drawn under three objects into three rows.
+//! Flat is the view that tree cannot give: every drawing in the scene, side by
+//! side, which is the comparison several of them exist to make.
 
 use bevy_egui::egui;
 
@@ -16,89 +17,109 @@ use super::gather::{ActorRow, Gathered, Row};
 use super::params;
 use super::{PendingActions, UiAction, UiState};
 
+/// The width of a kind badge, and of the column it sits in.
+const BADGE: f32 = 18.0;
+
+/// Colours for the kind badges, indexed by registration order.
+///
+/// Prototype colouring: a number in a coloured square, so two rows of the same
+/// kind are one glance apart before their names are read. When the kinds get
+/// real icons this is what they replace.
+const PALETTE: [egui::Color32; 6] = [
+    egui::Color32::from_rgb(126, 176, 235),
+    egui::Color32::from_rgb(235, 165, 120),
+    egui::Color32::from_rgb(150, 205, 150),
+    egui::Color32::from_rgb(215, 145, 200),
+    egui::Color32::from_rgb(230, 210, 130),
+    egui::Color32::from_rgb(170, 170, 215),
+];
+
 pub fn list(
     ui: &mut egui::Ui,
     scene: &Gathered,
     selection: &Selection,
     actions: &mut PendingActions,
 ) {
-    let mut drew_anything = false;
-
-    for object in &scene.ordered {
-        let Some(row) = scene.rows.get(object) else {
-            continue;
-        };
-        if row.actors.is_empty() {
-            continue;
-        }
-        drew_anything = true;
-
-        let highlighted = selection.object == Some(row.entity);
-        let frame = if highlighted {
-            // The selection colour rather than a fixed grey, so this follows
-            // whichever theme egui is in.
-            egui::Frame::new().fill(ui.visuals().selection.bg_fill.gamma_multiply(0.25))
-        } else {
-            egui::Frame::new()
-        };
-
-        frame.inner_margin(4.0).show(ui, |ui| {
-            let heading = egui::RichText::new(format!("[{}] {}", row.id, row.name));
-            ui.label(if highlighted {
-                heading.strong()
-            } else {
-                heading.weak()
-            });
-            for actor in &row.actors {
-                entry(ui, actor, Some(row), selection, actions);
-            }
-        });
-    }
-
-    // Actors drawn under nothing, usually because the last object they were
-    // under was deleted. Grouped on their own because they are in no object's
-    // list — leaving them out would make them unreachable, with nothing on
-    // screen to say they still exist.
-    if !scene.detached.is_empty() {
-        drew_anything = true;
-        egui::Frame::new().inner_margin(4.0).show(ui, |ui| {
-            ui.label(egui::RichText::new("Detached — not drawn").weak().italics());
-            for actor in &scene.detached {
-                entry(ui, actor, None, selection, actions);
-            }
-        });
-    }
-
-    if !drew_anything {
+    if scene.actors.is_empty() {
         ui.weak("Nothing is drawn.");
+        return;
     }
+
+    // Measured once, before the grid: inside it `available_width` is the width
+    // of a cell rather than of the list, so a column asked for it there would
+    // grow the grid a little on every frame.
+    let full = ui.available_width();
+    let names = ((full - BADGE) * 0.5).max(60.0);
+
+    egui::Grid::new("actor-list")
+        .num_columns(3)
+        .striped(true)
+        .show(ui, |ui| {
+            for actor in &scene.actors {
+                badge(ui, actor);
+
+                let picked = selection.actor == Some(actor.entity);
+                let response = ui
+                    .add(
+                        egui::Button::selectable(picked, (actor.label, egui::Atom::grow()))
+                            .min_size(egui::vec2(names, 0.0)),
+                    )
+                    .on_hover_text(format!("actor {}", actor.id));
+                if response.clicked() {
+                    actions.0.push(UiAction::SelectActor(
+                        actor.entity,
+                        actor.parents.first().map(|(entity, _)| *entity),
+                    ));
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Remove").clicked() {
+                        actions.0.push(UiAction::RemoveActor(actor.entity));
+                        ui.close();
+                    }
+                });
+
+                parents(ui, actor, actions);
+                ui.end_row();
+            }
+        });
 }
 
-/// One clickable row in the list.
+/// The kind of an actor, as a coloured number.
+fn badge(ui: &mut egui::Ui, actor: &ActorRow) {
+    let (rect, response) = ui.allocate_at_least(egui::vec2(BADGE, BADGE), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let colour = PALETTE[actor.badge % PALETTE.len()];
+        ui.painter().rect_filled(rect, 4.0, colour);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{}", actor.badge + 1),
+            egui::TextStyle::Small.resolve(ui.style()),
+            egui::Color32::from_gray(20),
+        );
+    }
+    response.on_hover_text(actor.label);
+}
+
+/// The objects an actor is drawn under, as links to them.
 ///
-/// `under` is the object whose group this row is in, which is what the click
-/// selects alongside the actor. One actor drawn under several objects has a row
-/// in each of their groups, and they differ only in this.
-fn entry(
-    ui: &mut egui::Ui,
-    actor: &ActorRow,
-    under: Option<&Row>,
-    selection: &Selection,
-    actions: &mut PendingActions,
-) {
+/// Links rather than text: the question this column answers is "where is this
+/// one", and the next thing wanted after the answer is to go there.
+fn parents(ui: &mut egui::Ui, actor: &ActorRow, actions: &mut PendingActions) {
     ui.horizontal(|ui| {
-        let picked = selection.actor == Some(actor.entity);
-        if ui
-            .selectable_label(picked, format!("[{}] {}", actor.id, actor.label))
-            .clicked()
-        {
-            actions
-                .0
-                .push(UiAction::SelectActor(actor.entity, under.map(|r| r.entity)));
+        if actor.parents.is_empty() {
+            // Nowhere to be drawn, so nothing is on screen. Worth saying
+            // outright — otherwise the row looks like every other one.
+            ui.weak(egui::RichText::new("not drawn").italics());
+            return;
         }
-        // Worth saying outright: two identical-looking rows over one object are
-        // otherwise indistinguishable when what differs is which part of the
-        // data each draws.
+        for (entity, name) in &actor.parents {
+            if ui.link(name).clicked() {
+                actions
+                    .0
+                    .push(UiAction::SelectActor(actor.entity, Some(*entity)));
+            }
+        }
     });
 }
 
@@ -135,19 +156,7 @@ fn add(
     registry: &crate::scene::registry::ActorRegistry,
     actions: &mut PendingActions,
 ) {
-    // A kind chosen but not yet made. Every actor kind has at least one required
-    // input, so there is nothing worth spawning before they are picked — the
-    // command path refuses an unbound actor, and the interface should not be
-    // able to make one the wire would reject.
-    if let Some(draft) = &state.draft
-        && let Making::Actor(_) = draft.making
-        && let Some(kind) = registry.get(draft.kind)
-    {
-        params::draft_form(ui, scene, actions, draft, kind.label, kind.params, |spec| {
-            // Geometry never comes from an upload, so an empty picker here is a
-            // missing filter rather than missing data.
-            matches!(spec.kind, ParamKind::Geometry { .. }).then_some("assemble…")
-        });
+    if draft(ui, scene, state, registry, actions) {
         return;
     }
 
@@ -160,7 +169,7 @@ fn add(
         return;
     }
     ui.horizontal(|ui| {
-        ui.label(format!("add to [{}] {}", row.id, row.name));
+        ui.label(format!("add to {}", row.name));
         egui::ComboBox::from_id_salt((row.entity, "add"))
             .selected_text("choose a kind")
             .show_ui(ui, |ui| {
@@ -173,6 +182,39 @@ fn add(
     });
 }
 
+/// The form for an actor kind chosen but not yet made, if one is open.
+///
+/// Every actor kind has at least one required input, so there is nothing worth
+/// spawning before they are picked — the command path refuses an unbound actor,
+/// and the interface should not be able to make one the wire would reject.
+///
+/// Returns whether it drew anything, because both places that offer to add an
+/// actor — this tab and the scene tree's toolbar — show the form in their own
+/// details pane and have to know whether the rest of that pane is wanted.
+pub(super) fn draft(
+    ui: &mut egui::Ui,
+    scene: &Gathered,
+    state: &UiState,
+    registry: &crate::scene::registry::ActorRegistry,
+    actions: &mut PendingActions,
+) -> bool {
+    let Some(draft) = &state.draft else {
+        return false;
+    };
+    let Making::Actor(_) = draft.making else {
+        return false;
+    };
+    let Some(kind) = registry.get(draft.kind) else {
+        return false;
+    };
+    params::draft_form(ui, scene, actions, draft, kind.label, kind.params, |spec| {
+        // Geometry never comes from an upload, so an empty picker here is a
+        // missing filter rather than missing data.
+        matches!(spec.kind, ParamKind::Geometry { .. }).then_some("assemble…")
+    });
+    true
+}
+
 /// One actor: what it is and its parameters.
 ///
 /// The controls are generated from the backend's own `ParamSpec` declarations,
@@ -180,7 +222,7 @@ fn add(
 /// here. A slider's range is the declared range, which is also the range values
 /// are clamped to on the way in, so the UI cannot ask for something a client
 /// could not.
-fn controls(
+pub(super) fn controls(
     ui: &mut egui::Ui,
     scene: &Gathered,
     row: Option<&Row>,
@@ -190,7 +232,7 @@ fn controls(
     ui.horizontal(|ui| {
         ui.heading(current.label);
         match row {
-            Some(row) => ui.weak(format!("of [{}] {}", row.id, row.name)),
+            Some(row) => ui.weak(format!("of {}", row.name)),
             // Nowhere to be drawn, so nothing is on screen. Worth saying
             // outright — otherwise these controls look broken.
             None => ui.weak("under no object — not drawn"),

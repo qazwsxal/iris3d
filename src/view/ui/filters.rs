@@ -34,7 +34,8 @@ pub fn list(
         ui.horizontal(|ui| {
             let picked = selection.filter == Some(filter.id);
             if ui
-                .selectable_label(picked, format!("[{}] {}", filter.id, filter.label))
+                .selectable_label(picked, filter.label)
+                .on_hover_text(format!("filter {}", filter.id))
                 .clicked()
             {
                 actions.0.push(UiAction::SelectFilter(filter.id));
@@ -78,7 +79,6 @@ fn controls(
 ) {
     ui.horizontal(|ui| {
         ui.heading(current.label);
-        ui.weak(format!("[{}]", current.id));
         if ui.small_button("remove").clicked() {
             actions.0.push(UiAction::RemoveFilter(current.id));
         }
@@ -137,10 +137,12 @@ fn controls(
         match scene.consumers.get(handle) {
             Some(readers) => {
                 for reader in readers {
-                    ui.weak(format!(
-                        "        → [{}] {} · {}",
-                        reader.id, reader.label, reader.input
-                    ));
+                    // The handle on hover rather than in the line. Two readers of
+                    // one kind are otherwise the same line twice, and the number
+                    // is what tells them apart — but it is wanted only when
+                    // something is being checked against a script.
+                    ui.weak(format!("        → {} · {}", reader.label, reader.input))
+                        .on_hover_text(format!("handle {}", reader.id));
                 }
             }
             None => {

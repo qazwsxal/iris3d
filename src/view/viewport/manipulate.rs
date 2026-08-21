@@ -20,7 +20,7 @@
 //! [`SceneCommand::SetTransform`] down the same channel a script uses, so
 //! dragging an object and calling `set_transform` from Python are the same
 //! operation, validated once. The interface has always taken this path — the
-//! object tree's delete button does too — so the gizmo needed no new authority.
+//! object tree's Delete does too — so the gizmo needed no new authority.
 //!
 //! # Three problems that are not the maths
 //!

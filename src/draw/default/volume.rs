@@ -88,6 +88,22 @@ pub struct GridStyle {
     pub steps: f32,
 }
 
+/// What the parameters say about the grid, before the array is consulted.
+///
+/// The half of [`GridBox`] a client can state. It exists because `apply` writes
+/// components from a parameter map and can read nothing back: writing `GridBox`
+/// there would have to invent a value for `dims`, and inventing it once per
+/// parameter change means every drag of the opacity slider blanks the volume for
+/// a frame and then re-uploads its texture. So `apply` writes what it knows, and
+/// [`size_grids`] assembles the whole box once, only when it differs.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct GridRequest {
+    pub origin: Vec3,
+    /// Between samples of the *source* array, before striding.
+    pub spacing: Vec3,
+    pub step: UVec3,
+}
+
 /// Where the samples sit.
 ///
 /// `dims` is **not** set from a parameter: it is measured off the bound array by
@@ -313,20 +329,10 @@ pub fn register(registry: &mut ActorRegistry) {
                     emission: float(params, "emission", 1.0),
                     steps: float(params, "steps", 128.0),
                 },
-                {
-                    let step = param_uvec3(params, "step", UVec3::ONE).max(UVec3::ONE);
-                    GridBox {
-                        origin: param_vec3(params, "origin", Vec3::ZERO),
-                        // Scaled by the stride, so raising the step coarsens the
-                        // volume in place rather than shrinking it towards the
-                        // origin.
-                        spacing: param_vec3(params, "spacing", Vec3::ONE) * step.as_vec3(),
-                        // A placeholder until `size_grids` measures the array.
-                        // Zero rather than one, because zero draws nothing while
-                        // one would draw a single voxel at the origin for a frame.
-                        dims: UVec3::ZERO,
-                        step,
-                    }
+                GridRequest {
+                    origin: param_vec3(params, "origin", Vec3::ZERO),
+                    spacing: param_vec3(params, "spacing", Vec3::ONE),
+                    step: param_uvec3(params, "step", UVec3::ONE).max(UVec3::ONE),
                 },
             ));
         },
@@ -354,24 +360,31 @@ pub fn invalidate(
 
 /// Builds each dirty volume's field texture and colour ramp.
 #[allow(clippy::too_many_arguments)]
-/// Measures each volume's grid off the array bound to it.
+/// Assembles each volume's [`GridBox`] from its parameters and its array.
 ///
 /// `apply` cannot do this: it turns a parameter map into components and has no
 /// reach into the data store, so the shape has to be read here instead. That is
 /// why the shape is not a parameter: a parameter could state something the
 /// array contradicts.
 ///
-/// Runs before [`invalidate`], so a grid that changes size marks the texture
+/// **Written only when it differs.** This is what keeps `Changed<GridBox>`
+/// meaning "the grid changed" rather than "some parameter was touched" — and an
+/// unconditional write is not merely wasteful here, because [`invalidate`] turns
+/// one into a texture rebuild. A drag of the opacity slider is one parameter
+/// write per frame, and the volume would spend the drag being re-uploaded and
+/// blanked between uploads.
+///
+/// Runs before [`invalidate`], so a grid that does change marks the texture
 /// dirty through the ordinary `Changed<GridBox>` path rather than needing one of
-/// its own. Written only when it differs, or every frame would look like a
-/// resize and re-upload the volume.
+/// its own.
 pub fn size_grids(
+    mut commands: Commands,
     store: Res<DataStore>,
     arrays: Res<Assets<DataArray>>,
-    mut grids: Query<(&Bindings, &mut GridBox)>,
+    mut grids: Query<(Entity, &Bindings, &GridRequest, Option<&mut GridBox>)>,
 ) {
-    for (bindings, mut grid) in &mut grids {
-        let measured = bound(bindings, "density", store.as_ref(), arrays.as_ref())
+    for (entity, bindings, request, current) in &mut grids {
+        let dims = bound(bindings, "density", store.as_ref(), arrays.as_ref())
             .and_then(|array| match array.shape.as_slice() {
                 [x, y, z] => Some(UVec3::new(*x as u32, *y as u32, *z as u32)),
                 _ => None,
@@ -379,10 +392,22 @@ pub fn size_grids(
             // Ceiling division: a stride that does not divide the grid leaves a
             // partial cell at the far edge, and the samples kept are still where
             // they belong once the spacing is scaled to match.
-            .map(|full| (full + grid.step - UVec3::ONE) / grid.step)
+            .map(|full| (full + request.step - UVec3::ONE) / request.step)
             .unwrap_or(UVec3::ZERO);
-        if grid.dims != measured {
-            grid.dims = measured;
+        let wanted = GridBox {
+            origin: request.origin,
+            // Scaled by the stride, so raising the step coarsens the volume in
+            // place rather than shrinking it towards the origin.
+            spacing: request.spacing * request.step.as_vec3(),
+            dims,
+            step: request.step,
+        };
+        match current {
+            Some(mut grid) if *grid != wanted => *grid = wanted,
+            Some(_) => {}
+            None => {
+                commands.entity(entity).insert(wanted);
+            }
         }
     }
 }
