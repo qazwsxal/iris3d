@@ -263,7 +263,7 @@ pub fn draft_form(
     if let Making::Filter(Some((output, target))) = &draft.making {
         let into = match target {
             Target::Actor(_, input) => format!("the selected actor's {input}"),
-            Target::Filter(id, input) => format!("[{id}]'s {input}"),
+            Target::Filter(id, input) => format!("filter {id}'s {input}"),
             Target::NewActor { kind, input, .. } => format!("a new {kind}'s {input}"),
         };
         ui.weak(format!("its {output} will be bound to {into}"));

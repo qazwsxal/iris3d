@@ -93,15 +93,15 @@ impl SnarlViewer<Node> for Viewer<'_> {
         match node {
             Node::Data(handle) => self.scene.describe_handle(*handle),
             Node::Filter(id) => match self.scene.filter(*id) {
-                Some(row) => format!("[{}] {}", row.id, row.label),
-                None => format!("[{id}] gone"),
+                Some(row) => row.label.to_string(),
+                None => format!("filter {id} — gone"),
             },
             Node::Actor(entity) => match self.scene.actor(*entity) {
-                Some((_, row)) => format!("[{}] {}", row.id, row.label),
+                Some((_, row)) => row.label.to_string(),
                 None => "gone".into(),
             },
             Node::Object(entity) => match self.scene.rows.get(entity) {
-                Some(row) => format!("[{}] {}", row.id, row.name),
+                Some(row) => row.name.clone(),
                 None => "gone".into(),
             },
         }
