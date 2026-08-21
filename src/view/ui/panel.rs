@@ -190,9 +190,14 @@ pub(super) fn draw_ui(
                                         &read.registry,
                                         &mut actions,
                                     ),
-                                    Tab::Scene => {
-                                        scene::details(ui, &world, &selection, &mut actions)
-                                    }
+                                    Tab::Scene => scene::details(
+                                        ui,
+                                        &world,
+                                        &state,
+                                        &selection,
+                                        &read.registry,
+                                        &mut actions,
+                                    ),
                                 }
                                 // Whatever the backend last refused. Filters are
                                 // the only thing here that can be refused for a

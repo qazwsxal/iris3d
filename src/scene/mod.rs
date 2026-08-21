@@ -54,7 +54,7 @@ pub use crate::data::{BufferMeta, DataArray, DataStore, Dtype, HeldMeta, NamedBu
 
 /// Ceiling on how far the ancestor walk will climb before giving up. Guards
 /// against a pre-existing malformed hierarchy sending validation into a loop.
-const MAX_HIERARCHY_DEPTH: usize = 4096;
+pub(crate) const MAX_HIERARCHY_DEPTH: usize = 4096;
 
 pub struct ScenePlugin;
 
