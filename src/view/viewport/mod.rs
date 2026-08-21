@@ -238,10 +238,16 @@ pub(crate) fn has_extent(aabb: &Aabb) -> bool {
     Vec3::from(aabb.half_extents).max_element() > 0.0
 }
 
-/// Anything with bounds that has just appeared or just moved — what a reframe
-/// waits to settle before it fits the camera to the scene.
-type Reframed<'w, 's> =
-    Query<'w, 's, (), (With<Aabb>, Or<(Added<Aabb>, Changed<GlobalTransform>)>)>;
+/// Geometry that has just appeared. This, and only this, starts a reframe.
+type Appeared<'w, 's> = Query<'w, 's, (), Added<Aabb>>;
+
+/// Anything with bounds that has just moved.
+///
+/// Not a reason to reframe by itself — dragging an object is not a request to
+/// move the camera, and refitting a moment after every drag makes placing
+/// anything by hand a fight. It only holds a reframe that is already coming
+/// open, for the upload-then-position sequence below.
+type Moved<'w, 's> = Query<'w, 's, (), (With<Aabb>, Changed<GlobalTransform>)>;
 
 /// Frames the view when new geometry appears, or when the UI asks.
 ///
@@ -252,9 +258,11 @@ type Reframed<'w, 's> =
 /// would otherwise pull the camera towards nothing the user can see — most
 /// obviously with a detached actor, which keeps its mesh and is deliberately
 /// hidden, but the same is true of anything hidden by hand.
+#[allow(clippy::too_many_arguments)]
 fn frame_content(
     time: Res<Time>,
-    changed: Reframed,
+    appeared: Appeared,
+    moved: Moved,
     bounds: Query<(&Aabb, &GlobalTransform, &InheritedVisibility)>,
     children: Query<&Children>,
     mut request: ResMut<FrameRequest>,
@@ -268,11 +276,16 @@ fn frame_content(
     // A client typically uploads an object, parents it, then positions it —
     // three separate calls landing over several frames. Fitting the moment
     // geometry appears would use its pre-transform position, and the last
-    // object uploaded would never be accounted for at all. Watching transforms
-    // as well as new meshes, and only fitting once both have been quiet for a
-    // moment, gets the final arrangement. It also gives the UI a chance to
-    // inset the camera viewport, so the aspect ratio is the real one.
-    if !changed.is_empty() {
+    // object uploaded would never be accounted for at all. So a new mesh opens
+    // a window, movement holds it open, and the fit happens once both have been
+    // quiet for a moment. It also gives the UI a chance to inset the camera
+    // viewport, so the aspect ratio is the real one.
+    //
+    // Movement *only* holds a window that is already open. Dragging an object
+    // by its handles moves it too, and refitting a quarter of a second after
+    // every drag is the camera taking the view back from whoever was placing
+    // something.
+    if !appeared.is_empty() || (settle.is_some() && !moved.is_empty()) {
         *settle = Some(Timer::from_seconds(0.25, TimerMode::Once));
     }
     let settled = settle
