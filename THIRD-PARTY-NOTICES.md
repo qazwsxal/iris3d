@@ -34,7 +34,7 @@ Two obligations are real and ongoing:
 
 ### Mol\*
 
-`app/src/draw/cartoon.rs` follows Mol\*'s cartoon construction: the spline
+`src/filter/cartoon/` follows Mol\*'s cartoon construction: the spline
 interpolation and its tension handling from `mol-repr/.../curve-segment.ts`, and
 the profile set, `aspectRatio` and `arrowFactor` controls and swapped nucleic
 frame from `polymer-trace-mesh.ts`. The Rust is written fresh and the closed,
@@ -184,7 +184,7 @@ its holdings in the public domain (CC0).
 
 ## Reference documents
 
-`ref/mboit-bevy-reference.md` and `ref/moment-backend-brief.md` are iris3d's own
-notes. The technique they describe — moment-based order-independent transparency
-— is from published papers by Münstermann, Krumpen, Klein and Peters. Cited in
-those documents; no licence attaches to an algorithm.
+`docs/design/moment-transparency.md` is iris3d's own notes. The technique it
+describes — moment-based order-independent transparency — is from papers by
+Münstermann, Krumpen, Klein and Peters, cited in that document. No licence
+attaches to an algorithm.

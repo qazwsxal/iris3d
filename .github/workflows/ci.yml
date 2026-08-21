@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail the build on a warning rather than printing it and moving on.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bevy links against these on Linux. Without them the build fails at the
+      # link step with an error that says nothing about the missing package.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets
+
+      - name: Test
+        # The tests never build a render app, so no GPU is needed. See
+        # src/draw/smoke.rs.
+        run: cargo test
+
+      - name: Layering
+        # The modules are layered and nothing enforces it but this. A crate per
+        # layer would, and was tried and reverted — see the script's own note.
+        run: bash scripts/check-layering.sh
+
+      - name: Docs
+        # Catches broken intra-doc links, which are the failure mode when
+        # something is renamed and a doc comment is not.
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items
+
+  proto:
+    name: Protocol
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+      - name: Lint
+        run: buf lint
+      - name: Check for breaking changes
+        # Against the base branch, not the working tree. A wire contract that
+        # breaks a released client should be a deliberate choice.
+        if: github.event_name == 'pull_request'
+        run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=${{ github.base_ref }}"
+
+  generated:
+    name: Generated bindings are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+      - name: Regenerate
+        # buf generate writes the Python bindings into libraries/python/src,
+        # and they are committed. If regenerating changes anything, they have
+        # drifted from the .proto.
+        run: buf generate
+      - name: Check for drift
+        run: git diff --exit-code libraries/python/src
