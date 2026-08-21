@@ -199,7 +199,7 @@ mod action;
 mod panel;
 
 use action::{Pending, apply_actions, collect_replies, take_picks};
-pub use action::{PendingActions, UiAction};
+use action::{PendingActions, UiAction};
 use panel::draw_ui;
 
 fn human_bytes(bytes: u64) -> String {

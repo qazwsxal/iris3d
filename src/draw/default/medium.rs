@@ -254,7 +254,7 @@ pub fn draw_media(mut commands: Commands, store: Res<DataStore>, dirty: Query<Dr
 /// duplicate their drawing code from *each other* by design — see
 /// [`crate`] — but this is one pathway's own physics, and both of its
 /// kinds mean exactly the same thing by an index of refraction.
-pub fn normal_reflectance(ior: f32) -> f32 {
+pub(super) fn normal_reflectance(ior: f32) -> f32 {
     let ratio = (ior - 1.0) / (ior + 1.0);
     ratio * ratio
 }
@@ -274,6 +274,6 @@ pub fn normal_reflectance(ior: f32) -> f32 {
 ///
 /// Shared with `cartoon`; see [`normal_reflectance`] for why
 /// that is not a breach of the rule that backends duplicate.
-pub fn transmission(tint: Vec3) -> Vec3 {
+pub(super) fn transmission(tint: Vec3) -> Vec3 {
     tint.clamp(Vec3::ZERO, Vec3::ONE)
 }

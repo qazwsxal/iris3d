@@ -11,7 +11,7 @@
 use super::*;
 
 /// Something the user asked for, applied after the UI has finished drawing.
-pub enum UiAction {
+pub(super) enum UiAction {
     Select(Entity),
     /// Show an actor's controls. The second entity is the object whose row it
     /// was clicked in — an actor drawn under three objects appears in three

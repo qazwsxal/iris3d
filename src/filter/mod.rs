@@ -39,16 +39,16 @@ use crate::model::data as bound_handle;
 use crate::model::{Bindings, ParamMap, ParamSpec};
 use crate::scene::{DataArray, DataStore};
 
-pub mod cartoon;
-pub mod colormap;
-pub mod contour;
-pub mod geometry;
-pub mod index;
-pub mod maths;
-pub mod provenance;
-pub mod select;
-pub mod source;
-pub mod wire;
+pub(crate) mod cartoon;
+pub(crate) mod colormap;
+pub(crate) mod contour;
+pub(crate) mod geometry;
+pub(crate) mod index;
+pub(crate) mod maths;
+pub(crate) mod provenance;
+pub(crate) mod select;
+pub(crate) mod source;
+pub(crate) mod wire;
 
 pub use wire::{FilterBus, FilterCommand, FilterKindSummary, FilterSummary};
 

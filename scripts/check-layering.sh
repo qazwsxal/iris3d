@@ -23,9 +23,14 @@ declare -A ALLOWED=(
   [draw]="bus counter redraw data model scene filter"
   [view]="bus counter redraw data model scene filter draw"
   [grpc]="bus counter redraw data model scene filter"
+  # Wiring. `cli` parses argv and names nothing; `capture` writes screenshots and
+  # needs only the redraw policy. `main` is exempt — adding the plugins in order
+  # is exactly the job of naming every layer.
+  [cli]=""
+  [capture]="redraw"
 )
 
-ALL="bus counter redraw data model scene filter draw view grpc"
+ALL="bus counter redraw data model scene filter draw view grpc cli capture"
 status=0
 
 for module in "${!ALLOWED[@]}"; do

@@ -121,7 +121,7 @@ pub struct PointerCaptured(pub bool);
 
 /// Left drag orbits, right or middle drag pans, wheel zooms.
 #[allow(clippy::too_many_arguments)]
-pub fn orbit_controls(
+fn orbit_controls(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,

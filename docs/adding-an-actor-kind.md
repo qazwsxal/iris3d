@@ -46,7 +46,7 @@ in a kind.
 mesh built by the `geometry` filter, so one set of vertex buffers is uploaded
 once and referenced by both.
 
-Shared specs live in [`draw/lib.rs`](../src/draw/mod.rs) — `crate::draw::TINT`
+Shared specs live in [`draw/mod.rs`](../src/draw/mod.rs) — `crate::draw::TINT`
 is one, so every kind spells its flat colour the same way.
 
 ### 3. Register the kind

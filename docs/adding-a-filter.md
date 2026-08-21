@@ -80,7 +80,7 @@ the world** — its inputs are owned copies, which is a real cost for large arra
 and the reason `DataArray::clone` is written to look like work.
 
 Read parameters through the accessors in
-[`scene/registry.rs`](../src/scene/registry.rs) — `float`, `flag`, `text`,
+[`model/param.rs`](../src/model/param.rs) — `float`, `flag`, `text`,
 `vector`, `vec3`, `uvec3` — rather than indexing the map. They fall back on a
 default when a client sends nonsense, so a bad value gives a sensible result
 instead of a panic.

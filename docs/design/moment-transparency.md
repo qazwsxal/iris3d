@@ -1,8 +1,8 @@
 # Moment-based order-independent transparency
 
 The `default` backend. **Source of truth for the code:**
-[`src/draw/default/mod.rs`](../../src/draw/default/mod.rs). Background
-reading: `ref/mboit-bevy-reference.md`.
+[`src/draw/default/mod.rs`](../../src/draw/default/mod.rs). The derivation is in
+"The method in full" at the foot of this page.
 
 ## What it does
 
@@ -76,7 +76,7 @@ and in-scattering will need.
 
 ## Build status
 
-Steps 1 to 4 of `ref/mboit-bevy-reference.md` §11: signed thickness, an analytic
+Steps 1 to 4 of the build order below: signed thickness, an analytic
 reference, four power moments, and nested meshes.
 
 The render-world half was validated against the closed form for a sphere — a
@@ -206,3 +206,223 @@ something it can decline to carry: the same geometry drawn as a lit `surface`
 wants exactly the ones this pass ignores. What that costs is stride, and what it
 buys is one upload instead of two. The accumulation pipeline pulls only the
 position out of whatever layout it is given.
+
+---
+
+# The method in full
+
+The governing derivation: where the closed forms come from, what the numbers have
+to be, and what order to build the unbuilt parts in. The code above implements
+steps 1 to 4 of the build order; the rest is written down so that picking it up
+later does not mean rederiving it.
+
+Primary source: Munstermann, Krumpen, Klein, Peters, *Moment-Based
+Order-Independent Transparency*, I3D 2018 —
+<https://momentsingraphics.de/I3D2018.html>. The supplementary has the biasing
+vectors and quantization transforms, which are not reproduced here.
+
+## Three content types
+
+Every fragment must deposit its contribution using **only its own depth**. That
+is the whole constraint; design any new content type to satisfy it.
+
+**Surfaces** — thin, opaque-ish fragments. The absorbance measure is a Dirac
+spike at the fragment depth:
+
+```text
+a = -log(1 - clamp(alpha, 0, ALPHA_MAX))
+b_k += a * pow(z, k)          // power moments
+b_k += a * cis(k * w * z)     // trigonometric moments
+```
+
+Clamp `alpha`; the logarithm diverges at 1.
+
+**Gaussian blobs** — along the view ray the density is a 1D Gaussian and the
+moment integral is closed form. Do not quadrature it. For ray `o + t*d` and
+Gaussian `(m, Sigma)`:
+
+```text
+sigma_t2 = 1 / dot(d, Sigma_inv * d)
+mu_t     = sigma_t2 * dot(d, Sigma_inv * (m - o))
+```
+
+`Sigma_inv` is already needed for the opacity evaluation — reuse it. Power
+moments then follow a two-term recurrence, `mk = mu*m(k-1) + (k-1)*sigma2*m(k-2)`
+from `m0 = 1`, `m1 = mu`. Trigonometric moments are one exponential,
+`b_k = a * exp(i*k*w*mu - k*k*w*w*sigma2/2)`, whose damping factor suppresses
+ringing for wide blobs automatically — prefer that basis here. Note that standard
+3DGS discards depth extent after EWA projection; it has to be recovered with the
+formulas above.
+
+**Closed meshes with uniform interior absorbance** is the one this backend
+implements, derived in "The signed-prefix trick" above.
+
+## Depth warping
+
+The warp maps view depth into a bounded moment domain, spending resolution where
+fragments are. It **breaks the closed forms**: the integrals are over `z`, not
+over `w(z)`.
+
+- For Gaussians, linearise locally — `mu_w = w(mu)`, `sigma_w = |w'(mu)| * sigma`.
+  Accuracy degrades for large blobs where the warp curves.
+- For closed meshes, `F_k` must be the antiderivative of the *warped* power, so
+  the warp has to be a polynomial for it to stay closed form. **Do not use a
+  logarithmic warp here.** The code currently uses the cheapest polynomial — a
+  linear one — which is step 5 of the build order below.
+
+Set the bounds from a per-frame depth min/max. A global bound is acceptable at
+first; refine it if contrast is poor.
+
+## Reconstruction
+
+For power moments:
+
+1. Read the moment vector `b` and the total absorbance `b0`.
+2. Normalise: `b_hat = b / b0`.
+3. Bias: `b_biased = mix(b_hat, b_star, epsilon)`. **Without this the Hankel
+   matrix loses positive definiteness and Cholesky fails**, showing as elongated
+   bands of broken pixels.
+4. Build the Hankel matrix, run Cholesky, solve for the polynomial coefficients.
+5. Find the roots and evaluate the bound at the fragment depth.
+6. Return `T = exp(-b0 * bound)`.
+
+`b_star` and `epsilon` come from the MBOIT supplementary. The published `epsilon`
+values assume low overdraw — raise them for high depth complexity. Unroll
+everything in WGSL; the sizes are known at compile time.
+
+The bias overestimates transmittance, so volumes read slightly too bright and
+cores slightly too soft. Error peaks at *moderate* optical depth, not high.
+
+## Volumetric shadows, and in-scattering
+
+Neither is built. Both are the same problem as the view pass and reuse its code.
+
+**Shadows.** Render the closed meshes from the light and accumulate
+`+/-F_k(z_light)` with the identical sign rule; that gives a volumetric moment
+shadow map to reconstruct `T_light` from. Keep **opaque** occluders in a separate
+conventional shadow map and multiply the two transmittances — folding them into
+the moment map destroys the Hankel conditioning, because an opaque Dirac has very
+large absorbance. Moment shadow maps are prefilterable (blur, mip, MSAA them),
+which is the main advantage over an alpha-blended deep shadow map.
+
+**In-scattering.** The scattering integral does not decompose per fragment: a
+back face knows `z_out` but not its matching `z_in`. Use the same prefix trick —
+assume the medium fills all space, define
+
+```text
+G(z) = integral from z_near to z of  T_view(z') * T_light(z') * p(z') dz'
+```
+
+and an interior interval contributes `sigma_s * (G(z_out) - G(z_in))`, with the
+signed accumulation restricting it to the true interior. `G` has no closed form,
+so build it **per pixel, not per fragment**: march a froxel-style slice array
+once per pixel, evaluate `T_view` from the view moments and `T_light` from the
+shadow map at each slice, and bake the phase function there. Cost is
+`O(pixels * slices) + O(fragments)` and does not scale with depth complexity,
+which is what makes it affordable. Per-mesh scattering albedo is free —
+`sigma_s` factors out linearly, so one prefix volume serves every mesh.
+
+## Numerical requirements
+
+**Use fp32 moments. Do not use fp16.** `F_k(z_out) - F_k(z_in)` is a small
+difference of two O(1) values with `k` up to 7, and thin shells cancel
+catastrophically in fp16. The 16-bit quantization tables in the MBOIT paper apply
+to Dirac-style surface fragments, not to this formulation.
+
+Keep the warped domain centred on zero, which reduces the dynamic range of the
+high-order terms. Coloured extinction needs three independent moment sets —
+budget for it before committing to a moment count.
+
+## GPU specifics
+
+`FLOAT32_BLENDABLE` is required and is not in the WebGPU baseline. This backend
+refuses without it rather than degrading; the alternatives, if that is ever
+revisited, are fewer moments in `Rgba16Float` at a precision cost, or a signed
+thickness buffer with analytic compositing. **Do not silently produce wrong
+images.**
+
+- **Blend state:** `src_factor: One`, `dst_factor: One`, `operation: Add`.
+- **Targets:** 8 power moments plus `b0` needs 2-3 `Rgba32Float` attachments.
+  Check `max_color_attachments` and `max_color_attachment_bytes_per_sample` — the
+  byte-per-sample limit bites first on mobile and some Vulkan drivers.
+- **Depth:** both transparent passes use `depth_write_enabled: false` against the
+  opaque depth buffer.
+- **Front/back sign:** one draw, `cull_mode: None`, branch on
+  `@builtin(front_facing)`.
+- **No complex type in WGSL:** represent trigonometric moments as `vec2<f32>` and
+  write your own complex multiply.
+- **Bindings:** the resolve pass must not filter moments across pixels. Bind as
+  `texture_2d<f32>` with `NonFiltering`, or `textureLoad` by integer coordinate.
+  Filtering is only correct in the light-space shadow map.
+
+Verify the Bevy render API against the crate version in use — the render graph,
+`ViewNode` and view-uniform APIs change between minor releases. Two notes in the
+original reference did not survive contact with Bevy 0.19; the corrections are in
+`src/draw/default/pass.rs` (depth handling) and `src/draw/default/pipeline.rs`
+(depth comparison).
+
+## Performance model
+
+The intuitive answer is wrong: **do not optimise for memory bandwidth first.**
+Additive blending is read-modify-write at the ROPs, and with tiled rasterization
+the tile footprint stays in L2, so traffic scales with pixels rather than
+fragments. High depth complexity is the cache-friendly direction.
+
+Real costs, in order:
+
+1. **The second geometry pass** — vertex, primitive and tessellation throughput.
+   This scales with scene complexity and no cache helps.
+2. **ROP blend throughput** — wide fp32 blending has a fixed rate limit, and this
+   does scale with fragment count.
+3. **Reconstruction ALU** — Cholesky and root finding per fragment in the resolve.
+4. Memory bandwidth, last.
+
+The baseline to compare against is per-pixel linked lists (unbounded memory, can
+fail to allocate) or depth peeling (one geometry pass per layer). A fixed bit
+budget per pixel is what MBOIT buys against those.
+
+## Build order
+
+In sequence, validating each before continuing. **Steps 1 to 4 are done.**
+
+1. **Signed thickness** — `k = 0` only, single convex mesh, `Rg32Float` target.
+   Verify against an analytic sphere. Proves the sign rule and the pass structure.
+2. **Analytic convex compositing** — `T = exp(-sigma * thickness)`, the correct
+   answer for a single convex volume. Keep it as a reference image.
+3. **4 power moments** — same scene, must match step 2 closely. If it does not,
+   the bug is in the warp or the bias, not in the moments.
+4. **Non-convex and nested meshes.** Now the moments earn their place.
+5. **Depth warping** with a real per-frame depth bound.
+6. **Light-space moment map** and `T_light`.
+7. **Froxel prefix integral** `G` and in-scattering.
+8. **Trigonometric moments**, if blob content comes into scope.
+
+**Do not skip step 2.** Without a reference image you cannot tell moment error
+from sign error.
+
+How to check each: read the target back and compare thickness through an analytic
+sphere against `2*sqrt(r^2 - d^2)` rather than judging by eye; diff every later
+step against step 2's image; and treat a visible band of broken pixels as
+Cholesky losing positive definiteness, which means raising epsilon. That
+comparison is not in the tree — recover it from history if a later step needs it.
+
+## Open questions
+
+- Which warp keeps `F_k` closed form and still gives good near-field resolution?
+  Try a low-order polynomial first.
+- Do 4 power moments suffice for nested non-convex meshes, or are 6 needed?
+  Measure against step 2's reference image.
+- Not yet done beyond the build order: per-view culling, and batching through a
+  real phase item.
+
+## Further reading
+
+- Peters, Klein. *Moment Shadow Mapping*. I3D 2015.
+- Peters. *Non-Linearly Quantized Moment Shadow Maps*. HPG 2017.
+- Kern et al. *A Comparison of Rendering Techniques for 3D Line Sets with
+  Transparency*. TVCG 2020 —
+  <https://www.willusher.io/publications/tvcg20_oit/>. Figure 1 documents
+  MBOIT's failure modes honestly.
+- NVIDIA `nvpro-samples/vk_order_independent_transparency` — seven OIT techniques
+  toggled live on one scene; the best reference implementation to read.
+- `chrismile/LineVis` — MBOIT alongside MLAB, MLAT, linked lists, depth peeling.

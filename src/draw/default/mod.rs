@@ -46,9 +46,10 @@
 //! [`place_volumes`] does not match it — each has its own placement system
 //! instead. Anything opaque added later needs the same pair.
 //!
-//! See `ref/mboit-bevy-reference.md`. Two of its notes do not survive contact
-//! with Bevy 0.19 and are corrected here — see [`pass`] for the depth handling
-//! and [`pipeline`] for the depth comparison.
+//! `docs/design/moment-transparency.md` carries the full derivation, including
+//! the parts not built. Two of its notes do not survive contact with Bevy 0.19
+//! and are corrected here — see [`pass`] for the depth handling and
+//! [`pipeline`] for the depth comparison.
 
 use bevy::asset::embedded_asset;
 use bevy::core_pipeline::core_3d::main_transparent_pass_3d;
@@ -64,16 +65,16 @@ use bevy::shader::load_shader_library;
 use crate::scene::link::Placement;
 use crate::scene::registry::ActorRegistry;
 
-pub mod extract;
-pub mod glycan;
-pub mod medium;
-pub mod molecule;
-pub mod pass;
-pub mod pipeline;
-pub mod points;
-pub mod prepare;
-pub mod surface;
-pub mod volume;
+pub(crate) mod extract;
+pub(crate) mod glycan;
+pub(crate) mod medium;
+pub(crate) mod molecule;
+pub(crate) mod pass;
+pub(crate) mod pipeline;
+pub(crate) mod points;
+pub(crate) mod prepare;
+pub(crate) mod surface;
+pub(crate) mod volume;
 
 // Re-exported rather than imported separately in each kind module: whether a
 // helper is shared or belongs to this pathway is a fact about the pathway, not
@@ -102,7 +103,7 @@ pub struct MomentView;
 
 /// How a mesh deposits absorbance into the moment buffer.
 ///
-/// Two of the three content types in `ref/mboit-bevy-reference.md` §3, and the
+/// Two of the three content types in `docs/design/moment-transparency.md`, and the
 /// choice between them is a choice about what the mesh *is* rather than a
 /// quality setting.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -219,7 +220,8 @@ pub struct MomentShell {
 /// actor kinds — which is what lets the accumulation be exercised with no
 /// actors, no gRPC and no interface in the way.
 ///
-/// The reference documents under `ref/` call this pathway `experimental`.
+/// The brief this was built from called this pathway `experimental`; it shipped
+/// as `default`.
 pub struct MomentRenderPlugin;
 
 impl Plugin for MomentRenderPlugin {
@@ -402,7 +404,7 @@ impl Plugin for MomentBackendPlugin {
 /// sample count the view has, and the two passes are specialised to match — see
 /// [`pipeline`]. A pathway that could not tolerate multisampling would have to
 /// force `Msaa::Off` in its own module, which is why this one says so.
-pub fn moment_cameras(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
+fn moment_cameras(mut commands: Commands, cameras: Query<Entity, Added<Camera3d>>) {
     for camera in &cameras {
         commands.entity(camera).insert(MomentView);
     }
@@ -446,7 +448,7 @@ fn widen_depth_usage(mut cameras: Query<&mut Camera3d, With<MomentView>>) {
 /// keying on the handle alone left every placement absorbing at whatever rate
 /// it was first drawn with.
 #[allow(clippy::type_complexity)]
-pub fn place_volumes(
+fn place_volumes(
     mut commands: Commands,
     actors: Query<(&Mesh3d, &MomentVolume, Option<&MomentShell>)>,
     placements: Query<(

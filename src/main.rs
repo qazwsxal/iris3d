@@ -2,11 +2,11 @@
 //!
 //! The application opens a window, holds a scene, and waits to be told what to
 //! put in it over gRPC. The wire contract in `proto/iris3d/v1/scene.proto` is
-//! the real interface; this workspace implements it. See `README.md` for how to
-//! run it and drive it from Python.
+//! the real interface; this crate implements it. See `README.md` for how to run
+//! it and drive it from Python.
 //!
-//! **This crate is wiring only.** It parses the command line and adds the
-//! plugins in order. Everything else is in the crates below it.
+//! **`main` itself is wiring only.** It parses the command line and adds the
+//! plugins in order. Everything else is in the modules below.
 //!
 //! # The model
 //!

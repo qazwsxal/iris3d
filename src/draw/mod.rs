@@ -41,10 +41,10 @@ use crate::model::{Bindings, ParamKind, ParamMap, ParamSpec};
 use crate::scene::registry::{ActorKindId, ActorRegistry};
 use crate::scene::{DataArray, DataStore};
 
-pub mod atoms;
-pub mod default;
-pub mod glycan;
-pub mod probe;
+pub(crate) mod atoms;
+pub(crate) mod default;
+pub(crate) mod glycan;
+pub(crate) mod probe;
 #[cfg(test)]
 mod smoke;
 
@@ -64,7 +64,7 @@ pub const BACKEND: &str = "default";
 /// Additive blending into a 32-bit float target is what the whole method rests
 /// on, and it is not in the WebGPU baseline. fp32 is not negotiable here: a
 /// moment is a difference of two O(1) values, so a thin shell cancels
-/// catastrophically in fp16 — see `ref/mboit-bevy-reference.md` §8. Without the
+/// catastrophically in fp16 — see `docs/design/moment-transparency.md`. Without the
 /// feature there is no degraded version to fall back to, only a wrong one.
 pub const REQUIRES: WgpuFeatures = WgpuFeatures::FLOAT32_BLENDABLE;
 

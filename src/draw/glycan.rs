@@ -141,7 +141,7 @@ impl Tint {
 /// for an unassigned monosaccharide rather than a placeholder invented here.
 pub const UNKNOWN: u8 = 1;
 
-pub fn symbol(code: u8) -> Option<Symbol> {
+fn symbol(code: u8) -> Option<Symbol> {
     let (shape, colour) = match code {
         UNKNOWN => (Shape::Circle, Tint::White),
         2 => (Shape::Circle, Tint::Blue),     // glucose

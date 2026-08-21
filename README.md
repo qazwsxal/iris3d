@@ -79,6 +79,9 @@ upward dependency.
 | `view/` | The egui panel, the node graph, camera, picking, overlays |
 | `grpc/` | The tonic server. An adapter onto the command buses and nothing more |
 
+`main.rs` adds the plugins in order and is the one place allowed to name every
+layer; `cli.rs` parses the command line and `capture.rs` writes screenshots.
+
 Work flows one way. A client sends a request, `grpc` turns it into a
 `SceneCommand` or a `FilterCommand`, the owning module drains its queue and
 applies it, `filter` derives whatever is now stale, and `draw` puts the result

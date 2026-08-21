@@ -41,7 +41,7 @@ jobs:
 
       - name: Test
         # The tests never build a render app, so no GPU is needed. See
-        # crates/iris3d-draw/src/smoke.rs.
+        # src/draw/smoke.rs.
         run: cargo test
 
       - name: Layering
