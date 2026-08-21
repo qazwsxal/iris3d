@@ -42,7 +42,6 @@
 //! actually want an element; building the walk first means the hard, quiet part
 //! is settled and covered by tests rather than being written in a hurry
 //! alongside the event plumbing.
-#![allow(dead_code)]
 
 use bevy::platform::collections::HashMap;
 

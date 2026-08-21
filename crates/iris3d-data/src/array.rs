@@ -108,14 +108,12 @@ impl BufferMeta {
     /// Length of the outermost axis — the number of points, cells or atoms.
     // Unused until subsets, which validate a selection's length against the
     // element count of the array it selects into.
-    #[allow(dead_code)]
     pub fn count(&self) -> u64 {
         self.shape.first().copied().unwrap_or(0)
     }
 
     /// Number of components per element: `[n, 3]` has three, `[n]` has one.
     // Wanted once a client can ask what shape a held array is.
-    #[allow(dead_code)]
     pub fn components(&self) -> u64 {
         self.shape.iter().skip(1).product()
     }
@@ -192,7 +190,6 @@ pub struct StoredArray {
     /// Never read — held for what dropping it does. This is the strong
     /// reference that keeps the asset loaded, so the store's `HashMap` entry is
     /// the array's lifetime.
-    #[allow(dead_code)]
     pub handle: Handle<DataArray>,
 }
 
@@ -372,7 +369,6 @@ impl DataArray {
     }
 
     // As for `BufferMeta::count`: wanted by subset validation.
-    #[allow(dead_code)]
     pub fn count(&self) -> u64 {
         self.shape.first().copied().unwrap_or(0)
     }

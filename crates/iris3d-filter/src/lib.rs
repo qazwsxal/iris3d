@@ -326,20 +326,11 @@ impl FilterKind {
         self.params.iter().filter(|spec| spec.kind.is_input())
     }
 
-    /// A complete, in-range parameter map built from whatever was supplied. See
-    /// [`ActorKind::normalise`](iris3d_scene::registry::ActorKind::normalise).
+    /// A complete, in-range parameter map built from whatever was supplied.
+    /// See [`iris3d_model::normalise`], which a filter kind and an actor kind
+    /// share.
     pub fn normalise(&self, given: &ParamMap) -> ParamMap {
-        self.params
-            .iter()
-            .filter_map(|spec| {
-                let value = given
-                    .get(spec.id)
-                    .cloned()
-                    .and_then(|value| spec.kind.sanitise(value))
-                    .or_else(|| spec.kind.default_value())?;
-                Some((spec.id.to_string(), value))
-            })
-            .collect()
+        iris3d_model::normalise(self.params, given)
     }
 }
 

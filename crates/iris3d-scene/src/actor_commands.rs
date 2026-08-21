@@ -18,46 +18,14 @@ use super::object_commands::spawn_object;
 use super::registry::{self, ActorKindId, ActorParams, ActorRegistry};
 use super::{ActorSummary, KindSummary, SceneObject};
 
-/// Checks that every input an actor kind reads is bound, and bound to something
-/// it can actually read.
-///
-/// Separate from [`iris3d_model::ParamKind::sanitise`] on purpose. Sanitising judges
-/// a value on its own and runs wherever a parameter is written; this needs the
-/// [`DataStore`] to see what a handle points at, and the store is not reachable
-/// from all of those places. So one answers "is this the right sort of value"
-/// and the other "is that particular array or mesh the right shape".
-///
-/// Arrays and meshes share a handle space, so this is also where binding one
-/// where the other belongs is caught and named.
+/// The binding gate for an actor kind. See [`iris3d_model::check_bindings`],
+/// which an actor and a filter share.
 pub(crate) fn check_bindings(
     kind: &registry::ActorKind,
     params: &iris3d_model::ParamMap,
     store: &DataStore,
 ) -> Result<(), SceneError> {
-    for spec in kind.inputs() {
-        let required = spec.kind.is_required();
-        match iris3d_model::data(params, spec.id) {
-            Some(id) => {
-                let held = store.held(id).ok_or(SceneError::NoSuchData(id))?;
-                spec.kind
-                    .accepts(held)
-                    .map_err(|reason| SceneError::BadBinding {
-                        kind: kind.id.to_string(),
-                        input: spec.id,
-                        reason,
-                    })?;
-            }
-            // An optional input left unbound is the normal case, not a fault.
-            None if required => {
-                return Err(SceneError::MissingInput {
-                    kind: kind.id.to_string(),
-                    input: spec.id,
-                });
-            }
-            None => {}
-        }
-    }
-    Ok(())
+    iris3d_model::check_bindings(kind.id, kind.inputs(), params, store)
 }
 
 /// Adds a way of drawing, at any number of places in the tree.

@@ -474,3 +474,29 @@ pub struct ParamSpec {
     pub label: &'static str,
     pub kind: ParamKind,
 }
+
+/// A complete, in-range parameter map built from whatever was supplied.
+///
+/// Missing parameters take their default, out-of-range ones are clamped, and
+/// anything not declared is dropped. Every route into the scene or the filter
+/// graph goes through here, so no kind has to defend against a partial or
+/// hostile map.
+///
+/// Takes the specs rather than a kind, because an actor kind and a filter kind
+/// declare parameters the same way and there is nothing here that could tell
+/// them apart.
+pub fn normalise(specs: &[ParamSpec], given: &ParamMap) -> ParamMap {
+    specs
+        .iter()
+        .filter_map(|spec| {
+            // An unbound array stays unbound rather than becoming some arbitrary
+            // handle, so the map says truthfully what is missing.
+            let value = given
+                .get(spec.id)
+                .cloned()
+                .and_then(|value| spec.kind.sanitise(value))
+                .or_else(|| spec.kind.default_value())?;
+            Some((spec.id.to_string(), value))
+        })
+        .collect()
+}

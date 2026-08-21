@@ -61,7 +61,6 @@ pub enum ColorMap {
     /// consult the map, so this variant is what that behaviour *should* be
     /// named once element colouring routes through [`sample`] like every other
     /// map.
-    #[allow(dead_code)]
     ByElement,
 }
 

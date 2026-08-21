@@ -445,36 +445,14 @@ fn listed_outputs(kind: &super::FilterKind, outputs: &Outputs) -> Vec<(String, u
         .collect()
 }
 
-/// The same gate `check_bindings` applies to an actor: every required input
-/// bound, and every bound array the right type and shape for the input.
+/// The binding gate for a filter kind. See [`iris3d_model::check_bindings`],
+/// which a filter and an actor share.
 fn check_bindings(
     kind: &super::FilterKind,
     params: &ParamMap,
     store: &DataStore,
 ) -> Result<(), SceneError> {
-    for spec in kind.inputs() {
-        let required = spec.kind.is_required();
-        match iris3d_model::data(params, spec.id) {
-            Some(id) => {
-                let held = store.held(id).ok_or(SceneError::NoSuchData(id))?;
-                spec.kind
-                    .accepts(held)
-                    .map_err(|reason| SceneError::BadBinding {
-                        kind: kind.id.to_string(),
-                        input: spec.id,
-                        reason,
-                    })?;
-            }
-            None if required => {
-                return Err(SceneError::MissingInput {
-                    kind: kind.id.to_string(),
-                    input: spec.id,
-                });
-            }
-            None => {}
-        }
-    }
-    Ok(())
+    iris3d_model::check_bindings(kind.id, kind.inputs(), params, store)
 }
 
 /// Work submitted to the filter graph from outside the ECS.

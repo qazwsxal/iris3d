@@ -52,28 +52,10 @@ impl ActorKind {
     }
 
     /// A complete, in-range parameter map built from whatever was supplied.
-    ///
-    /// Missing parameters take their default, out-of-range ones are clamped,
-    /// and anything not declared is dropped. Every route into the scene goes
-    /// through here, so no kind has to defend against a partial or hostile
-    /// map.
-    // Unused until a client can supply a map at all; the UI edits one value at
-    // a time and goes through `ParamKind::sanitise` directly.
-    #[allow(dead_code)]
+    /// See [`iris3d_model::normalise`], which an actor kind and a filter kind
+    /// share.
     pub fn normalise(&self, given: &ParamMap) -> ParamMap {
-        self.params
-            .iter()
-            .filter_map(|spec| {
-                // An unbound array stays unbound rather than becoming some
-                // arbitrary handle, so the map says truthfully what is missing.
-                let value = given
-                    .get(spec.id)
-                    .cloned()
-                    .and_then(|value| spec.kind.sanitise(value))
-                    .or_else(|| spec.kind.default_value())?;
-                Some((spec.id.to_string(), value))
-            })
-            .collect()
+        iris3d_model::normalise(self.params, given)
     }
 }
 
@@ -135,7 +117,6 @@ impl ActorRegistry {
 
     // Wanted by the RPC that lets a client ask what kinds exist rather than
     // carrying its own table of them.
-    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &ActorKind> {
         self.kinds.iter()
     }

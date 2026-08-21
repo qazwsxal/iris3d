@@ -97,7 +97,6 @@ pub enum Shape {
 /// palette is the standard's and is not ours to trim: a colour with no sugar
 /// against it today is a sugar not yet in the table, not a colour that should
 /// be deleted.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tint {
     White,

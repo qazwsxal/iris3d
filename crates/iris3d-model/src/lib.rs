@@ -23,7 +23,8 @@ use std::fmt::{self, Display};
 pub mod param;
 
 pub use param::{
-    ParamKind, ParamMap, ParamSpec, ParamValue, data, flag, float, text, uvec3, vec3, vector,
+    ParamKind, ParamMap, ParamSpec, ParamValue, data, flag, float, normalise, text, uvec3, vec3,
+    vector,
 };
 
 /// The arrays an actor has bound, by input id.
@@ -164,3 +165,50 @@ impl Display for SceneError {
 }
 
 impl std::error::Error for SceneError {}
+
+/// Checks that every input a kind reads is bound, and bound to something it can
+/// actually read.
+///
+/// Separate from [`ParamKind::sanitise`] on purpose. Sanitising judges a value
+/// on its own and runs wherever a parameter is written; this needs the
+/// [`DataStore`](iris3d_data::DataStore) to see what a handle points at, and the
+/// store is not reachable from all of those places. So one answers "is this the
+/// right sort of value" and the other "is that particular array or mesh the
+/// right shape".
+///
+/// Arrays and meshes share a handle space, so this is also where binding one
+/// where the other belongs is caught and named.
+///
+/// Takes the id and the inputs rather than a kind: an actor and a filter are
+/// gated identically, and neither of their kind types is visible from here.
+pub fn check_bindings<'a>(
+    kind_id: &str,
+    inputs: impl Iterator<Item = &'a ParamSpec>,
+    params: &ParamMap,
+    store: &iris3d_data::DataStore,
+) -> Result<(), SceneError> {
+    for spec in inputs {
+        let required = spec.kind.is_required();
+        match param::data(params, spec.id) {
+            Some(id) => {
+                let held = store.held(id).ok_or(SceneError::NoSuchData(id))?;
+                spec.kind
+                    .accepts(held)
+                    .map_err(|reason| SceneError::BadBinding {
+                        kind: kind_id.to_string(),
+                        input: spec.id,
+                        reason,
+                    })?;
+            }
+            // An optional input left unbound is the normal case, not a fault.
+            None if required => {
+                return Err(SceneError::MissingInput {
+                    kind: kind_id.to_string(),
+                    input: spec.id,
+                });
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
